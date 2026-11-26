@@ -1,24 +1,120 @@
-//! FilmCraft's panel chrome and document tabs over the shared docking transactions.
+//! FilmCraft's panels in craft-ui's `DockArea`. craft-ui draws the frames, tab strips, floating
+//! windows and drag previews and owns the gestures; FilmCraft draws the panel bodies, the ≡ panel
+//! menu and the Timeline's sequence tabs in each group's header, and maps its control commands
+//! onto craft-ui's dock commands.
+//!
+//! `ui.dock` stays the saved source of truth: the area shows a live `Workspace` that follows it
+//! and writes nothing itself, and every change it reports runs through `window.dockAction`.
 
-use craft_ui::docking::{Action, DropTarget, Placement, Zone, resolve_drop};
-use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use std::sync::Arc;
+
+use craft_behavior::DockSide;
+use craft_behavior::dock::{Action, Layout, Node, Permissions, Workspace};
+use craft_host::target::WindowKind;
+use craft_ui::contract::{Bind, BodyCx, Tracked};
+use craft_ui::docking::{
+    DividerKind, DockCommands, DockConfig, DockEvent, DockPanels, DockScene, DockSizes, DockSource, DockTo, DragUnit, FloatSpace, PanelSpec, PanelSpecs,
+    SourceKind, actions, move_actions,
+};
+use craft_ui::patterns::dock::DockArea;
+use craft_ui::runtime::windows::ResizeEdge;
+use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
-use crate::dock::{self, DockAction, DockNode, Group, PanelKind};
+use crate::dock::{self, LayoutExt as _, PanelKind, SeqAction, SeqTabs};
+use crate::icons::{self, Icon};
+use crate::theme::Tokens;
 use crate::{FilmcraftApp, panels};
 
-/// Single source for rendering and hit testing: saved offscreen positions remain
-/// reachable, and every panel has enough room for its chrome.
-fn floating_rect(group: &dock::Floating, screen: Rect) -> Rect {
-    let rect = Rect::from_min_size(pos2(group.rect[0], group.rect[1]), vec2(group.rect[2].max(160.0), group.rect[3].max(100.0)));
-    rect.translate(vec2(
-        (screen.min.x - rect.min.x).max(0.0) + (screen.max.x - 40.0 - rect.min.x).min(0.0),
-        (screen.min.y - rect.min.y).max(0.0) + (screen.max.y - 30.0 - rect.min.y).min(0.0),
-    ))
+/// Where each panel body was drawn last frame, and on which layer.
+fn bodies_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-bodies")
 }
 
-fn drag_id() -> egui::Id {
-    egui::Id::new("dock-panel-drag")
+/// The dock area's gesture sources of the last pass, as automation elements.
+fn sources_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-sources")
+}
+
+/// The app's focused panel at the end of the last dock pass.
+fn app_focus_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-app-focus")
+}
+
+/// The panel of the group that held key focus in the last pass, as the dock area reported it.
+fn key_focus_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-key-focus")
+}
+
+/// One gesture source of the dock area: its automation id, where it was drawn (in its own OS
+/// window's coordinates for a native floating window), the id of its node, and whether it is a
+/// divider or a resize grip, which take the arrow keys while focused.
+#[derive(Clone, Debug)]
+struct DockHit {
+    id: String,
+    rect: Rect,
+    widget: egui::Id,
+    viewport: egui::ViewportId,
+    grip: bool,
+}
+
+/// `a`/`b` per split level from the root, as in `dock.gutter.<path>`.
+fn path_id(path: &[bool]) -> String {
+    path.iter().map(|second| if *second { 'b' } else { 'a' }).collect()
+}
+
+/// The dock area's gesture sources of the last pass, for `ui.docking`'s `hitRects`: each with its
+/// automation id and rect.
+pub(crate) fn hit_rects(ctx: &egui::Context) -> Vec<Value> {
+    let hits = ctx.data(|data| data.get_temp::<Vec<DockHit>>(sources_id())).unwrap_or_default();
+    hits.iter().map(|hit| json!({"hit": hit.id, "rect": [hit.rect.left(), hit.rect.top(), hit.rect.width(), hit.rect.height()]})).collect()
+}
+
+/// Whether key focus is on a dock divider or a floating window's resize grip, as drawn last pass:
+/// the arrow keys then nudge it and fire no shortcut (#1482).
+pub(crate) fn divider_focused(ctx: &egui::Context) -> bool {
+    let focused = [craft_ui::runtime::access::focused_node(ctx), ctx.memory(|memory| memory.focused())];
+    let hits = ctx.data(|data| data.get_temp::<Vec<DockHit>>(sources_id())).unwrap_or_default();
+    hits.iter().any(|hit| hit.grip && focused.contains(&Some(hit.widget)))
+}
+
+/// Width of the ≡ panel menu button in each group's header.
+const MENU_W: f32 = 26.0;
+
+/// FilmCraft's `window.panel.*` control commands: the docking vocabulary of its control channel.
+const PANEL_COMMANDS: [&str; 9] = [
+    "window.panel.move",
+    "window.panel.float",
+    "window.panel.dock",
+    "window.panel.activate",
+    "window.panel.close",
+    "window.panel.closeGroup",
+    "window.panel.closeOthers",
+    "window.panel.minimize",
+    "window.panel.layout",
+];
+
+/// The panels' specs the dock area reads: each panel's tab title and the kind of OS window it
+/// floats in. While no sequence is open the Timeline's tab says so.
+#[derive(Clone, Debug, Default, PartialEq, craft_ui::contract::PlainData)]
+pub(crate) struct FilmSpecs {
+    timeline_title: Option<String>,
+}
+
+impl PanelSpecs<PanelKind> for FilmSpecs {
+    fn spec(&self, panel: &PanelKind) -> PanelSpec {
+        let title = match (panel, &self.timeline_title) {
+            (PanelKind::Timeline, Some(title)) => title.clone(),
+            _ => crate::i18n::t(panel.title()).to_string(),
+        };
+        // The video viewers float as document windows, say on a second display; the other panels
+        // are tool windows.
+        let kind = match panel {
+            PanelKind::Program | PanelKind::Source | PanelKind::ReferenceMonitor | PanelKind::LumetriScopes => WindowKind::Document,
+            _ => WindowKind::Tool,
+        };
+        PanelSpec::new(title).window_kind(kind).allow_native(true)
+    }
 }
 
 pub(crate) fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
@@ -30,170 +126,268 @@ pub(crate) fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, param
             Ok(Value::Null)
         })());
     }
-    if !matches!(id, "window.dockPanel" | "window.floatPanel" | "window.closePanel") {
-        return None;
+    if matches!(id, "window.dockPanel" | "window.floatPanel" | "window.closePanel") {
+        return Some(alias(app, ctx, id, params));
     }
-    Some((|| {
-        let panel = match params.get("panel") {
-            None => app.ui.focused,
-            Some(value) => value.as_str().and_then(PanelKind::from_name).ok_or("unknown panel")?,
-        };
-        let action = match id {
-            "window.closePanel" => Action::Close { panel },
-            "window.floatPanel" => {
-                let rect = match params.get("rect") {
-                    None => default_float_rect(ctx.content_rect()),
-                    Some(value) => serde_json::from_value::<[f32; 4]>(value.clone()).map_err(|_| "rect must contain four finite numbers")?,
-                };
-                Action::Float { panel, rect }
-            }
-            _ => {
-                let zone_name = match params.get("zone") {
-                    None => "center",
-                    Some(value) => value.as_str().ok_or("zone must be a string")?,
-                };
-                let zone = match zone_name.to_ascii_lowercase().as_str() {
-                    "left" => Zone::Left,
-                    "right" => Zone::Right,
-                    "top" => Zone::Top,
-                    "bottom" => Zone::Bottom,
-                    "center" | "tab" => Zone::Center,
-                    _ => return Err("unknown docking zone".into()),
-                };
-                let Some(anchor) = params.get("anchor") else {
-                    if params.get("before").is_some() {
-                        return Err("before needs an anchor panel".into());
-                    }
-                    app.dock_to_edge(panel, zone)?;
-                    return Ok(json!({"panel": panel.id()}));
-                };
-                let anchor = anchor.as_str().and_then(PanelKind::from_name).ok_or("a known anchor panel is required")?;
-                let placement = match params.get("before") {
-                    Some(value) => Placement::Tab { before: Some(value.as_str().and_then(PanelKind::from_name).ok_or("unknown before panel")?) },
-                    None => Placement::Split(zone),
-                };
-                Action::Move { panel, anchor, placement }
-            }
-        };
-        app.apply_dock(action)?;
-        Ok(json!({"panel": panel.id()}))
-    })())
+    if PANEL_COMMANDS.contains(&id) {
+        return Some(app.run_panel_command(ctx, id, params).map(|()| Value::Null));
+    }
+    None
 }
 
-pub(crate) fn default_float_rect(screen: Rect) -> [f32; 4] {
-    let center = screen.center();
-    [center.x - 210.0, center.y - 160.0, 420.0, 320.0]
+/// The panel named by `params[key]`, if given.
+fn panel_param(params: &Value, key: &str) -> Result<Option<PanelKind>, String> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_str().and_then(PanelKind::from_name).map(Some).ok_or_else(|| format!("unknown {key} panel")),
+    }
+}
+
+/// The side a `zone` names: `center` (or `tab`) joins the anchor's tabs. `left` and `right` are
+/// the start and end sides in reading order.
+fn side_of(zone: &str) -> Result<DockSide, String> {
+    match zone.to_ascii_lowercase().as_str() {
+        "center" | "tab" => Ok(DockSide::Center),
+        "left" | "start" => Ok(DockSide::Start),
+        "right" | "end" => Ok(DockSide::End),
+        "top" => Ok(DockSide::Top),
+        "bottom" => Ok(DockSide::Bottom),
+        _ => Err("unknown docking zone".into()),
+    }
+}
+
+/// Where `params` dock a panel: into the anchor's tabs (before `before`), beside the anchor on its
+/// `zone`, along that edge of the whole workspace without an anchor, else back to the docked
+/// layout.
+fn destination(params: &Value) -> Result<DockTo<PanelKind>, String> {
+    let side = match params.get("zone") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(side_of(value.as_str().ok_or("zone must be a string")?)?),
+    };
+    let before = panel_param(params, "before")?;
+    match panel_param(params, "anchor")? {
+        Some(anchor) => match side {
+            None | Some(DockSide::Center) => Ok(DockTo::tabs(anchor, before)),
+            Some(_) if before.is_some() => Err("before applies to the anchor's tabs".into()),
+            Some(side) => Ok(DockTo::beside(anchor, side)),
+        },
+        None if before.is_some() => Err("before needs an anchor panel".into()),
+        None => match side {
+            None | Some(DockSide::Center) => Ok(DockTo::Docked),
+            Some(side) => Ok(DockTo::Edge(side)),
+        },
+    }
+}
+
+/// FilmCraft's own docking commands, as its `window.panel.*` commands. `panel` defaults to the
+/// focused panel.
+fn alias(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Result<Value, String> {
+    let panel = panel_param(params, "panel")?.unwrap_or(app.ui.focused);
+    let mut command = if params.is_object() { params.clone() } else { json!({}) };
+    command["panel"] = json!(panel.id());
+    match id {
+        "window.closePanel" => app.run_panel_command(ctx, "window.panel.close", &command)?,
+        "window.floatPanel" => match params.get("rect") {
+            None => app.run_panel_command(ctx, "window.panel.float", &command)?,
+            Some(value) => {
+                let rect = serde_json::from_value::<[f32; 4]>(value.clone()).map_err(|_| "rect must contain four finite numbers")?;
+                if !rect.iter().all(|v| v.is_finite()) {
+                    return Err("rect must contain four finite numbers".into());
+                }
+                app.apply_dock(Action::float(panel, dock::rect_of(rect)))?;
+            }
+        },
+        _ => app.run_panel_command(ctx, "window.panel.dock", &command)?,
+    }
+    Ok(json!({"panel": panel.id()}))
+}
+
+/// Keep one docked destination available for dragging floating panels back into the workspace:
+/// no move or float may leave the frame tree empty. Closing the last docked panel stays allowed.
+fn check_last_docked(before: &Layout<PanelKind>, action: &Action<PanelKind>, after: &Layout<PanelKind>) -> Result<(), String> {
+    let closing = matches!(action, Action::Close { .. } | Action::CloseGroup { .. } | Action::CloseWindow { .. } | Action::CloseOthers { .. });
+    if !closing && before.root.is_some() && after.root.is_none() {
+        return Err("the last docked panel must remain in the workspace".into());
+    }
+    Ok(())
 }
 
 impl FilmcraftApp {
+    /// A layout action from the dock area, through the command path the control channel uses.
     fn dock_command(&mut self, ctx: &egui::Context, action: Action<PanelKind>) -> Result<(), String> {
         let value = serde_json::to_value(action).map_err(|error| error.to_string())?;
         crate::menus::invoke(self, ctx, "window.dockAction", json!({"action": value})).map(|_| ())
     }
 
-    pub fn apply_dock(&mut self, action: Action<PanelKind>) -> Result<(), String> {
-        let relocating = matches!(&action, Action::Move { .. } | Action::Float { .. });
-        let reveal = match &action {
-            Action::Activate { panel } => Some(*panel),
+    /// Run one of FilmCraft's `window.panel.*` commands on the current layout, all or nothing.
+    /// Workspaces are FilmCraft's own (Window ▸ Workspaces).
+    pub(crate) fn run_panel_command(&mut self, ctx: &egui::Context, id: &str, params: &Value) -> Result<(), String> {
+        if id == "window.panel.layout" {
+            let value = params.get("action").cloned().ok_or("missing docking action")?;
+            let action = serde_json::from_value(value).map_err(|error| format!("invalid docking action: {error}"))?;
+            return self.apply_dock(action);
+        }
+        let panel = panel_param(params, "panel")?.ok_or("missing panel")?;
+        // A closed panel reopens through FilmCraft's own path: where it was, floating again if it
+        // was closed floating (#1985).
+        if id == "window.panel.activate" {
+            if !self.ui.dock.contains(&panel) {
+                self.show_panel(panel);
+                return Ok(());
+            }
+            return self.apply_dock(Action::activate(panel));
+        }
+        let command = match id {
+            "window.panel.float" if params.get("group").and_then(Value::as_bool) == Some(true) => Some(DockCommands::FloatGroup),
+            "window.panel.float" => Some(DockCommands::FloatPanel),
+            "window.panel.close" => Some(DockCommands::ClosePanel),
+            "window.panel.closeGroup" => Some(DockCommands::CloseGroup),
+            "window.panel.closeOthers" => Some(DockCommands::CloseOthers),
+            "window.panel.minimize" => match params.get("minimized").and_then(Value::as_bool) {
+                Some(minimized) => return self.apply_dock(Action::set_minimized(panel, minimized)),
+                None => Some(DockCommands::ToggleMinimized),
+            },
             _ => None,
         };
-        self.commit_dock(|shared| {
-            crate::dock_shared::check_last_docked(shared, &action)?;
-            shared.apply(action).map_err(|error| error.to_string())
-        })?;
-        if let Some(panel) = reveal {
-            self.pending_panel_raise = Some(panel);
+        let fallback;
+        let space = match &self.dock_float_space {
+            Some(space) => space,
+            None => {
+                fallback = FloatSpace::new(self.float_bounds(ctx), &DockSizes::of(ctx));
+                &fallback
+            }
+        };
+        let permissions = |_: &PanelKind| Permissions::ALL;
+        let scene = DockScene::new(&self.ui.dock, space, false, &permissions).floated(self.dock_live.floated());
+        let list = match command {
+            Some(command) => actions(&scene, command, &panel),
+            None => move_actions(&scene, &DragUnit::Panel(panel), destination(params)?),
         }
-        if relocating
-            || self.ui.keys.maximized.is_some_and(|panel| !self.ui.dock.contains(panel) && !self.ui.floating.iter().any(|group| group.panels.contains(&panel)))
+        .map_err(|error| error.to_string())?;
+        self.apply_dock_all(list)
+    }
+
+    /// Where floating windows may go. With `integrated_titlebar` the header sits in the macOS
+    /// title-bar strip, where a press on a floating window would move the whole app window.
+    pub(crate) fn float_bounds(&self, ctx: &egui::Context) -> Rect {
+        let mut bounds = ctx.content_rect();
+        if self.integrated_titlebar {
+            bounds.min.y += crate::header::HEIGHT;
+        }
+        bounds
+    }
+
+    pub fn apply_dock(&mut self, action: Action<PanelKind>) -> Result<(), String> {
+        self.apply_dock_all(vec![action])
+    }
+
+    /// Clicking the Timeline brings the Program monitor to the front of its tab group, as in
+    /// Premiere, so the frame being edited is on show (#3653). The focus stays on the Timeline.
+    /// Only a tab behind another in a docked group: not when Program is floating, closed, already
+    /// in front, in a group the user collapsed (minimized, icon-only column or accordion), or in the
+    /// Timeline's own group (fronting it would hide the Timeline).
+    fn raise_program_for_timeline(&mut self) {
+        let dock = &self.ui.dock;
+        if dock.is_visible(PanelKind::Program) || tab_group(dock, PanelKind::Program).is_none_or(|group| group.contains(&PanelKind::Timeline)) {
+            return;
+        }
+        // Program's tab comes to the front without taking the focus from the Timeline.
+        let focus = self.dock_focus;
+        if let Err(error) = self.apply_dock(Action::activate(PanelKind::Program)) {
+            log::warn!("could not bring the Program monitor to the front: {error}");
+        }
+        self.dock_focus = focus;
+    }
+
+    fn apply_dock_all(&mut self, actions: Vec<Action<PanelKind>>) -> Result<(), String> {
+        let mut layout = self.ui.dock.clone();
+        let mut relocating = false;
+        let mut closed_floating = self.ui.closed_floating.clone();
+        for action in &actions {
+            relocating |= matches!(action, Action::Move { .. } | Action::Float { .. } | Action::MoveGroup { .. } | Action::MoveWindow { .. });
+            // a panel closed while floating remembers where; closed while docked, it forgets (#1985)
+            for panel in layout.closed_by(action).map_err(|error| error.to_string())? {
+                closed_floating.retain(|(p, _)| *p != panel);
+                if let Some(window) = layout.floating.iter().find(|window| window.contains(&panel)) {
+                    closed_floating.push((panel, dock::array_of(window.rect)));
+                }
+            }
+            let before = layout.clone();
+            layout.apply(action.clone()).map_err(|error| error.to_string())?;
+            check_last_docked(&before, action, &layout)?;
+        }
+        self.ui.dock = layout;
+        self.ui.closed_floating = closed_floating;
+        // As in production, an applied Activate brings its panel forward: for a panel in a
+        // floating window the next dock pass focuses it once, which raises that window. A docked
+        // panel's tab is already in front, and key focus stays where it was.
+        if let Some(panel) = actions.iter().rev().find_map(|action| match action {
+            Action::Activate { panel, .. } => Some(*panel),
+            _ => None,
+        }) && self.ui.dock.floating.iter().any(|window| window.contains(&panel))
         {
+            self.dock_focus = Some(panel);
+        }
+        // The live workspace takes the same actions, so its floating windows keep their ids.
+        let _ = Arc::make_mut(&mut self.dock_live).apply_all(actions, false, |_| Permissions::ALL);
+        self.sync_live();
+        if relocating || self.ui.keys.maximized.is_some_and(|panel| !self.ui.dock.is_docked(panel)) {
             self.ui.keys.maximized = None;
         }
         Ok(())
     }
 
-    /// Dock a panel along an edge of the whole workspace rather than beside one group.
-    pub fn dock_to_edge(&mut self, panel: PanelKind, zone: Zone) -> Result<(), String> {
-        self.commit_dock(|shared| crate::dock_shared::dock_at_edge(shared, panel, zone))?;
-        self.ui.keys.maximized = None;
-        Ok(())
+    /// The live workspace takes `ui.dock` where they differ: a workspace switch, a reset, or a
+    /// layout set by a control request.
+    fn sync_live(&mut self) {
+        if self.dock_live.layout() != &self.ui.dock {
+            Arc::make_mut(&mut self.dock_live).replace(Workspace::new(self.ui.dock.clone()));
+        }
     }
 
-    fn commit_dock(&mut self, change: impl FnOnce(&mut craft_ui::docking::Layout<PanelKind>) -> Result<(), String>) -> Result<(), String> {
-        let mut shared = crate::dock_shared::encode(&self.ui.dock, &self.ui.floating)?;
-        shared.validate().map_err(|error| error.to_string())?;
-        change(&mut shared)?;
-        let layout = crate::dock_shared::decode(shared)?;
-        crate::dock_shared::encode(&layout.root, &layout.floating)?;
-        self.ui.dock = layout.root;
-        self.ui.floating = layout.floating;
-        Ok(())
-    }
-
-    fn panel_body(&mut self, ui: &mut egui::Ui, panel: PanelKind, content: Rect) {
-        self.auto.add(&format!("panel.{}", panel.id()), content, panel.title());
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content).id_salt(("panel", panel.id())));
-        child.set_clip_rect(content.intersect(ui.clip_rect()));
-        panels::show(self, &mut child, panel, content);
-    }
-
-    /// OS drag positions come from the host cursor hook, so egui pointer capture alone
-    /// cannot decide whether a Timeline is covered. Use the same geometry and layer
-    /// ordering as our renderer before any panel can dispatch an edit.
+    /// OS drag positions come from the host cursor hook, so egui pointer capture alone cannot
+    /// decide whether a Timeline is covered: the Timeline body drawn last frame must hold `pos`,
+    /// with no floating window above it there: neither another panel's body nor the window's
+    /// title bar and tab strip above that body.
     pub(crate) fn timeline_drop_target(&self, ctx: &egui::Context, pos: egui::Pos2) -> bool {
         if !ctx.content_rect().contains(pos) {
             return false;
         }
-        if let Some(panel) =
-            self.ui.keys.maximized.filter(|panel| self.ui.dock.contains(*panel) || self.ui.floating.iter().any(|group| group.panels.contains(panel)))
-        {
-            return panel == PanelKind::Timeline;
-        }
-        for index in self.floating_order(ctx).into_iter().rev() {
-            if let Some(group) = self.ui.floating.get(index)
-                && floating_rect(group, ctx.content_rect()).contains(pos)
-            {
-                return group.panels.get(group.active) == Some(&PanelKind::Timeline);
+        let Some(bodies) = ctx.data(|data| data.get_temp::<Vec<(PanelKind, Rect, egui::LayerId)>>(bodies_id())) else { return true };
+        let Some((_, _, timeline)) = bodies.iter().find(|(panel, rect, _)| *panel == PanelKind::Timeline && rect.contains(pos)) else { return false };
+        let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
+        let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
+        let hits = ctx.data(|data| data.get_temp::<Vec<DockHit>>(sources_id())).unwrap_or_default();
+        // A body drawn last frame on a layer above the Timeline's, of a panel that still floats: its
+        // window covers `pos` from its grip down to the bottom of its body. A window closed or
+        // docked since covers nothing.
+        !bodies.iter().any(|(panel, rect, layer)| {
+            if *panel == PanelKind::Timeline || layer == timeline || rank(layer) <= rank(timeline) {
+                return false;
             }
-        }
-        true
+            let Some(index) = self.ui.dock.floating.iter().position(|window| window.contains(panel)) else { return false };
+            let grip = format!("panel.float.{index}.move");
+            let window = hits.iter().filter(|hit| hit.id == grip && hit.viewport == egui::ViewportId::ROOT).fold(*rect, |area, hit| area.union(hit.rect));
+            window.contains(pos)
+        })
     }
 
-    fn floating_order(&self, ctx: &egui::Context) -> Vec<usize> {
-        let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
-        let mut order: Vec<_> = (0..self.ui.floating.len()).collect();
-        order.sort_by_key(|index| {
-            self.ui
-                .floating
-                .get(*index)
-                .and_then(|group| group.panels.first())
-                .and_then(|panel| {
-                    let id = egui::Id::new(("floating-panel", panel.id()));
-                    layers.iter().position(|layer| layer.id == id)
-                })
-                .unwrap_or(usize::MAX)
-        });
-        order
+    /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
+    /// egui `Modal` shown last frame, the Save Project prompt of Quit, Close Project or Open
+    /// Project, or a native file dialog. egui's `Modal` blocks input only in the main window, so
+    /// the panels in native windows are disabled meanwhile.
+    fn modal_open(&self, ctx: &egui::Context) -> bool {
+        matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
+            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject" | "file.open"))
+            || self.native_dialog_open()
+            || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
 
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
-        if let Some(panel) = self.pending_panel_raise.take()
-            && let Some(owner) = self.ui.floating.iter().find(|group| group.panels.contains(&panel)).and_then(|group| group.panels.first())
-        {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating-panel", owner.id()))));
-        }
-        let maximized =
-            self.ui.keys.maximized.filter(|panel| self.ui.dock.contains(*panel) || self.ui.floating.iter().any(|group| group.panels.contains(panel)));
-        let mut dock = match maximized {
-            Some(panel) => DockNode::Tabs { panels: vec![panel], active: 0 },
-            None => std::mem::replace(&mut self.ui.dock, DockNode::Tabs { panels: vec![], active: 0 }),
-        };
-        let mut groups = vec![];
-        let mut layout_actions = Vec::new();
-        dock::layout_with_actions(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto, &mut layout_actions);
-        let seqs = dock::SeqTabs {
+        let blocked = self.modal_open(&ctx);
+        let seqs = SeqTabs {
             open: self
                 .session
                 .state
@@ -209,253 +403,417 @@ impl FilmcraftApp {
                 .collect(),
             active: self.session.state.active_sequence.map(|id| id.0),
         };
-        let mut actions = vec![];
-        let mut targets = vec![];
-        for group in &groups {
-            let chrome = dock::draw_group_chrome_details(ui, group, &seqs, &t, &mut self.auto);
-            if let Some(target) = target(group, chrome.tabs, true) {
-                targets.push(target);
+        let timeline_title = seqs.open.is_empty().then(|| seqs.label());
+        if self.dock_specs.timeline_title != timeline_title {
+            self.dock_specs.edit(|specs| specs.timeline_title = timeline_title);
+        }
+        self.sync_live();
+        // The app moved its panel focus itself since the last pass (Source after `source.open`, a
+        // panel a shortcut or menu focused) while key focus is in another panel's group: that key
+        // focus ends, as in production, where a click on a panel left no widget focused. A focused
+        // tab holds Space and the other keys it acts on, so they would not reach the panel now focused.
+        let app_focus = ctx.data(|data| data.get_temp::<PanelKind>(app_focus_id()));
+        let key_group = ctx.data(|data| data.get_temp::<Option<PanelKind>>(key_focus_id())).flatten();
+        if app_focus.is_some_and(|last| last != self.ui.focused)
+            && key_group.is_some_and(|group| group != self.ui.focused)
+            && let Some(id) = ctx.memory(|memory| memory.focused())
+        {
+            ctx.memory_mut(|memory| memory.surrender_focus(id));
+        }
+        // Known before anything draws, so header elements of a native window (the ≡ menu, the
+        // Timeline's sequence tabs), drawn before its bodies, carry that window too.
+        self.auto.windows = self
+            .dock_windows
+            .iter()
+            .filter_map(|(panel, viewport)| self.ui.dock.floating.iter().position(|window| window.contains(panel)).map(|index| (*viewport, index)))
+            .collect();
+        let maximized = self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel));
+        let seq_width = dock::sequence_tabs_width(ui, &seqs);
+        let workspace = Arc::clone(&self.dock_live);
+        let specs = std::mem::replace(&mut self.dock_specs, Tracked::new(FilmSpecs::default()));
+        // FilmCraft's window is all groups: drops on all four window edges, Ctrl/Cmd-drag undocks,
+        // a release over no target cancels, and a floating window's title bar only moves it.
+        let config = DockConfig::default()
+            .side_edge_zones(true)
+            .new_dock_zones(false)
+            .maximize_item(true)
+            .close_others_item(true)
+            .float_on_empty_drop(false)
+            .title_bar_docks(false)
+            .wheel_selects_tabs(true);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("filmcraft-dock-area"));
+        child.set_clip_rect(body.intersect(ui.clip_rect()));
+        // One request per bring-forward: a later pass does not take the stacking back.
+        let focus = self.dock_focus.take();
+        let mut panels = FilmPanels {
+            app: self,
+            seqs,
+            seq_width,
+            tokens: t,
+            seq_actions: Vec::new(),
+            menu: None,
+            seq_menu_viewport: egui::ViewportId::ROOT,
+            bodies: Vec::new(),
+            menu_windows: Vec::new(),
+            pressed: None,
+            blocked,
+        };
+        let mut area = DockArea::new("Panels", Bind::given(workspace), &specs, &mut panels, config);
+        if let Some(panel) = maximized {
+            area = area.maximized(panel);
+        }
+        if let Some(panel) = focus {
+            area = area.focus(panel);
+        }
+        let output = area.show(&mut child);
+        let FilmPanels { seq_actions, mut menu, seq_menu_viewport, bodies, pressed, .. } = panels;
+        self.dock_specs = specs;
+        ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
+        self.dock_windows = output.windows;
+        self.register_dock_sources(&ctx, &output.sources);
+        if output.float_space.is_some() {
+            self.dock_float_space = output.float_space;
+        }
+        // next reports the group holding key focus every pass; only a move of that focus to another
+        // group focuses its panel, so a panel the app focused itself (Source after `source.open`,
+        // a reopened panel) keeps the focus while key focus stays where it was.
+        let last_focused = ctx.data(|data| data.get_temp::<Option<PanelKind>>(key_focus_id())).flatten();
+        ctx.data_mut(|data| data.insert_temp(key_focus_id(), output.focused));
+        let focus_moved = output.focused.filter(|panel| last_focused != Some(*panel));
+        if let Some(panel) = pressed.or(output.picked).or(focus_moved) {
+            self.ui.focused = panel;
+            if panel == PanelKind::Timeline {
+                self.raise_program_for_timeline();
             }
-            actions.extend(chrome.actions);
         }
-        if maximized.is_none() {
-            self.ui.dock = dock;
+        // The fallback delivers a drop once. Keep it until root input drains it, even if
+        // another layout pass publishes an empty output before the next root frame.
+        self.window_files.extend(output.window_files);
+        if !self.window_files.is_empty() {
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
-        for group in &groups {
-            if let Some(panel) = group.panels.get(group.active).copied() {
-                self.panel_body(ui, panel, group.content);
+        if let Some(error) = output.error {
+            self.ui.status = error.error.to_string();
+        }
+        for event in output.events {
+            match event {
+                DockEvent::ToggleMaximize { panel, .. } => {
+                    panels::keyboard::toggle_maximize(self, panel);
+                }
+                // FilmCraft asks for no destination: a panel or group moves by its tab or bar.
+                DockEvent::PanelCommand { .. } => self.ui.status = tl!("Drag the tab to move the panel").into(),
+                _ => {}
             }
         }
-        for group in &groups {
-            dock::paint_group_focus(ui, group, self.ui.focused, &t);
-        }
-        let floating_order = self.floating_order(&ctx);
-        for index in floating_order.into_iter().filter(|_| maximized.is_none()) {
-            if let Some(target) = self.floating_group(&ctx, index, &seqs, &mut actions) {
-                targets.push(target);
+        // The area's actions include the picks its focus request and the user's tab clicks made,
+        // already in front: they ask for no new focus, or the request would repeat every pass.
+        // A body's requests are the app's own and do.
+        let focus = self.dock_focus;
+        let taken = output.actions.len();
+        for (index, action) in output.actions.into_iter().chain(output.requested).enumerate() {
+            for action in self.close_keeping_timeline(action) {
+                if let Err(error) = self.dock_command(&ctx, action) {
+                    self.ui.status = error;
+                }
+            }
+            if index + 1 == taken {
+                self.dock_focus = focus;
             }
         }
-        for action in layout_actions {
-            let _ = self.dock_command(&ctx, action);
-        }
-        for action in actions {
-            match action {
-                DockAction::Activate(panel) => {
-                    let _ = self.dock_command(&ctx, Action::Activate { panel });
-                }
-                DockAction::Close(panel) => {
-                    let _ = self.dock_command(&ctx, Action::Close { panel });
-                }
-                DockAction::Focus(panel) => self.ui.focused = panel,
-                DockAction::BeginDrag(panel) => {
-                    ctx.data_mut(|data| data.insert_temp(drag_id(), panel));
-                }
-                DockAction::OpenSequence(id) => {
-                    let _ = self.dock_command(&ctx, Action::Activate { panel: PanelKind::Timeline });
-                    if self.session.state.active_sequence.map(|item| item.0) != Some(id)
-                        && let Err(error) = self.session.execute("sequence.open", json!({"item": id}))
-                    {
-                        self.ui.status = error.to_string();
+        for action in seq_actions {
+            let result = match action {
+                SeqAction::Open(id) => {
+                    let _ = self.apply_dock(Action::activate(PanelKind::Timeline));
+                    self.ui.focused = PanelKind::Timeline;
+                    if self.session.state.active_sequence.map(|item| item.0) == Some(id) {
+                        Ok(Value::Null)
+                    } else {
+                        self.session.execute("sequence.open", json!({"item": id}))
                     }
                 }
-                DockAction::CloseSequence(id) => {
-                    if let Err(error) = self.session.execute("sequence.close", json!({"item": id})) {
-                        self.ui.status = error.to_string();
+                SeqAction::Close(id) => self.session.execute("sequence.close", json!({"item": id})),
+                SeqAction::Move(id, index) => self.session.execute("sequence.moveTab", json!({"item": id, "index": index})),
+                SeqAction::Menu(id, pos) => {
+                    menu = Some((PanelKind::Timeline, pos, seq_menu_viewport));
+                    self.ui.focused = PanelKind::Timeline;
+                    if self.session.state.active_sequence.map(|item| item.0) == Some(id) {
+                        Ok(Value::Null)
+                    } else {
+                        self.session.execute("sequence.open", json!({"item": id}))
                     }
                 }
-                DockAction::MoveSequence(id, index) => {
-                    if let Err(error) = self.session.execute("sequence.moveTab", json!({"item": id, "index": index})) {
-                        self.ui.status = error.to_string();
-                    }
-                }
-                DockAction::PanelMenu(panel, pos) => {
-                    let frame = ctx.cumulative_frame_nr();
-                    ctx.data_mut(|data| {
-                        data.insert_temp(egui::Id::new("panel-menu"), (panel, pos));
-                        data.insert_temp(egui::Id::new("panel-menu-opened"), frame);
-                    });
-                }
-            }
-        }
-        self.panel_drag(&ctx, body, &targets);
-        panels::panel_menu_popup(self, ui);
-        self.cancel_value_drag(ui.ctx());
-    }
-
-    fn floating_group(&mut self, ctx: &egui::Context, index: usize, seqs: &dock::SeqTabs, actions: &mut Vec<DockAction>) -> Option<DropTarget<PanelKind>> {
-        let floating = self.ui.floating.get(index)?.clone();
-        let panel = *floating.panels.first()?;
-        let rect = floating_rect(&floating, ctx.content_rect());
-        let t = self.tokens;
-        let id = egui::Id::new(("floating-panel", panel.id()));
-        let mut output = None;
-        egui::Area::new(id).order(egui::Order::Middle).fixed_pos(rect.min).constrain(false).interactable(true).show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
-            let compact = floating.panels.len() == 1 && panel.compact();
-            let header = if compact { 8.0 } else { t.tab_h };
-            let strip = Rect::from_min_size(rect.min, vec2(rect.width(), header));
-            let response = ui.interact(strip, id.with("move"), Sense::drag());
-            self.auto.add_response(&format!("panel.float.{index}.move"), &response, "Move floating panel");
-            let mut next = if response.dragged() { rect.translate(response.drag_delta()) } else { rect };
-            let group = Group {
-                path: format!("f{index}"),
-                rect,
-                content: Rect::from_min_max(pos2(rect.min.x, rect.min.y + header), rect.max),
-                panels: floating.panels.clone(),
-                active: floating.active,
             };
-            let chrome = dock::draw_group_chrome_details(ui, &group, seqs, &t, &mut self.auto);
-            actions.extend(chrome.actions);
-            if let Some(active) = group.panels.get(group.active).copied() {
-                self.panel_body(ui, active, group.content);
+            if let Err(error) = result {
+                self.ui.status = error.to_string();
             }
-            ui.painter().rect_stroke(rect, t.radius, Stroke::new(1.0, t.focus), StrokeKind::Outside);
-            let grip = Rect::from_min_max(rect.max - vec2(14.0, 14.0), rect.max);
-            let response = ui.interact(grip, id.with("resize"), Sense::click_and_drag());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), tl!("Resize floating panel")));
-            self.auto.add_response(&format!("panel.float.{index}.resize"), &response, "Resize floating panel");
-            for step in 0..3 {
-                let offset = 4.0 + step as f32 * 4.0;
-                ui.painter()
-                    .line_segment([pos2(rect.max.x - offset, rect.max.y - 2.0), pos2(rect.max.x - 2.0, rect.max.y - offset)], Stroke::new(1.0, t.text_faint));
+        }
+        if let Some((panel, pos, viewport)) = menu {
+            let frame = ctx.cumulative_frame_nr();
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::unique("panel-menu"), (panel, pos, viewport));
+                data.insert_temp(egui::Id::unique("panel-menu-opened"), frame);
+            });
+        }
+        // a menu left in a window that has since closed has nowhere to draw
+        ctx.data_mut(|data| {
+            let id = egui::Id::unique("panel-menu");
+            let gone = data
+                .get_temp::<(PanelKind, egui::Pos2, egui::ViewportId)>(id)
+                .is_some_and(|(_, _, owner)| owner != egui::ViewportId::ROOT && !self.dock_windows.iter().any(|(_, viewport)| *viewport == owner));
+            if gone {
+                data.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id);
             }
-            if response.hovered() || response.dragged() {
-                ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-            }
-            let delta = floating_resize_delta(ui, &response);
-            if response.has_focus() {
-                ui.painter().rect_stroke(grip, 2.0, Stroke::new(1.5, t.focus), StrokeKind::Inside);
-            }
-            if delta != egui::Vec2::ZERO {
-                next = Rect::from_min_size(next.min, (next.size() + delta).max(vec2(160.0, 100.0)));
-            }
-            if next != rect {
-                let _ = self.dock_command(ctx, Action::MoveFloating { panel, rect: [next.min.x, next.min.y, next.width(), next.height()] });
-            }
-            dock::paint_group_focus(ui, &group, self.ui.focused, &t);
-            output = target(&group, chrome.tabs, false);
+            data.insert_temp(app_focus_id(), self.ui.focused);
         });
-        output
+        panels::panel_menu_popup(self, ui);
     }
 
-    fn panel_drag(&mut self, ctx: &egui::Context, body: Rect, targets: &[DropTarget<PanelKind>]) {
-        let Some(panel) = ctx.data(|data| data.get_temp::<PanelKind>(drag_id())) else { return };
-        let canceled =
-            ctx.input(|input| input.key_pressed(egui::Key::Escape) || !input.focused || (!input.pointer.primary_down() && !input.pointer.primary_released()));
-        if canceled || (!self.ui.dock.contains(panel) && !self.ui.floating.iter().any(|group| group.panels.contains(&panel))) {
-            ctx.data_mut(|data| data.remove::<PanelKind>(drag_id()));
+    /// Automation ids for the dock area's gesture sources: `panel.tab.<Panel>`, `panel.drag.<Panel>`
+    /// (the group's drag bar), `panel.float.<n>.move` and `.resize` (`.resize.<Edge>` for the other
+    /// grips), `dock.gutter.<path>` (`a`/`b` per split level), and next's column dividers as
+    /// `dock.groups.<Panel>` and `dock.columnEdge.<Panel>`. A source in a floating window's own OS
+    /// window is registered in that window. The source's node id is the element's widget id, so
+    /// key focus on a divider or grip maps to its element; [`divider_focused`] reads it.
+    fn register_dock_sources(&mut self, ctx: &egui::Context, sources: &[DockSource<PanelKind>]) {
+        // The floating windows the area just showed in their own OS windows.
+        self.auto.windows = self
+            .dock_windows
+            .iter()
+            .filter_map(|(panel, viewport)| self.ui.dock.floating.iter().position(|window| window.contains(panel)).map(|index| (*viewport, index)))
+            .collect();
+        let window = |panel: &PanelKind| self.ui.dock.floating.iter().position(|window| window.contains(panel));
+        let mut found = Vec::new();
+        for source in sources {
+            let (id, label, grip) = match &source.kind {
+                SourceKind::Tab(panel) => (format!("panel.tab.{}", panel.id()), panel.title(), false),
+                SourceKind::GroupBar(panel) => (format!("panel.drag.{}", panel.id()), "Move panel", false),
+                SourceKind::WindowGrip(panel) => match window(panel) {
+                    Some(index) => (format!("panel.float.{index}.move"), "Move floating panel", false),
+                    None => continue,
+                },
+                SourceKind::WindowResize(panel, edge) => match window(panel) {
+                    Some(index) if *edge == ResizeEdge::BottomRight => (format!("panel.float.{index}.resize"), "Resize floating panel", true),
+                    Some(index) => (format!("panel.float.{index}.resize.{edge:?}"), "Resize floating panel", true),
+                    None => continue,
+                },
+                SourceKind::Divider(DividerKind::Split(path)) => (format!("dock.gutter.{}", path_id(path)), "gutter", true),
+                SourceKind::Divider(DividerKind::Groups(panel)) => (format!("dock.groups.{}", panel.id()), "gutter", true),
+                SourceKind::Divider(DividerKind::ColumnEdge(panel)) => (format!("dock.columnEdge.{}", panel.id()), "gutter", true),
+                _ => continue,
+            };
+            found.push((DockHit { id, rect: source.rect, widget: source.id, viewport: source.viewport, grip }, label));
+        }
+        for (hit, label) in &found {
+            self.auto.add_in(hit.viewport, &hit.id, hit.rect, label);
+            if let Some(element) = self.auto.elements.last_mut() {
+                element.widget_id = Some(format!("{:016x}", hit.widget.value()));
+                element.response_id = Some(hit.widget);
+            }
+        }
+        let hits: Vec<DockHit> = found.into_iter().map(|(hit, _)| hit).collect();
+        ctx.data_mut(|data| data.insert_temp(sources_id(), hits));
+    }
+
+    /// The Timeline's tabs stand for its open sequences: a close from the dock area (Close Panel,
+    /// a group, window or Close Other Panels item) that would remove the Timeline while a sequence
+    /// is open closes the active sequence instead, and the Timeline stays. The other panels the
+    /// action covers still close.
+    fn close_keeping_timeline(&mut self, action: Action<PanelKind>) -> Vec<Action<PanelKind>> {
+        if self.session.state.active_sequence.is_none() {
+            return vec![action];
+        }
+        let closed = match self.ui.dock.closed_by(&action) {
+            Ok(closed) if closed.contains(&PanelKind::Timeline) => closed,
+            _ => return vec![action],
+        };
+        if let Err(error) = self.session.execute("sequence.close", json!({})) {
+            self.ui.status = error.to_string();
+        }
+        closed.into_iter().filter(|panel| *panel != PanelKind::Timeline).map(Action::close).collect()
+    }
+}
+
+/// FilmCraft's side of the dock area for one pass.
+struct FilmPanels<'a> {
+    app: &'a mut FilmcraftApp,
+    seqs: SeqTabs,
+    /// The width the sequence tabs take in the Timeline's group header.
+    seq_width: f32,
+    tokens: Tokens,
+    seq_actions: Vec<SeqAction>,
+    /// The ≡ button clicked: its panel and where its menu opens.
+    menu: Option<(PanelKind, egui::Pos2, egui::ViewportId)>,
+    /// The viewport of the Timeline header whose sequence tab menu was opened this pass.
+    seq_menu_viewport: egui::ViewportId,
+    bodies: Vec<(PanelKind, Rect, egui::LayerId)>,
+    /// The floating OS windows whose ≡ menu was drawn this pass.
+    menu_windows: Vec<egui::ViewportId>,
+    /// The panel whose body a pointer press landed in this pass.
+    pressed: Option<PanelKind>,
+    /// A modal dialog is open: the panels in native windows take no input.
+    blocked: bool,
+}
+
+impl FilmPanels<'_> {
+    /// While a modal is open, `ui` in a native window is disabled: egui's `Modal` blocks only the
+    /// main window.
+    fn block_native(&self, ui: &mut egui::Ui) {
+        if self.blocked && ui.ctx().viewport_id() != egui::ViewportId::ROOT {
+            ui.disable();
+        }
+    }
+}
+
+impl DockPanels<PanelKind> for FilmPanels<'_> {
+    fn body(&mut self, panel: &PanelKind, ui: &mut egui::Ui, cx: &mut BodyCx<'_>) {
+        crate::framework::app_style(ui);
+        let t = self.tokens;
+        let rect = ui.max_rect();
+        // The dock area also measures a group in an invisible sizing pass of the same frame. The
+        // body fills its frame either way; only the shown pass draws the panel, registers its
+        // automation elements and acts on input.
+        if ui.is_sizing_pass() {
+            ui.allocate_rect(rect, Sense::hover());
             return;
         }
-        let Some(pos) = ctx.pointer_latest_pos() else { return };
-        let force_float = ctx.input(|input| input.modifiers.command);
-        let edge = (!force_float).then(|| workspace_edge(body, pos, targets)).flatten();
-        let proposal = (!force_float && edge.is_none()).then(|| resolve_drop(&panel, pos, targets)).flatten();
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
+        // Every panel sits on FilmCraft's own panel background in each theme (`Tokens::panel_bg`,
+        // the dock background production gave its bodies), under the panel's content; the dock's
+        // frame, tabs and header around it stay the dock's.
+        ui.painter().rect_filled(rect.union(cx.rect), 0.0, t.panel_bg);
+        self.block_native(ui);
+        self.bodies.push((*panel, rect, ui.layer_id()));
+        // A panel in its own OS window draws in that window's coordinates: its automation
+        // elements carry the window so they are not matched against main-window points.
+        let viewport = ui.ctx().viewport_id();
+        if viewport != egui::ViewportId::ROOT && !self.menu_windows.contains(&viewport) {
+            self.menu_windows.push(viewport);
+            panels::panel_menu_area(self.app, ui);
+        }
+        self.app.auto.viewport = viewport;
+        self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
+        if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(rect) {
+            self.pressed = Some(*panel);
+        }
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        // The Timeline is FilmCraft's document view: Tab and the edit chords stay in egui for it.
+        if *panel == PanelKind::Timeline {
+            crate::framework::host_canvas(ui.ctx(), child.scope_id());
+            if viewport != egui::ViewportId::ROOT {
+                self.app.native_timeline_file_drop(&child, rect);
+            }
+        }
+        panels::show(self.app, &mut child, *panel, rect);
+        // The end-of-pass IME check of the Program monitor's text editor in its own OS window.
+        if *panel == PanelKind::Program && viewport != egui::ViewportId::ROOT {
+            self.app.finish_ime_window(ui.ctx());
+        }
+        self.app.auto.viewport = egui::ViewportId::ROOT;
+        // The body fills its frame; allocating it lets a floated panel take its full size.
+        ui.allocate_rect(rect, Sense::hover());
+        // Painted after the body so child backgrounds cannot hide the focus outline (#1075).
+        if self.app.ui.focused == *panel {
+            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+        }
+    }
+
+    /// The Timeline's sequence tabs while the Timeline is shown, then the ≡ panel menu of the
+    /// group's shown panel. The sequence tabs take at most two thirds of the room, so the group's
+    /// own tabs keep some; past that they scroll into their » list.
+    fn group_header(&mut self, panels: &[PanelKind], active: usize, ui: &mut egui::Ui, _cx: &mut BodyCx<'_>) {
+        let Some(active) = panels.get(active).copied() else { return };
+        crate::framework::app_style(ui);
         let t = self.tokens;
-        if let Some((_, _, preview)) = edge {
-            painter.rect_filled(preview.shrink(2.0), t.radius, t.focus.gamma_multiply(0.2));
-            painter.rect_stroke(preview.shrink(2.0), t.radius, Stroke::new(2.0, t.focus), StrokeKind::Inside);
+        let sequences = active == PanelKind::Timeline && !self.seqs.open.is_empty();
+        let width = if sequences { (self.seq_width + MENU_W).min(ui.available_width() * 2.0 / 3.0).max(MENU_W) } else { MENU_W };
+        let (header, _) = ui.allocate_exact_size(vec2(width, t.tab_h), Sense::hover());
+        // A sizing pass only measures the header: its widgets and their elements are the shown pass's.
+        if ui.is_sizing_pass() {
+            return;
         }
-        if let Some(proposal) = &proposal {
-            painter.rect_filled(proposal.preview.shrink(2.0), t.radius, t.focus.gamma_multiply(0.2));
-            painter.rect_stroke(proposal.preview.shrink(2.0), t.radius, Stroke::new(2.0, t.focus), StrokeKind::Inside);
-            if let Some(mark) = proposal.insertion {
-                painter.rect_filled(mark, 0.0, t.focus);
-            }
+        self.block_native(ui);
+        // A press on the header's own widgets (a sequence tab, the ≡ button) is no press on the
+        // group's surface in next, so the group does not take the focus: the app focuses the
+        // group's shown panel itself, as a press anywhere in the group did in production.
+        if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(header) {
+            self.pressed = Some(active);
         }
-        let title = painter.layout_no_wrap(panel.title().to_owned(), crate::theme::Tokens::ui(12.0), Color32::WHITE);
-        let ghost = Rect::from_min_size(pos + vec2(12.0, 10.0), title.size() + vec2(16.0, 8.0));
-        painter.rect_filled(ghost, 4.0, t.focus.gamma_multiply(0.85));
-        painter.galley(ghost.min + vec2(8.0, 4.0), title, Color32::WHITE);
-        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-        ctx.request_repaint();
-        if ctx.input(|input| input.pointer.primary_released()) {
-            ctx.data_mut(|data| data.remove::<PanelKind>(drag_id()));
-            if let Some((_, zone, _)) = edge {
-                if crate::menus::invoke(self, ctx, "window.dockPanel", json!({"panel": panel.id(), "zone": zone})).is_ok() {
-                    self.ui.focused = panel;
-                }
-                return;
+        let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
+        if sequences {
+            let strip = Rect::from_min_max(header.min, egui::pos2(menu.min.x, header.max.y));
+            let actions = dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto);
+            if actions.iter().any(|a| matches!(a, SeqAction::Menu(..))) {
+                self.seq_menu_viewport = ui.ctx().viewport_id();
             }
-            let action = match proposal {
-                Some(proposal) => Some(Action::Move { panel, anchor: proposal.anchor, placement: proposal.placement }),
-                None if force_float || !targets.iter().any(|target| target.rect.contains(pos)) => {
-                    Some(Action::Float { panel, rect: [pos.x - 40.0, pos.y - 12.0, 420.0, 320.0] })
-                }
-                None => None,
-            };
-            if let Some(action) = action
-                && self.dock_command(ctx, action).is_ok()
-            {
-                self.ui.focused = panel;
-            }
+            self.seq_actions.extend(actions);
+        }
+        let rect = Rect::from_center_size(menu.center(), vec2(18.0, 18.0));
+        let response = ui.interact(rect, egui::Id::unique(("panel-menu-button", active.id())), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
+        self.app.auto.add_response(&format!("panel.menu.{}", active.id()), &response, "panel menu");
+        let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
+        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), Icon::Hamburger, color);
+        dock::paint_widget_focus(ui.painter(), &response, &t);
+        if response.clicked() {
+            self.app.ui.focused = active;
+            self.menu = Some((active, rect.left_bottom(), ui.ctx().viewport_id()));
         }
     }
 }
 
-/// Width of the band along the workspace border that docks beside the whole layout.
-const EDGE_BAND: f32 = 8.0;
-
-/// The outermost drop zone: near the workspace border a drop splits the root, not the group
-/// under the pointer. A floating group over the border (it rejects splits) keeps the drop.
-fn workspace_edge(body: Rect, pos: egui::Pos2, targets: &[DropTarget<PanelKind>]) -> Option<(Zone, &'static str, Rect)> {
-    if !body.is_finite() || !body.contains(pos) || targets.iter().any(|target| !target.allow_splits && target.rect.contains(pos)) {
-        return None;
-    }
-    let band = EDGE_BAND.min(body.width() / 4.0).min(body.height() / 4.0);
-    let edges = [
-        (pos.x - body.left(), Zone::Left, "left"),
-        (body.right() - pos.x, Zone::Right, "right"),
-        (pos.y - body.top(), Zone::Top, "top"),
-        (body.bottom() - pos.y, Zone::Bottom, "bottom"),
-    ];
-    let (distance, zone, name) = edges.into_iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
-    if distance > band {
-        return None;
-    }
-    let size = body.size() * 0.25;
-    let preview = match zone {
-        Zone::Left => Rect::from_min_size(body.min, vec2(size.x, body.height())),
-        Zone::Right => Rect::from_min_max(pos2(body.right() - size.x, body.top()), body.max),
-        Zone::Top => Rect::from_min_size(body.min, vec2(body.width(), size.y)),
-        Zone::Bottom | Zone::Center => Rect::from_min_max(pos2(body.left(), body.bottom() - size.y), body.max),
-    };
-    Some((zone, name, preview))
-}
-
-fn target(group: &Group, mut tabs: Vec<(PanelKind, Rect)>, allow_splits: bool) -> Option<DropTarget<PanelKind>> {
-    let strip = Rect::from_min_max(group.rect.min, pos2(group.rect.max.x, group.content.min.y));
-    // A compact grip still identifies the source group to the shared resolver.
-    for panel in &group.panels {
-        if !tabs.iter().any(|(candidate, _)| candidate == panel) {
-            tabs.push((*panel, Rect::NOTHING));
+/// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
+/// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
+fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+    fn find(node: &Node<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+        match node {
+            Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),
+            Node::Dock { columns, .. } => columns
+                .iter()
+                .filter(|column| !column.iconic)
+                .flat_map(|column| column.groups.iter())
+                .find(|group| !group.minimized && group.panels.contains(&panel))
+                .map(|group| group.panels.clone()),
+            Node::Split { first, second, .. } => find(first, panel).or_else(|| find(second, panel)),
+            _ => None,
         }
     }
-    Some(DropTarget { anchor: *group.panels.get(group.active)?, rect: group.rect, tab_strip: Some(strip), tabs, allow_splits, accepts_tabs: true })
+    layout.root.as_ref().and_then(|root| find(root, panel))
 }
 
-/// A corner is a two-axis resize control; focused arrows belong to it and Tab moves on.
-fn floating_resize_delta(ui: &mut egui::Ui, response: &egui::Response) -> egui::Vec2 {
-    if response.drag_started() {
-        response.request_focus();
+#[cfg(test)]
+mod tests {
+    use craft_behavior::dock::{Action, DockEdge, Node, SplitSize, Target};
+    use craft_behavior::flow::Axis;
+
+    use super::tab_group;
+    use crate::dock::{Layout, PanelKind};
+
+    /// The Timeline beside a dock column holding Properties and Program, that group minimized or
+    /// the column collapsed to icons as asked.
+    fn beside_dock(minimized: bool, iconic: bool) -> Layout {
+        let group = Node::tabs(vec![PanelKind::Properties, PanelKind::Program], 0);
+        let root = Node::split(Axis::X, SplitSize::Ratio(0.5), Node::tabs(vec![PanelKind::Timeline], 0), group);
+        let mut layout = Layout::new(Some(root), Vec::new());
+        layout.apply(Action::move_group(PanelKind::Program, Target::new_dock(DockEdge::End))).unwrap();
+        if minimized {
+            layout.apply(Action::set_minimized(PanelKind::Program, true)).unwrap();
+        }
+        if iconic {
+            layout.apply(Action::set_iconic(PanelKind::Program, true)).unwrap();
+        }
+        layout
     }
-    let mut delta = if response.dragged() { response.drag_delta() } else { egui::Vec2::ZERO };
-    if response.has_focus() {
-        ui.memory_mut(|memory| {
-            memory.set_focus_lock_filter(response.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })
-        });
-        ui.input_mut(|input| {
-            for (key, amount) in [
-                (egui::Key::ArrowLeft, vec2(-8.0, 0.0)),
-                (egui::Key::ArrowRight, vec2(8.0, 0.0)),
-                (egui::Key::ArrowUp, vec2(0.0, -8.0)),
-                (egui::Key::ArrowDown, vec2(0.0, 8.0)),
-            ] {
-                if input.consume_key(egui::Modifiers::NONE, key) {
-                    delta += amount;
-                }
-            }
-        });
+
+    /// #3653: Program is fronted only from an expanded group that shows one tab at a time, so a
+    /// Timeline click never expands what the user collapsed.
+    #[test]
+    fn program_is_fronted_only_from_an_expanded_tab_group() {
+        assert_eq!(tab_group(&beside_dock(false, false), PanelKind::Program), Some(vec![PanelKind::Properties, PanelKind::Program]));
+        assert_eq!(tab_group(&beside_dock(true, false), PanelKind::Program), None, "a minimized group");
+        assert_eq!(tab_group(&beside_dock(false, true), PanelKind::Program), None, "an icon-only column");
+        let accordion: Layout = serde_json::from_value(serde_json::json!({"root": {"Stack": {"entries": [
+            {"panel": "Properties", "open": false, "height": null}, {"panel": "Program", "open": false, "height": null}]}}, "floating": []}))
+        .unwrap();
+        assert_eq!(tab_group(&accordion, PanelKind::Program), None, "an accordion");
     }
-    if response.enabled() { delta } else { egui::Vec2::ZERO }
 }

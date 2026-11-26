@@ -121,7 +121,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if show_name {
             ui.painter().text(pos2(r.center().x, vr.max.y + 2.0), Align2::CENTER_TOP, &caption, Tokens::ui(11.0), t.text_dim);
         }
-        let resp = ui.interact(r, egui::Id::new(("timecode-row", i)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("timecode-row", i)), Sense::click());
         elems.push((format!("timecode.row.{i}"), vr, value.clone()));
         egui::Popup::context_menu(&resp).show(|ui| {
             ui.set_min_width(200.0);
@@ -169,7 +169,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // "+" adds a row (same settings as the last one, Duration by default)
     let ar = Rect::from_min_size(pos2(rect.max.x - 28.0, rect.max.y - 26.0), vec2(22.0, 22.0));
-    let aresp = ui.interact(ar, egui::Id::new("timecode-add"), Sense::click());
+    let aresp = ui.interact(ar, egui::Id::unique("timecode-add"), Sense::click());
     ui.painter().text(ar.center(), Align2::CENTER_CENTER, "+", Tokens::ui(16.0), if aresp.hovered() { t.tab_text_active } else { t.icon });
     elems.push(("timecode.addRow".into(), ar, "Add Row".into()));
     if aresp.on_hover_text(tl!("Add a timecode row")).clicked() {

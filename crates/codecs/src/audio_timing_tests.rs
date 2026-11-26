@@ -22,7 +22,7 @@ use crate::{MkvSource, Mp4Source};
 fn aac(rate: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
     let tone = |hz: f32| (0..rate as usize).map(|i| 0.5 * (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin()).collect::<Vec<f32>>();
     let (l, r) = (tone(440.0), tone(660.0));
-    let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 2, 160_000)).unwrap();
+    let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 2, 160_000)).unwrap();
     let mut units = enc.encode(&[&l, &r]);
     units.extend(enc.flush());
     (enc.audio_specific_config(), units)
@@ -50,6 +50,8 @@ fn mkv(asc: &[u8], rate: u32, units: &[Vec<u8>], lacing: LacingMode, gap: usize,
     let mut spec = TrackSpec::new(TrackKind::Audio, "A_AAC");
     spec.codec_private = asc.to_vec();
     spec.audio = Some((rate as f64, 2, None));
+    // an access unit's duration, rounded to the nanosecond; without it the writer laces nothing
+    spec.default_duration_ns = Some((1024 * 1_000_000_000 + u64::from(rate) / 2) / u64::from(rate));
     let opts = MuxOptions { lacing, ..MuxOptions::default() };
     assert_eq!(opts.timestamp_scale, 1_000_000, "1 ms timestamps");
     let mut w = MkvWriter::new(Cursor::new(Vec::new()), vec![spec], opts).unwrap();
@@ -116,6 +118,8 @@ fn matroska_millisecond_stamps_play_back_to_back() {
         let frames = units.len().saturating_sub(1) * 1024;
         for lacing in [LacingMode::None, LacingMode::Xiph] {
             let bytes = mkv(&asc, rate, &units, lacing, usize::MAX, 0);
+            let laced = filmcraft_matroska::open(&bytes[..]).unwrap().tracks.iter().any(|t| t.samples.iter().any(|s| s.lace > 0));
+            assert_eq!(laced, !matches!(lacing, LacingMode::None), "{rate} Hz, {lacing:?}: laced blocks");
             let src = MkvSource::open("tone.mkv", bytes.clone()).unwrap();
             let got = played(&src, rate, frames);
             let (n, first) = mismatches(&got, &want, 0);

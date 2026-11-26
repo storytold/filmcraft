@@ -6,28 +6,29 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# The one crate allowed to contain `unsafe` (OS media FFI; AGENTS.md §0.3, docs/adr/0001-platform-ffi.md).
+# The one crate allowed to contain `unsafe` (OS media FFI; AGENTS.md rule 13, `unsafe`, docs/adr/0001-platform-ffi.md).
 # The workspace lints, except that `unsafe_code` is `deny` instead of `forbid`: only the FFI modules
 # opt in with `#[allow(unsafe_code)]`, and every `unsafe` block carries a `// SAFETY:` comment.
 [lints.rust]
 unsafe_code = "deny"
 
 [lints.clippy]
+cognitive_complexity = "deny"
+too_many_arguments = "deny"
+wildcard_imports = "deny"
 dbg_macro = "warn"
 todo = "warn"
-too_many_arguments = "allow"
 needless_range_loop = "allow"
 type_complexity = "allow"
 undocumented_unsafe_blocks = "deny"
 
 [dependencies]
 filmcraft-bitstream = { workspace = true }
+craft-video = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
-filmcraft-h264 = { workspace = true }
-filmcraft-hevc = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
@@ -60,6 +61,7 @@ libloading = "0.8"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+tempfile = "3"
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-project = { workspace = true }

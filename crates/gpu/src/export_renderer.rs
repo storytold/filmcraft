@@ -13,7 +13,7 @@
 
 use crate::{GpuCompositor, prepare};
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::plan::{FramePlan, plan_frame};
+use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
 
@@ -111,8 +111,22 @@ impl ExportRenderer {
                 if wgpu::Instance::enabled_backend_features().is_empty() {
                     return None;
                 }
-                let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+                let instance = crate::adapter::native_instance();
+                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
+                // overrides it, as for the window). With no preference the first adapter listed
+                // can be an integrated GPU whose read-back memory is uncached.
+                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+                // the adapter `request_adapter` would return, except where that one's driver is
+                // known to crash creating the device (`adapter::choose`); among the backends
+                // `WGPU_BACKEND` names, as for the window, when this instance has any of them
+                let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+                if let Some(named) = wgpu::Backends::from_env()
+                    && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+                {
+                    adapters.retain(|a| named.contains(a.get_info().backend.into()));
+                }
+                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
@@ -129,14 +143,20 @@ impl ExportRenderer {
         Some(Self { _instance: instance, device, queue, compositor })
     }
 
+    /// What this renderer's device runs: frames are planned with it, here and by the export
+    /// before it takes this renderer.
+    pub fn caps(&self) -> DeviceCaps {
+        self.compositor.caps()
+    }
+
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-        let plan = plan_frame(project, seq, t, opts, sources);
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
         match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
-            FramePlan::Layers { .. } => {
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
                     return None;
                 }
@@ -149,8 +169,37 @@ impl ExportRenderer {
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
-            // Transitions: the export path leaves them to the CPU reference renderer.
-            FramePlan::Composite { .. } => None,
+        }
+    }
+
+    /// One frame as `render(..)` followed by `Image::over_black_rgba8` would make it (opaque
+    /// 8-bit sRGB RGBA at the render size), for an export that needs nothing else done to the
+    /// picture: composited and encoded on the GPU, without the float frame. `None` when this
+    /// frame must go to the CPU renderer.
+    pub fn render_rgba8(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        match &plan {
+            // Already the CPU image: encode it here.
+            FramePlan::Image(img) => Some((img.w, img.h, img.over_black_rgba8())),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = prepare(&plan);
+                let (w, h, px) = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some((w as usize, h as usize, px))
+            }
         }
     }
 }
@@ -169,8 +218,8 @@ mod tests {
 
     const EPS: f32 = 1e-4;
 
-    /// A solid colour generator at 320×180 plus a tone generator (mirrors the export tests'
-    /// fixture-free project helper).
+    /// A solid colour generator at 320×180 on V1 (V2 empty) plus a tone generator (mirrors the
+    /// export tests' fixture-free project helper).
     fn project(transform: bool) -> (Arc<Project>, ItemId, SourceMap) {
         let mut p = Project::new("x");
         let g = GeneratorSource::new(
@@ -186,7 +235,7 @@ mod tests {
             p.add_item(
                 &info.name.clone(),
                 Label::Iris,
-                ItemKind::Media(MediaClip {
+                ItemKind::Media(Box::new(MediaClip {
                     media: MediaRef::Generator(g.generator.clone()),
                     info,
                     interpret: Default::default(),
@@ -196,17 +245,18 @@ mod tests {
                     offline: false,
                     proxy: None,
                     identity: None,
-                }),
+                })),
                 None,
             )
         };
         let red = add(&mut p, &g);
         let t = add(&mut p, &tone);
         let seq =
-            p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+            p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 2, 1, None);
         let r = filmcraft_time::FrameRate::FPS_24;
-        let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        let v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
         if transform {
             // Motion + opacity as fixed effects (the way the golden transform scene does it).
             if let Some(clip) = p.sequence_mut(seq).unwrap().video_tracks[0].items.last_mut() {
@@ -264,12 +314,335 @@ mod tests {
         let t = Tick::ZERO;
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "solid fixture must contain a visible picture");
         // The linear premultiplied accumulator should be very close to the CPU float image.
         assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h));
         let max: f32 = cpu.px.iter().zip(&gpu.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
         eprintln!("solid: max |GPU-CPU| linear {max:.6}");
         assert!(max < 0.02, "solid frame differs by {max}");
         assert_parity(&cpu, &gpu, "solid");
+    }
+
+    /// Without an effect stage the renderer says so (`DeviceCaps::NONE`): the export renders a
+    /// frame with an adjustment layer on its own thread (`is_cpu_frame`) instead of taking this
+    /// renderer, and a frame planned for it holds no adjustment step to composite on the CPU here.
+    #[test]
+    fn adjustment_layers_without_an_effect_stage_go_back_to_the_cpu() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export adjustment): no adapter");
+            return;
+        };
+        let (p, seq, m) = project(false);
+        let mut p = Arc::unwrap_or_clone(p);
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let a = p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width: 320, height: 180, rate, duration: rate.tick_of(24) }, None);
+        let mut ti = p.make_track_item(a, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+        let mut e = filmcraft_project::find_effect("proc_amp").unwrap().instance();
+        e.param_mut("brightness").unwrap().value = filmcraft_project::ParamValue::Float(25.0);
+        ti.effects.insert(0, e);
+        p.sequence_mut(seq).unwrap().video_tracks[1].items.push(ti);
+        let (t, opts) = (Tick::ZERO, RenderOptions::default());
+        let cpu = filmcraft_render::render_sequence(&p, seq, t, opts, &m);
+        if r.compositor.fx.is_some() {
+            assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t, opts, r.caps()), "the effect stage runs the adjustment layer");
+            let gpu = r.render(&p, seq, t, opts, &m).expect("GPU rendered the frame");
+            assert_parity(&cpu, &gpu, "adjustment layer");
+            assert_eq!((r.compositor.gpu_adjustments, r.compositor.cpu_adjustments), (1, 0));
+        }
+        r.compositor.fx = None;
+        assert_eq!(r.caps(), DeviceCaps::NONE);
+        assert!(filmcraft_render::plan::is_cpu_frame(&p, seq, t, opts, r.caps()), "no effect stage: the export renders the frame without this renderer");
+        let counts = (r.compositor.gpu_adjustments, r.compositor.cpu_adjustments);
+        // asked anyway, it hands back the CPU renderer's picture, planned as one image
+        let img = r.render(&p, seq, t, opts, &m).expect("the CPU image the frame was planned as");
+        assert_eq!(img.px, cpu.px);
+        assert_eq!((r.compositor.gpu_adjustments, r.compositor.cpu_adjustments), counts, "no adjustment step reached the compositor");
+    }
+
+    /// `g` as a media item of `p`, its source in `m`.
+    fn media_item(p: &mut Project, m: &mut SourceMap, g: GeneratorSource) -> ItemId {
+        let info = g.info().clone();
+        let media = MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        };
+        let item = p.add_item(&info.name, Label::Iris, ItemKind::Media(Box::new(media)), None);
+        m.0.insert(item, Arc::new(g));
+        item
+    }
+
+    /// `item` on video track `track` of `seq` from frame `start` for `frames` frames, scaled to
+    /// the frame; returns the clip.
+    fn put(p: &mut Project, seq: ItemId, track: usize, item: ItemId, start: i64, frames: i64) -> filmcraft_project::ClipId {
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut ti = p.make_track_item(item, TrackKind::Video, rate.tick_of(start), TimeRange::new(Tick::ZERO, rate.tick_of(frames)), rate).unwrap();
+        ti.scale_to_frame = true;
+        let id = ti.id;
+        let q = p.sequence_mut(seq).unwrap();
+        q.video_tracks[track].items.push(ti);
+        q.video_tracks[track].sort();
+        id
+    }
+
+    fn set_param(p: &mut Project, seq: ItemId, clip: filmcraft_project::ClipId, effect: &str, param: &str, v: f64) {
+        let it = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+        it.effect_mut(effect).unwrap().params.get_mut(param).unwrap().value = filmcraft_project::ParamValue::Float(v);
+    }
+
+    /// A full-frame adjustment layer on track `track` of `seq` for frames 0..48 with Proc Amp
+    /// (brightness 25) and Gaussian Blur (6): the kind a device with an effect stage runs as a
+    /// `PlanStep::Adjust`, the blur spreading the picture into any transparent part of the canvas.
+    fn adjustment_layer(p: &mut Project, seq: ItemId, track: usize) {
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let a = p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width: 320, height: 180, rate, duration: rate.tick_of(48) }, None);
+        let clip = put(p, seq, track, a, 0, 48);
+        let it = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+        for (id, param, v) in [("gaussian_blur", "blurriness", 6.0), ("proc_amp", "brightness", 25.0)] {
+            let mut e = filmcraft_project::find_effect(id).unwrap().instance();
+            e.param_mut(param).unwrap().value = filmcraft_project::ParamValue::Float(v);
+            it.effects.insert(0, e);
+        }
+    }
+
+    /// The alpha of `gpu` against the CPU reference's, in 8-bit steps (`assert_parity` compares
+    /// the colour over black, which hides a wrong alpha).
+    fn assert_alpha_parity(cpu: &Image, gpu: &Image, what: &str) {
+        let mut d: Vec<u32> =
+            cpu.px.iter().skip(3).step_by(4).zip(gpu.px.iter().skip(3).step_by(4)).map(|(a, b)| ((a - b).abs() * 255.0).round() as u32).collect();
+        d.sort_unstable();
+        let p99 = d[d.len() * 99 / 100];
+        let max = d.last().copied().unwrap_or(0);
+        eprintln!("{what}: GPU vs CPU alpha p99 {p99}, max {max}");
+        assert!(p99 <= 2 && max <= 8, "{what}: alpha parity p99 {p99}, max {max}");
+    }
+
+    /// A Push under an adjustment layer exports on the GPU (the Push and then the adjustment
+    /// layer, both by the compositor) and matches `render_sequence` over black, forward and
+    /// reversed, at full and half resolution.
+    #[test]
+    fn push_under_an_adjustment_layer_exports_on_the_gpu() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu push + adjustment export): no adapter");
+            return;
+        };
+        if r.caps() == DeviceCaps::NONE {
+            eprintln!("SKIPPED (gpu push + adjustment export): no effect stage on this device");
+            return;
+        }
+        let mut p = Project::new("x");
+        let mut m = SourceMap::default();
+        let ocean = media_item(&mut p, &mut m, GeneratorSource::demo(filmcraft_media::DemoScene::OceanSunset));
+        let blue = media_item(
+            &mut p,
+            &mut m,
+            GeneratorSource::new(
+                Generator::ColorMatte { color: [0.1, 0.4, 0.95, 1.0] },
+                320,
+                180,
+                filmcraft_time::FrameRate::FPS_24,
+                Tick(4 * TICKS_PER_SECOND),
+            ),
+        );
+        let seq =
+            p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 2, 0, None);
+        let a = put(&mut p, seq, 0, ocean, 0, 24);
+        let b = put(&mut p, seq, 0, blue, 24, 24);
+        adjustment_layer(&mut p, seq, 1);
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        for reverse in [false, true] {
+            p.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
+                id: filmcraft_project::TransitionId(1),
+                effect: filmcraft_project::find_effect("push").unwrap().instance(),
+                start: rate.tick_of(18),
+                duration: rate.tick_of(12),
+                from: Some(a),
+                to: Some(b),
+                align: Default::default(),
+                reverse,
+            }];
+            for scale in [1.0, 0.5] {
+                let opts = RenderOptions { scale, ..Default::default() };
+                for f in [20, 24, 27] {
+                    let (t, what) = (rate.tick_of(f), format!("Push + adjustment, reverse {reverse}, scale {scale}, frame {f}"));
+                    assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t, opts, r.caps()), "{what}: takes a GPU renderer");
+                    let before = (r.compositor.gpu_transitions, r.compositor.gpu_adjustments, r.compositor.cpu_adjustments);
+                    let gpu = r.render(&p, seq, t, opts, &m).expect("GPU frame");
+                    let after = (r.compositor.gpu_transitions, r.compositor.gpu_adjustments, r.compositor.cpu_adjustments);
+                    assert_eq!(after, (before.0 + 1, before.1 + 1, before.2), "{what}: the Push and the adjustment layer drawn on the GPU");
+                    let cpu = filmcraft_render::render_sequence(&p, seq, t, opts, &m);
+                    assert_parity(&cpu, &gpu, &what);
+                    let (w8, h8, gpu8) = r.render_rgba8(&p, seq, t, opts, &m).expect("GPU RGBA8 frame");
+                    let after8 = (r.compositor.gpu_transitions, r.compositor.gpu_adjustments, r.compositor.cpu_adjustments);
+                    assert_eq!(after8, (after.0 + 1, after.1 + 1, after.2), "{what}: render_rgba8 runs the Push and adjustment layer on the GPU");
+                    assert_eq!((w8, h8), (gpu.w, gpu.h));
+                    assert_eq!(gpu8, gpu.over_black_rgba8(), "{what}: render_rgba8 matches float frame over black");
+                }
+            }
+        }
+    }
+
+    /// Adjustment layers composited on the GPU match `render_sequence` (not the plan's own CPU
+    /// executor) over a partly transparent canvas, one over another, over an empty canvas, over a
+    /// nested sequence and inside one, at full and half resolution, alpha included.
+    #[test]
+    fn adjustment_layers_match_the_cpu_renderer() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu adjustment parity): no adapter");
+            return;
+        };
+        if r.caps() == DeviceCaps::NONE {
+            eprintln!("SKIPPED (gpu adjustment parity): no effect stage on this device");
+            return;
+        }
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let settings = SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() };
+        // V1 of `seq`: a 160×88 matte at 70 % opacity in the middle, unscaled, so transparent
+        // around it and translucent inside, with its edges on whole pixels at both scales: the
+        // comparison measures the adjustment layer, not how a resampled edge is covered
+        let patch = |p: &mut Project, m: &mut SourceMap, seq: ItemId| {
+            let g = media_item(p, m, GeneratorSource::new(Generator::ColorMatte { color: [0.9, 0.5, 0.2, 1.0] }, 160, 88, rate, Tick(4 * TICKS_PER_SECOND)));
+            let c = put(p, seq, 0, g, 0, 48);
+            p.sequence_mut(seq).unwrap().find_item_mut(c).unwrap().1.scale_to_frame = false;
+            set_param(p, seq, c, "opacity", "opacity", 70.0);
+        };
+        // (what, project, sequence, sources, adjustment steps in the frame)
+        let mut cases: Vec<(&str, Project, ItemId, SourceMap, u64)> = Vec::new();
+        {
+            let (mut p, mut m) = (Project::new("x"), SourceMap::default());
+            let seq = p.new_sequence("s", settings.clone(), 2, 0, None);
+            patch(&mut p, &mut m, seq);
+            adjustment_layer(&mut p, seq, 1);
+            cases.push(("a partly transparent canvas", p, seq, m, 1));
+        }
+        {
+            let (mut p, mut m) = (Project::new("x"), SourceMap::default());
+            let seq = p.new_sequence("s", settings.clone(), 3, 0, None);
+            patch(&mut p, &mut m, seq);
+            adjustment_layer(&mut p, seq, 1);
+            adjustment_layer(&mut p, seq, 2);
+            cases.push(("two adjustment layers, one over the other", p, seq, m, 2));
+        }
+        {
+            // nothing below the adjustment layer: it adjusts an empty canvas
+            let (mut p, m) = (Project::new("x"), SourceMap::default());
+            let seq = p.new_sequence("s", settings.clone(), 2, 0, None);
+            adjustment_layer(&mut p, seq, 1);
+            cases.push(("an empty canvas", p, seq, m, 1));
+        }
+        {
+            // the matte inside a nested sequence on V1, drawn with the outer layers
+            let (mut p, mut m) = (Project::new("x"), SourceMap::default());
+            let inner = p.new_sequence("inner", settings.clone(), 1, 0, None);
+            patch(&mut p, &mut m, inner);
+            let seq = p.new_sequence("s", settings.clone(), 2, 0, None);
+            put(&mut p, seq, 0, inner, 0, 48);
+            adjustment_layer(&mut p, seq, 1);
+            cases.push(("a nested sequence below", p, seq, m, 1));
+        }
+        {
+            // an adjustment layer inside a nested sequence adjusts only the nest (the matte), not
+            // the red matte under the nest
+            let (mut p, mut m) = (Project::new("x"), SourceMap::default());
+            let red = media_item(
+                &mut p,
+                &mut m,
+                GeneratorSource::new(Generator::ColorMatte { color: [0.9, 0.2, 0.1, 1.0] }, 320, 180, rate, Tick(4 * TICKS_PER_SECOND)),
+            );
+            let inner = p.new_sequence("inner", settings.clone(), 2, 0, None);
+            patch(&mut p, &mut m, inner);
+            adjustment_layer(&mut p, inner, 1);
+            let seq = p.new_sequence("s", settings.clone(), 2, 0, None);
+            put(&mut p, seq, 0, red, 0, 48);
+            put(&mut p, seq, 1, inner, 0, 48);
+            cases.push(("an adjustment layer inside a nested sequence", p, seq, m, 0));
+        }
+        for (what, p, seq, m, steps) in &cases {
+            for scale in [1.0, 0.5] {
+                let (t, opts) = (rate.tick_of(12), RenderOptions { scale, ..Default::default() });
+                let what = format!("{what} at {scale}");
+                assert!(!filmcraft_render::plan::is_cpu_frame(p, *seq, t, opts, r.caps()), "{what}: takes a GPU renderer");
+                let before = (r.compositor.gpu_adjustments, r.compositor.cpu_adjustments);
+                let gpu = r.render(p, *seq, t, opts, m).expect("GPU frame");
+                assert_eq!((r.compositor.gpu_adjustments, r.compositor.cpu_adjustments), (before.0 + steps, before.1), "{what}: adjustment steps on the GPU");
+                let cpu = filmcraft_render::render_sequence(p, *seq, t, opts, m);
+                assert_parity(&cpu, &gpu, &what);
+                assert_alpha_parity(&cpu, &gpu, &what);
+            }
+        }
+    }
+
+    /// Frames inside a Push transition (forward and reversed), which plans as a GPU composite,
+    /// export on the GPU and match the CPU; a transition it cannot draw stays a CPU frame.
+    #[test]
+    fn transition_frames_export_on_the_gpu() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu transition export): no adapter");
+            return;
+        };
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut p = Project::new("x");
+        let mut m = SourceMap::default();
+        let mut clips = Vec::new();
+        for (i, color) in [[0.9, 0.2, 0.1, 1.0], [0.1, 0.4, 0.95, 1.0]].into_iter().enumerate() {
+            let g = GeneratorSource::new(Generator::ColorMatte { color }, 320, 180, rate, Tick(4 * TICKS_PER_SECOND));
+            let info = g.info().clone();
+            let media = MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            };
+            let item = p.add_item(&format!("c{i}"), Label::Iris, ItemKind::Media(Box::new(media)), None);
+            m.0.insert(item, Arc::new(g));
+            clips.push(item);
+        }
+        let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let mut ids = Vec::new();
+        for (k, item) in clips.into_iter().enumerate() {
+            let it = p.make_track_item(item, TrackKind::Video, rate.tick_of(24 * k as i64), TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+            ids.push(it.id);
+            p.sequence_mut(seq).unwrap().video_tracks[0].items.push(it);
+        }
+        let opts = RenderOptions::default();
+        for (id, reverse) in [("push", false), ("push", true)] {
+            p.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
+                id: filmcraft_project::TransitionId(1),
+                effect: filmcraft_project::find_effect(id).unwrap().instance(),
+                start: rate.tick_of(18),
+                duration: rate.tick_of(12),
+                from: ids.first().copied(),
+                to: ids.get(1).copied(),
+                align: Default::default(),
+                reverse,
+            }];
+            for f in [20, 24, 27] {
+                let t = rate.tick_of(f);
+                assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t, opts, r.caps()), "{id} takes a GPU renderer");
+                let before = r.compositor.gpu_transitions;
+                let gpu = r.render(&p, seq, t, opts, &m).expect("GPU transition frame");
+                assert_eq!(r.compositor.gpu_transitions, before + 1, "{id}: drawn on the GPU");
+                assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &format!("{id} reverse={reverse} frame {f}"));
+                let (w8, h8, gpu8) = r.render_rgba8(&p, seq, t, opts, &m).expect("GPU transition RGBA8 frame");
+                assert_eq!(r.compositor.gpu_transitions, before + 2, "{id}: render_rgba8 drawn on the GPU");
+                assert_eq!((w8, h8), (gpu.w, gpu.h));
+                assert_eq!(gpu8, gpu.over_black_rgba8(), "{id} reverse={reverse} frame {f}: render_rgba8 matches float frame over black");
+            }
+        }
+        // Film Dissolve has no GPU stage: the whole frame stays a CPU image
+        p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0].effect = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
+        assert!(filmcraft_render::plan::is_cpu_frame(&p, seq, rate.tick_of(24), opts, r.caps()));
     }
 
     #[test]
@@ -282,7 +655,344 @@ mod tests {
         let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "transformed fixture must contain a visible picture");
         assert_parity(&cpu, &gpu, "transformed");
+    }
+
+    /// The 8-bit frame encoded by the export LUT resolve shader matches the float frame encoded
+    /// on the CPU (`over_black_rgba8`) byte-for-byte, and stays within the CPU parity bound.
+    #[test]
+    fn rgba8_frame_matches_float_frame_over_black() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        for transform in [false, true] {
+            let (p, seq, m) = project(transform);
+            let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
+            let (w, h, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            assert_eq!((w, h), (float.w, float.h));
+            assert_eq!(gpu8.len(), w * h * 4);
+            let encoded = float.over_black_rgba8();
+            assert_eq!(gpu8, encoded, "transform {transform}: 8-bit frame must match the encoded float frame byte-for-byte");
+            let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
+            assert_parity(&cpu, &Image { w, h, px: gpu8.iter().map(|&c| filmcraft_color::srgb_u8_to_linear_table()[c as usize]).collect() }, "rgba8");
+        }
+    }
+
+    fn demo_effects_project(scene: filmcraft_media::generators::DemoScene, w: u32, h: u32, rate: filmcraft_time::FrameRate) -> (Project, ItemId, SourceMap) {
+        use filmcraft_project::{ParamValue, find_effect};
+        let mut p = Project::new("x");
+        let g = GeneratorSource::new(Generator::Demo(scene), w, h, rate, Tick(2 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let id = p.add_item(
+            &info.name.clone(),
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 3, 1, None);
+        let layers: [(f64, (f64, f64), f64, &[(&str, &[(&str, f64)])]); 3] = [
+            (100.0, (0.0, 0.0), 100.0, &[("proc_amp", &[("contrast", 110.0)]), ("gaussian_blur", &[("blurriness", 8.0)]), ("vignette", &[])]),
+            (50.0, (160.0, -90.0), 100.0, &[("brightness_contrast", &[("brightness", 10.0), ("contrast", 15.0)])]),
+            (33.0, (-186.0, 100.0), 70.0, &[("sharpen", &[("amount", 40.0)])]),
+        ];
+        for (i, (scale, (px, py), opacity, fx)) in layers.into_iter().enumerate() {
+            let mut v = p.make_track_item(id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+            let m = v.effect_mut("motion").unwrap();
+            m.params.get_mut("scale").unwrap().value = ParamValue::Float(scale);
+            m.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(px, py));
+            v.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(opacity);
+            for (k, (fx_id, set)) in fx.iter().enumerate() {
+                let mut e = find_effect(fx_id).unwrap().instance();
+                for (name, val) in *set {
+                    e.params.get_mut(*name).unwrap().value = ParamValue::Float(*val);
+                }
+                v.effects.insert(k, e);
+            }
+            p.sequence_mut(seq).unwrap().video_tracks[i].items.push(v);
+        }
+        let mut m = SourceMap::default();
+        m.0.insert(id, Arc::new(g));
+        (p, seq, m)
+    }
+
+    /// Across all demo scenes and the bench's multi-layer effects stack (three scaled layers, one
+    /// at 70 % opacity, with proc amp, Gaussian blur, vignette, brightness/contrast and sharpen),
+    /// `render_rgba8` resolves `accum` through the 4096-entry sRGB LUT and matches `render` +
+    /// `over_black_rgba8()` byte-for-byte.
+    #[test]
+    fn rgba8_frame_with_effects_matches_float_frame_over_black() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        for scene in filmcraft_media::generators::DemoScene::ALL {
+            let (p, seq, m) = demo_effects_project(scene, 640, 360, rate);
+            for frame in [3, 17] {
+                let t = rate.tick_of(frame);
+                let (_, _, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+                let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+                let cpu8 = float.over_black_rgba8();
+                assert_eq!(gpu8, cpu8, "{scene:?} frame {frame}: GPU LUT resolve must match over_black_rgba8 byte-for-byte");
+            }
+        }
+    }
+
+    /// Build the 256×256 raw f16 accumulator fixture (all 65,536 halves in R, G, and B) and its
+    /// expected `over_black_rgba8()` output.
+    fn raw_f16_lut_fixture() -> (u32, u32, Vec<u8>, Vec<u8>) {
+        let (fw, fh) = (256u32, 256u32);
+        let mut raw_f16_bytes = Vec::with_capacity((fw * fh * 8) as usize);
+        let mut expected_f32 = Vec::with_capacity((fw * fh * 4) as usize);
+        for i in 0..=u16::MAX {
+            let r = i;
+            let g = i.wrapping_add(21_845);
+            let b = i.wrapping_add(43_690);
+            let a = 0x3c00u16; // 1.0
+            for h in [r, g, b, a] {
+                raw_f16_bytes.extend_from_slice(&h.to_le_bytes());
+                expected_f32.push(f16_to_f32(h));
+            }
+        }
+        let expected_rgba8 = Image { w: fw as usize, h: fh as usize, px: expected_f32 }.over_black_rgba8();
+        (fw, fh, raw_f16_bytes, expected_rgba8)
+    }
+
+    /// Build a prepared-plan fixture from LUT rounding-midpoint inputs `(k * 0.5 / 4095.0) ± 1 ULP`
+    /// for `k in 0..=8190`, plus `NaN`, `±Inf`, `-0.0`, negatives, and `> 1.0`. Because `prepare`
+    /// quantizes `f32` inputs to `f16` before either render path runs, adjacent `f32` values may
+    /// collapse to the same `f16` value; exhaustive coverage of every `f16` bit pattern at the
+    /// resolve pass comes from [`raw_f16_lut_fixture`].
+    fn rounding_threshold_lut_fixture() -> (usize, usize, FramePlan, crate::PreparedPlan) {
+        let mut threshold_vals = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 0.0, 1.0, -1.0, 2.0, 1e-30];
+        threshold_vals.extend(
+            (0..=8190).map(|k| k as f32 * 0.5 / 4095.0).flat_map(|b| [b, f32::from_bits(b.to_bits() + 1), f32::from_bits(b.to_bits().saturating_sub(1))]),
+        );
+        let (tw, th) = (256usize, 36usize);
+        let mut threshold_px = vec![1.0f32; tw * th * 4];
+        for (idx, &v) in threshold_vals.iter().enumerate() {
+            let p = idx % (tw * th);
+            threshold_px[p * 4] = v;
+            threshold_px[p * 4 + 1] = threshold_vals[(idx + 8191) % threshold_vals.len()];
+            threshold_px[p * 4 + 2] = threshold_vals[(idx + 16382) % threshold_vals.len()];
+            threshold_px[p * 4 + 3] = 1.0;
+        }
+        let threshold_plan = FramePlan::Image(Image { w: tw, h: th, px: threshold_px });
+        let threshold_prep = prepare(&threshold_plan);
+        (tw, th, threshold_plan, threshold_prep)
+    }
+
+    /// Enforce GPU coverage when `required` (`FILMCRAFT_REQUIRE_GPU` is set); otherwise skip
+    /// cleanly when no usable adapter/device ran the LUT precision checks.
+    fn require_lut_backend_renders(rendered_count: usize, required: bool, reason: &str) -> bool {
+        if rendered_count > 0 {
+            return true;
+        }
+        assert!(!required, "required GPU LUT precision test did not run: {reason}");
+        eprintln!("SKIPPED (gpu LUT precision): {reason}");
+        false
+    }
+
+    /// Run all three 4096-entry LUT resolve precision checks on one device and return the
+    /// rendered transformed scene bytes for cross-backend comparison.
+    fn verify_lut_precision_on_device(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        info: &wgpu::AdapterInfo,
+        (fw, fh, raw_f16_bytes, expected_f16_rgba8): (u32, u32, &[u8], &[u8]),
+        (tw, th, threshold_plan, threshold_prep): (usize, usize, &FramePlan, &crate::PreparedPlan),
+        (scene_p, scene_seq, scene_t, scene_m): (&Project, ItemId, Tick, &SourceMap),
+    ) -> Vec<u8> {
+        let mut c = GpuCompositor::new(device, queue);
+
+        // 1. All 65,536 raw f16 bit patterns in `accum` -> `resolve_export_rgba8`.
+        c.render_plan(&FramePlan::Layers { width: fw as usize, height: fh as usize, layers: Vec::new() }, None, true, false);
+        let accum_tex = c.accum.as_ref().expect("accum allocated").0.clone();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &accum_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            raw_f16_bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(fw * 8), rows_per_image: Some(fh) },
+            wgpu::Extent3d { width: fw, height: fh, depth_or_array_layers: 1 },
+        );
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("test-lut-f16") });
+        c.resolve_export_rgba8(&mut enc).expect("resolve_export_rgba8");
+        let size = c.copy_output(&mut enc).expect("copy_output");
+        let sub = queue.submit([enc.finish()]);
+        let (_, _, got_f16_rgba8) = c.map_output(size, sub).expect("map_output");
+        assert_eq!(got_f16_rgba8, expected_f16_rgba8, "{:?} ({}) failed raw f16 LUT parity", info.backend, info.name);
+
+        // 2. Threshold-derived fixture (quantized to f16 by `prepare`) through
+        //    `render_export_rgba8_prepared` vs `render_export_prepared`.
+        let (_, _, got_thresh_rgba8) = c.render_export_rgba8_prepared(threshold_plan, Some(threshold_prep)).expect("threshold rgba8");
+        let (_, _, got_thresh_f32) = c.render_export_prepared(threshold_plan, Some(threshold_prep)).expect("threshold f32");
+        let want_thresh_rgba8 = Image { w: tw, h: th, px: got_thresh_f32 }.over_black_rgba8();
+        assert_eq!(got_thresh_rgba8, want_thresh_rgba8, "{:?} ({}) failed rounding threshold LUT parity", info.backend, info.name);
+
+        // 3. Transformed scene parity on this backend and return bytes for cross-backend check.
+        let plan = plan_frame(scene_p, scene_seq, scene_t, RenderOptions::default(), c.caps(), scene_m);
+        let prep = prepare(&plan);
+        let (_, _, scene_rgba8) = c.render_export_rgba8_prepared(&plan, Some(&prep)).expect("scene rgba8");
+        let (sw, sh, scene_f32) = c.render_export_prepared(&plan, Some(&prep)).expect("scene f32");
+        assert_eq!(
+            scene_rgba8,
+            Image { w: sw as usize, h: sh as usize, px: scene_f32 }.over_black_rgba8(),
+            "{:?} ({}) scene rgba8 != over_black_rgba8",
+            info.backend,
+            info.name
+        );
+        scene_rgba8
+    }
+
+    #[test]
+    fn lut_precision_policy_skips_without_adapter_unless_required() {
+        assert!(!require_lut_backend_renders(0, false, "no adapter"));
+        assert!(require_lut_backend_renders(1, false, "unused"));
+        assert!(require_lut_backend_renders(1, true, "unused"));
+    }
+
+    #[test]
+    #[should_panic(expected = "required GPU LUT precision test did not run")]
+    fn lut_precision_policy_fails_when_gpu_required_and_none_rendered() {
+        let _ = require_lut_backend_renders(0, true, "no adapter");
+    }
+
+    /// Precision and multi-backend verification of the 4096-entry LUT export resolve pass:
+    /// 1. All 65,536 `f16` bit patterns (`0x0000..=0xffff`, including signaling/quiet `NaN`,
+    ///    `±Inf`, `-0.0`, negatives, subnormals, `> 1.0`, and every `f16` in `[0.0, 1.0]`) written
+    ///    into `accum` (`Rgba16Float`) across R, G, and B resolve to the exact same bytes as
+    ///    `Image::over_black_rgba8()`.
+    /// 2. Threshold-derived `f32` inputs, quantized to `f16` by `prepare` before rendering
+    ///    (including `NaN`, `±Inf`, `-0.0`, `-1.0`, `2.0`), through `render_export_rgba8_prepared`
+    ///    match `render_export_prepared` + `over_black_rgba8()` byte-for-byte.
+    /// 3. Runs across every usable backend in the renderer's backend set
+    ///    ([`crate::adapter::native_instance`]) and checks cross-backend agreement. Skips cleanly
+    ///    when no usable adapter/device is available unless `FILMCRAFT_REQUIRE_GPU` is set.
+    #[test]
+    fn rgba8_lut_matches_over_black_rgba8_across_all_f16_and_rounding_thresholds() {
+        let required = std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_some();
+        if wgpu::Instance::enabled_backend_features().is_empty() {
+            require_lut_backend_renders(0, required, "no wgpu backend enabled");
+            return;
+        }
+        let (fw, fh, raw_f16_bytes, expected_f16_rgba8) = raw_f16_lut_fixture();
+        let (tw, th, threshold_plan, threshold_prep) = rounding_threshold_lut_fixture();
+        let (scene_p, scene_seq, scene_m) = project(true);
+        let scene_t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
+
+        // Enumerate across the renderer's own backend set (`native_instance`), honoring
+        // `WGPU_BACKEND` and `WGPU_POWER_PREF` the same way `ExportRenderer::new` does.
+        let instance = crate::adapter::native_instance();
+        let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+        let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        if let Some(named) = wgpu::Backends::from_env()
+            && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+        {
+            adapters.retain(|a| named.contains(a.get_info().backend.into()));
+        }
+        let mut backends: Vec<wgpu::Backend> = Vec::new();
+        for adapter in &adapters {
+            let backend = adapter.get_info().backend;
+            if !backends.contains(&backend) {
+                backends.push(backend);
+            }
+        }
+
+        let mut backend_renders: Vec<(wgpu::Backend, String, Vec<u8>)> = Vec::new();
+        for backend in backends {
+            let group: Vec<wgpu::Adapter> = adapters.iter().filter(|a| a.get_info().backend == backend).cloned().collect();
+            let Ok(adapter) = crate::adapter::pick(&group, None, power) else {
+                continue;
+            };
+            if !adapter.get_texture_format_features(crate::ACCUM_FORMAT).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
+                continue;
+            }
+            let info = adapter.get_info();
+            let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) else {
+                continue;
+            };
+            eprintln!("GPU test adapter (LUT precision): {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            let scene_rgba8 = verify_lut_precision_on_device(
+                &device,
+                &queue,
+                &info,
+                (fw, fh, &raw_f16_bytes, &expected_f16_rgba8),
+                (tw, th, &threshold_plan, &threshold_prep),
+                (&scene_p, scene_seq, scene_t, &scene_m),
+            );
+            backend_renders.push((info.backend, info.name.clone(), scene_rgba8));
+        }
+
+        let reason = if adapters.is_empty() {
+            "no GPU adapter available across renderer backends"
+        } else {
+            "no usable GPU device could be created across renderer backends"
+        };
+        if !require_lut_backend_renders(backend_renders.len(), required, reason) {
+            return;
+        }
+        for w in backend_renders.windows(2) {
+            let ((b0, n0, r0), (b1, n1, r1)) = (&w[0], &w[1]);
+            let max_diff = r0.iter().zip(r1).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+            eprintln!("cross-backend {b0:?} ({n0}) vs {b1:?} ({n1}): max channel diff = {max_diff}");
+            assert!(max_diff <= 1, "cross-backend {b0:?} vs {b1:?} differed by {max_diff}");
+        }
+    }
+
+    #[test]
+    fn transformed_nested_picture_matches_cpu() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (nested GPU parity): no adapter");
+            return;
+        };
+        for textured in [false, true] {
+            let (mut p, inner, mut sources) = project(false);
+            let project = Arc::make_mut(&mut p);
+            let media = *sources.0.iter().find(|(_, s)| s.info().has_video()).unwrap().0;
+            let rate = filmcraft_time::FrameRate::FPS_24;
+            if textured {
+                let source = GeneratorSource::new(Generator::Demo(filmcraft_media::DemoScene::OceanSunset), 320, 180, rate, Tick(2 * TICKS_PER_SECOND));
+                let ItemKind::Media(clip) = &mut project.item_mut(media).unwrap().kind else { panic!("expected generated media") };
+                clip.info = source.info().clone();
+                clip.media = MediaRef::Generator(source.generator.clone());
+                sources.0.insert(media, Arc::new(source));
+            }
+            let range = TimeRange::new(Tick::ZERO, rate.tick_of(24));
+            // Keep the source partly outside the nest: a future flattened plan must still clip it.
+            project.sequence_mut(inner).unwrap().video_tracks[0].items[0].effect_mut("motion").unwrap().param_mut("position").unwrap().value =
+                filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(240.0, 90.0));
+            let outer = project.new_sequence("outer", project.sequence(inner).unwrap().settings.clone(), 1, 0, None);
+            let mut nest = project.make_track_item(inner, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+            let motion = nest.effect_mut("motion").unwrap();
+            motion.param_mut("position").unwrap().value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(185.0, 75.0));
+            motion.param_mut("scale").unwrap().value = filmcraft_project::ParamValue::Float(60.0);
+            motion.param_mut("uniform_scale").unwrap().value = filmcraft_project::ParamValue::Bool(false);
+            project.sequence_mut(outer).unwrap().video_tracks[0].items.push(nest);
+            for (rotation, width) in [(0.0, 60.0), (19.0, 60.0), (0.0, 30.0), (0.0, 120.0)] {
+                let motion = Arc::make_mut(&mut p).sequence_mut(outer).unwrap().video_tracks[0].items[0].effect_mut("motion").unwrap();
+                motion.param_mut("rotation").unwrap().value = filmcraft_project::ParamValue::Float(rotation);
+                motion.param_mut("scale_width").unwrap().value = filmcraft_project::ParamValue::Float(width);
+                for scale in [1.0, 0.5] {
+                    let opts = RenderOptions { scale, ..Default::default() };
+                    let cpu = filmcraft_render::render_sequence(&p, outer, Tick::ZERO, opts, &sources);
+                    assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "fixture must contain a visible picture");
+                    let gpu = renderer.render(&p, outer, Tick::ZERO, opts, &sources).expect("GPU rendered the nest");
+                    assert_parity(&cpu, &gpu, "transformed nest");
+                }
+            }
+        }
     }
 
     #[test]
@@ -292,6 +1002,10 @@ mod tests {
         impl FrameRenderer for R {
             fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
                 self.0.render(project, seq, t, opts, sources)
+            }
+
+            fn caps(&self) -> DeviceCaps {
+                self.0.caps()
             }
         }
         let Some(r) = ExportRenderer::new() else {

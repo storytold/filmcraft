@@ -97,29 +97,35 @@ fn matches(name: &str, target: &str) -> bool {
     }
 }
 
-/// `2026-10-08T07:59:17.728Z` (UTC, milliseconds). A clock before 1970 reads as the epoch.
+/// `2026-10-08T07:59:17.728Z` (UTC, milliseconds). A clock before 1970 reads as the epoch; a clock
+/// set absurdly far ahead keeps its real year (years far outside chrono's own range are preserved)
+/// instead of panicking.
 pub fn timestamp(t: SystemTime) -> String {
     let since = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = since.as_secs();
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    let (y, m, d) = civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3600, rem % 3600 / 60, rem % 60, since.subsec_millis())
+    let (y, dt) = utc_parts(since.as_secs(), since.subsec_nanos());
+    // `{:04}` rather than `%Y`, which writes a `+` before years past 9999.
+    format!("{y:04}-{}", dt.format("%m-%dT%H:%M:%S%.3fZ"))
 }
 
-/// Days since 1970-01-01 to a proleptic Gregorian (year, month, day) (Howard Hinnant's
-/// `civil_from_days`, unsigned because `timestamp` clamps at the epoch; saturating so an absurd
-/// clock can't overflow).
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days.saturating_add(719_468);
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = era.saturating_mul(400).saturating_add(yoe).saturating_add(u64::from(m <= 2));
-    (y, m, d)
+/// Unix seconds (+ nanos) → (proleptic Gregorian year, the same wall-clock instant moved into
+/// chrono's range by whole 400-year cycles). The Gregorian calendar repeats every 400 years
+/// (146_097 days), so month, day and time of day come from chrono and only the year is carried,
+/// which keeps every input exact instead of collapsing out-of-range years to the epoch. `secs` is
+/// `u64` (the clock is clamped at the epoch before 1970), so `days` always fits an `i64`.
+fn utc_parts(secs: u64, nanos: u32) -> (i64, chrono::NaiveDateTime) {
+    use chrono::Datelike;
+    let (days, sod) = ((secs / 86_400) as i64, (secs % 86_400) as i64);
+    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
+    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
+    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
+    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, nanos.min(999_999_999)));
+    match (date, time) {
+        (Some(d), Some(t)) => {
+            let y = i128::from(d.year()) + i128::from(cycles) * 400;
+            (i64::try_from(y).unwrap_or(i64::MAX), d.and_time(t))
+        }
+        _ => (1970, chrono::NaiveDateTime::default()), // unreachable
+    }
 }
 
 fn numbered(dir: &Path, n: usize) -> PathBuf {
@@ -144,6 +150,8 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
 /// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
+    // Escape control characters so message text (a project's `format` field, say) cannot start a fake record.
+    let message: String = message.chars().flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] }).collect();
     format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
 }
 
@@ -390,6 +398,17 @@ mod tests {
         assert_eq!(timestamp(UNIX_EPOCH + Duration::from_secs(4_107_542_400)), "2100-03-01T00:00:00.000Z");
         // Before the epoch (a clock set wrong) clamps instead of panicking.
         assert_eq!(timestamp(UNIX_EPOCH - Duration::from_secs(5)), "1970-01-01T00:00:00.000Z");
+        // A clock set absurdly far ahead (past chrono's own range) keeps its real year rather than
+        // collapsing to the epoch (reviewer FredApps). Windows' SystemTime can't hold such an
+        // instant, so it is built with a checked add and only asserted where it exists.
+        if let Some(far) = UNIX_EPOCH.checked_add(Duration::from_secs(u64::MAX / 2)) {
+            assert_eq!(timestamp(far), "292277026596-12-04T15:30:07.000Z");
+        }
+        if let Some(far) = UNIX_EPOCH.checked_add(Duration::from_secs(10_000_000_000_000)) {
+            assert_eq!(timestamp(far), "318857-05-20T17:46:40.000Z");
+        }
+        // Years past 9999 keep the plain zero-padded year (no `+`).
+        assert_eq!(timestamp(UNIX_EPOCH + Duration::from_secs(253_402_300_800)), "10000-01-01T00:00:00.000Z");
     }
 
     #[test]
@@ -424,8 +443,9 @@ mod tests {
             format_line("2026-10-08T07:59:17.728Z", log::Level::Warn, "main", "filmcraft_ui_egui", "audio output unavailable: no output device"),
             "2026-10-08T07:59:17.728Z WARN  [main] filmcraft_ui_egui: audio output unavailable: no output device\n"
         );
-        // A multi-line message keeps its lines; the record still ends in exactly one newline.
-        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+        // Control characters are escaped, so a multi-line message stays one record ending in exactly one newline.
+        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\\nb\n"));
+        assert_eq!(format_line("t", log::Level::Error, "w", "x", "a\r\n2026 INFO fake").matches('\n').count(), 1);
     }
 
     #[test]

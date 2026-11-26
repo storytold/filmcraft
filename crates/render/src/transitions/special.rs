@@ -18,6 +18,19 @@ fn rot(x: f32, y: f32, deg: f32) -> (f32, f32) {
     (x * c + y * s, -x * s + y * c)
 }
 
+/// Pixel bounds `(x0, y0, x1, y1)` of everything not fully transparent in either frame.
+fn content_bounds(a: &Image, b: &Image) -> Option<(f32, f32, f32, f32)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    for (y, (ra, rb)) in a.px.chunks(a.w * 4).zip(b.px.chunks(b.w * 4)).enumerate() {
+        for (x, (pa, pb)) in ra.chunks(4).zip(rb.chunks(4)).enumerate() {
+            if pa.get(3).is_some_and(|v| *v > 0.0) || pb.get(3).is_some_and(|v| *v > 0.0) {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+    }
+    (x0 < x1 && y0 < y1).then_some((x0 as f32, y0 as f32, x1 as f32, y1 as f32))
+}
+
 pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
     let p = t.p;
     let (w, h) = (t.wf, t.hf);
@@ -165,15 +178,22 @@ pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
             let cursor = t.flag("cursor");
             let n = cols * rows;
             let cur = (p * n).floor();
-            let (cw, ch) = (w / cols, h / rows);
+            // lay the grid over the visible content (a text layer is mostly transparent)
+            let Some((bx0, by0, bx1, by1)) = content_bounds(t.a, t.b) else {
+                return Some(t.a.clone().lerp(t.b, p));
+            };
+            let (cw, ch) = ((bx1 - bx0) / cols, (by1 - by0) / rows);
             paint(t.w, t.h, |x, y| {
-                let (ci, ri) = ((x / cw).floor().min(cols - 1.0), (y / ch).floor().min(rows - 1.0));
+                if x < bx0 || x >= bx1 || y < by0 || y >= by1 {
+                    return if p < 0.5 { t.pa(x, y) } else { t.pb(x, y) };
+                }
+                let (ci, ri) = (((x - bx0) / cw).floor().min(cols - 1.0), ((y - by0) / ch).floor().min(rows - 1.0));
                 let i = ri * cols + ci;
                 if i < cur {
                     t.pb(x, y)
                 } else if i == cur && cursor {
                     // a caret block in the lower part of the cell
-                    let ly = (y - ri * ch) / ch;
+                    let ly = (y - by0 - ri * ch) / ch;
                     if ly > 0.15 { over(t.pa(x, y), scale4([1.0, 1.0, 1.0, 1.0], 0.75)) } else { t.pa(x, y) }
                 } else {
                     t.pa(x, y)

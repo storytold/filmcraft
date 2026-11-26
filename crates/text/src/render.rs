@@ -11,7 +11,7 @@
 //! Synthetic bold grows outlines by 2.5 % of the size per side; synthetic italic slants by 12°.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -59,7 +59,7 @@ impl OutlinePen for Rec {
 fn outline(face: FaceId, gid: u32) -> Option<Arc<Vec<Cmd>>> {
     static C: OnceLock<Mutex<HashMap<(FaceId, u32), Option<Arc<Vec<Cmd>>>>>> = OnceLock::new();
     let c = C.get_or_init(Default::default);
-    if let Some(v) = c.lock().unwrap_or_else(|e| e.into_inner()).get(&(face, gid)) {
+    if let Some(v) = c.lock().unwrap_or_else(PoisonError::into_inner).get(&(face, gid)) {
         return v.clone();
     }
     let f = fonts::face(face);
@@ -69,7 +69,7 @@ fn outline(face: FaceId, gid: u32) -> Option<Arc<Vec<Cmd>>> {
         g.draw(DrawSettings::unhinted(Size::unscaled(), LocationRef::default()), &mut rec).ok()?;
         Some(Arc::new(rec.0))
     });
-    let mut m = c.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = c.lock().unwrap_or_else(PoisonError::into_inner);
     if m.len() > 20_000 {
         m.clear();
     }
@@ -131,9 +131,32 @@ pub struct GlyphMask {
 
 type GKey = (FaceId, u32, u32, u8, bool, bool);
 
-fn glyph_cache() -> &'static Mutex<HashMap<GKey, Option<Arc<GlyphMask>>>> {
-    static C: OnceLock<Mutex<HashMap<GKey, Option<Arc<GlyphMask>>>>> = OnceLock::new();
+/// No single glyph mask may consume more than this much memory. Larger glyphs are filled directly
+/// into the caller's clipped destination instead of first allocating their complete bounds.
+const MAX_GLYPH_MASK_BYTES: usize = 16 << 20;
+/// The glyph cache is shared by every project in the process, so constrain its bytes as well as
+/// its number of entries.
+const MAX_GLYPH_CACHE_BYTES: usize = 64 << 20;
+
+#[derive(Default)]
+struct GlyphCache {
+    entries: HashMap<GKey, Option<Arc<GlyphMask>>>,
+    bytes: usize,
+}
+
+fn glyph_cache() -> &'static Mutex<GlyphCache> {
+    static C: OnceLock<Mutex<GlyphCache>> = OnceLock::new();
     C.get_or_init(Default::default)
+}
+
+fn glyph_mask_bounds(path: &Path) -> Option<(i32, i32, usize, usize)> {
+    let (x0, y0, x1, y1) = path.bounds()?;
+    let (left, top, right, bottom) = (x0.floor() as i64, y0.floor() as i64, x1.ceil() as i64, y1.ceil() as i64);
+    let (left, top) = (i32::try_from(left).ok()?, i32::try_from(top).ok()?);
+    let w = usize::try_from(right.saturating_sub(i64::from(left))).ok()?.max(1);
+    let h = usize::try_from(bottom.saturating_sub(i64::from(top))).ok()?.max(1);
+    let bytes = w.checked_mul(h)?.checked_mul(std::mem::size_of::<f32>())?;
+    (bytes <= MAX_GLYPH_MASK_BYTES).then_some((left, top, w, h))
 }
 
 /// Rasterise glyph `g` at pixel size `px` with horizontal phase `frac` (0..1, quantised to ¼).
@@ -141,25 +164,29 @@ pub fn glyph_mask(g: &Glyph, px: f32, frac: f32) -> Option<Arc<GlyphMask>> {
     let size_q = (px * 8.0).round().max(1.0) as u32;
     let frac_q = ((frac.rem_euclid(1.0) * 4.0).round() as u8) % 4;
     let key = (g.face, g.id, size_q, frac_q, g.synth_bold, g.synth_italic);
-    if let Some(v) = glyph_cache().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+    if let Some(v) = glyph_cache().lock().unwrap_or_else(PoisonError::into_inner).entries.get(&key) {
         return v.clone();
     }
     let px = size_q as f32 / 8.0;
     let fq = frac_q as f32 / 4.0;
     let gg = Glyph { x: 0.0, y: 0.0, size: px, ..*g };
     let path = glyph_path(&gg, &[1.0, 0.0, 0.0, 1.0, fq, 0.0]);
-    let v = path.bounds().map(|(x0, y0, x1, y1)| {
-        let left = x0.floor() as i32;
-        let top = y0.floor() as i32;
-        let w = (x1.ceil() as i32 - left).max(1) as usize;
-        let h = (y1.ceil() as i32 - top).max(1) as usize;
-        Arc::new(GlyphMask { mask: fill(&path, w, h, -left as f32, -top as f32), left, top })
-    });
-    let mut m = glyph_cache().lock().unwrap_or_else(|e| e.into_inner());
-    if m.len() > 16_384 {
-        m.clear();
+    let Some((left, top, w, h)) = glyph_mask_bounds(&path) else {
+        // Do not cache an oversized rejection: callers render it directly into their bounded
+        // output, and retaining attacker-selected keys would itself become a cache DoS.
+        return None;
+    };
+    let v = Some(Arc::new(GlyphMask { mask: fill(&path, w, h, -left as f32, -top as f32), left, top }));
+    let bytes = w * h * std::mem::size_of::<f32>();
+    let mut m = glyph_cache().lock().unwrap_or_else(PoisonError::into_inner);
+    if m.entries.len() > 16_384 || m.bytes.checked_add(bytes).is_none_or(|n| n > MAX_GLYPH_CACHE_BYTES) {
+        m.entries.clear();
+        m.bytes = 0;
     }
-    m.insert(key, v.clone());
+    if let Some(old) = m.entries.insert(key, v.clone()) {
+        m.bytes = m.bytes.saturating_sub(old.as_ref().map_or(0, |g| g.mask.a.len() * std::mem::size_of::<f32>()));
+    }
+    m.bytes = m.bytes.saturating_add(bytes);
     v
 }
 
@@ -223,6 +250,12 @@ pub fn draw_run(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32), run: 
             let xi = x.floor();
             if let Some(gm) = glyph_mask(g, px, x - xi) {
                 out.add(&gm.mask, xi as i32 + gm.left - ox, y.round() as i32 + gm.top - oy);
+            } else {
+                // A huge glyph's mask would be mostly clipped away. Rasterise its outline straight
+                // into `out`, whose allocation is already bounded by the caller's canvas.
+                let gm = compose(m, &[1.0, 0.0, 0.0, 1.0, g.x, g.y]);
+                let p = glyph_path(g, &gm);
+                fill_into(&p, out, -ox as f32, -oy as f32);
             }
         }
         if !l.underlines.is_empty() {
@@ -278,6 +311,12 @@ mod tests {
         assert!(row[1] > 0.9 && row[g.mask.w - 2] > 0.9, "{row:?}");
         assert!(row[g.mask.w / 2] < 0.1, "{row:?}");
         assert!(g.top < 0, "rises above the baseline");
+    }
+
+    #[test]
+    fn oversized_glyph_mask_is_rejected_before_allocation() {
+        assert!(glyph_mask_bounds(&Path::rect(0.0, 0.0, 100_000.0, 100_000.0)).is_none());
+        assert!(glyph_mask_bounds(&Path::rect(0.0, 0.0, 32.0, 32.0)).is_some());
     }
 
     #[test]

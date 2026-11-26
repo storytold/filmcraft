@@ -1,7 +1,7 @@
 //! Responsive design and per-character styles of graphic clips (M10.7).
 //!
 //! - **Per-character styles** ([`StyleRun`], [`CharStyle`]): a text layer's runs override font,
-//!   style, size, fill, faux bold / italic, underline, tracking, baseline shift and caps for a
+//!   style, size, fill, both strokes, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
 //!   range of characters. Ranges are in *characters* (not bytes), sorted and non-overlapping;
 //!   [`apply_char_style`] merges a new style into a range and [`adjust_runs`] keeps runs on the
 //!   right characters when the text is edited (typed characters take the style of the character
@@ -63,12 +63,32 @@ pub struct CharStyle {
     /// Fill colour (sRGB, straight alpha).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill: Option<[f32; 4]>,
+    /// Stroke overrides; None inherits the corresponding layer property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<bool>,
+    /// First and second stroke colours (sRGB, straight alpha).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_color: Option<[f32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_color: Option<[f32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_type: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_type: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faux_bold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faux_italic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strikethrough: Option<bool>,
     /// Tracking in 1/1000 em.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tracking: Option<f32>,
@@ -91,9 +111,18 @@ impl CharStyle {
             font_style: over.font_style.clone().or_else(|| self.font_style.clone()),
             size: over.size.or(self.size),
             fill: over.fill.or(self.fill),
+            stroke: over.stroke.or(self.stroke),
+            stroke_color: over.stroke_color.or(self.stroke_color),
+            stroke2_color: over.stroke2_color.or(self.stroke2_color),
+            stroke_width: over.stroke_width.or(self.stroke_width),
+            stroke_type: over.stroke_type.or(self.stroke_type),
+            stroke2: over.stroke2.or(self.stroke2),
+            stroke2_width: over.stroke2_width.or(self.stroke2_width),
+            stroke2_type: over.stroke2_type.or(self.stroke2_type),
             faux_bold: over.faux_bold.or(self.faux_bold),
             faux_italic: over.faux_italic.or(self.faux_italic),
             underline: over.underline.or(self.underline),
+            strikethrough: over.strikethrough.or(self.strikethrough),
             tracking: over.tracking.or(self.tracking),
             baseline_shift: over.baseline_shift.or(self.baseline_shift),
             caps: over.caps.or(self.caps),
@@ -108,6 +137,12 @@ pub struct StyleRun {
     pub end: usize,
     #[serde(flatten)]
     pub style: CharStyle,
+}
+
+/// The style of character `i`: every run that covers it, later runs over earlier ones (what
+/// [`apply_char_style`] left there); empty where nothing was set.
+pub fn char_style_at(runs: &[StyleRun], i: usize) -> CharStyle {
+    runs.iter().filter(|r| r.start <= i && i < r.end).fold(CharStyle::default(), |acc, r| acc.merged(&r.style))
 }
 
 /// Per-character styles of a text of `n` characters.
@@ -148,6 +183,20 @@ pub fn apply_char_style(runs: &[StyleRun], n: usize, start: usize, end: usize, s
         *c = c.merged(style);
     }
     compress(&v)
+}
+
+/// The overrides of each character `start..end` of a text of `n` characters (clamped to the text).
+/// Only the range is built (the Style row reads it on every redraw), with the runs merged in
+/// their order as in [`expand`].
+pub fn range_styles(runs: &[StyleRun], n: usize, start: usize, end: usize) -> Vec<CharStyle> {
+    let (start, end) = (start.min(n), end.min(n));
+    let mut v = vec![CharStyle::default(); end.saturating_sub(start)];
+    for r in runs {
+        for c in v.iter_mut().take(r.end.min(end).saturating_sub(start)).skip(r.start.saturating_sub(start)) {
+            *c = c.merged(&r.style);
+        }
+    }
+    v
 }
 
 /// Remove every override from characters `start..end`.
@@ -237,47 +286,93 @@ pub struct PinNode {
 /// the layers pinned to them; pins in a cycle, or to a missing layer, are ignored.
 pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
     let mut out: Vec<Option<[f64; 4]>> = vec![None; nodes.len()];
-    fn solve(i: usize, nodes: &[PinNode], frame: [f64; 4], out: &mut Vec<Option<[f64; 4]>>, visiting: &mut Vec<usize>) -> [f64; 4] {
-        if let Some(b) = out[i] {
-            return b;
-        }
-        let n = &nodes[i];
-        let own = n.bounds;
-        let Some(pin) = n.pin.as_ref().filter(|p| p.any()) else {
-            out[i] = Some(own);
-            return own;
-        };
-        if visiting.contains(&i) {
-            return own; // cycle: this pin is ignored
-        }
-        visiting.push(i);
-        let target = match pin.to {
-            PinTarget::Frame => Some(frame),
-            PinTarget::Layer(uid) => nodes.iter().position(|m| m.uid == uid && uid != 0).filter(|&j| j != i).map(|j| solve(j, nodes, frame, out, visiting)),
-        };
-        visiting.pop();
-        let Some(t) = target else {
-            out[i] = Some(own);
-            return own;
-        };
-        let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
-            let size = own[hi] - own[lo];
-            match (lo_on, hi_on) {
-                (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
-                (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
-                (false, true) => (t[hi] + pin.offsets[hi] - size, t[hi] + pin.offsets[hi]),
-                (false, false) => (own[lo], own[hi]),
+    // first layer with each uid, as the linear search found it
+    let mut by_uid = std::collections::HashMap::with_capacity(nodes.len());
+    for (j, n) in nodes.iter().enumerate() {
+        by_uid.entry(n.uid).or_insert(j);
+    }
+    // A depth-limited chain can be revisited from many starting layers. Resolve its edges
+    // once, rather than hashing the same UID on every visit (up to MAX_PIN_CHAIN per layer).
+    let targets: Vec<Option<usize>> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| match n.pin.as_ref().map(|p| p.to) {
+            Some(PinTarget::Layer(uid)) if uid != 0 => by_uid.get(&uid).copied().filter(|&j| j != i),
+            _ => None,
+        })
+        .collect();
+    drop(by_uid);
+    // Reuse the bounded path buffer, and mark entries with the current start index
+    // instead of setting and clearing a visitation bit at every recursive call.
+    let mut seen_in = vec![usize::MAX; nodes.len()];
+    let mut path = Vec::with_capacity(MAX_PIN_CHAIN);
+    let mut result = Vec::with_capacity(nodes.len());
+    for start in 0..nodes.len() {
+        let mut i = start;
+        let (mut b, cacheable) = loop {
+            if let Some(b) = out[i] {
+                break (b, true);
+            }
+            let n = &nodes[i];
+            let own = n.bounds;
+            let Some(pin) = n.pin.as_ref().filter(|p| p.any()) else {
+                out[i] = Some(own);
+                break (own, true);
+            };
+            // As before, revisiting a layer wins over the depth limit. A cycle
+            // can be cached; a cutoff depends on the starting layer and cannot.
+            if seen_in[i] == start {
+                break (own, true);
+            }
+            if path.len() == MAX_PIN_CHAIN {
+                break (own, false);
+            }
+            match pin.to {
+                PinTarget::Frame => {
+                    path.push((i, pin));
+                    break (frame, true);
+                }
+                PinTarget::Layer(_) => {
+                    let Some(j) = targets[i] else {
+                        out[i] = Some(own);
+                        break (own, true);
+                    };
+                    seen_in[i] = start;
+                    path.push((i, pin));
+                    i = j;
+                }
             }
         };
-        let (x0, x1) = axis(pin.left, pin.right, 0, 2);
-        let (y0, y1) = axis(pin.top, pin.bottom, 1, 3);
-        let b = [x0, y0, x1, y1];
-        out[i] = Some(b);
-        b
+        while let Some((i, pin)) = path.pop() {
+            b = pinned_bounds(&nodes[i], pin, b);
+            if cacheable {
+                out[i] = Some(b);
+            }
+        }
+        result.push(b);
     }
-    let mut visiting = Vec::new();
-    (0..nodes.len()).map(|i| solve(i, nodes, frame, &mut out, &mut visiting)).collect()
+    result
 }
+
+fn pinned_bounds(n: &PinNode, pin: &Pin, t: [f64; 4]) -> [f64; 4] {
+    let own = n.bounds;
+    let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
+        let size = own[hi] - own[lo];
+        match (lo_on, hi_on) {
+            (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
+            (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
+            (false, true) => (t[hi] + pin.offsets[hi] - size, t[hi] + pin.offsets[hi]),
+            (false, false) => (own[lo], own[hi]),
+        }
+    };
+    let (x0, x1) = axis(pin.left, pin.right, 0, 2);
+    let (y0, y1) = axis(pin.top, pin.bottom, 1, 3);
+    [x0, y0, x1, y1]
+}
+
+/// Longest chain of layers pinned to layers that [`resolve_pins`] follows (a template can supply any
+/// number of layers).
+const MAX_PIN_CHAIN: usize = 256;
 
 /// Roll / crawl direction (Responsive Design – Time ▸ Roll).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -464,6 +559,45 @@ mod tests {
     }
 
     #[test]
+    fn range_styles_lists_each_selected_character() {
+        let runs = apply_char_style(&[], 10, 2, 6, &bold());
+        let v = range_styles(&runs, 10, 4, 8);
+        assert_eq!(v, vec![bold(), bold(), CharStyle::default(), CharStyle::default()]);
+        assert_eq!(range_styles(&runs, 10, 8, 50).len(), 2, "clamped to the text");
+        assert!(range_styles(&runs, 10, 6, 3).is_empty());
+        assert!(range_styles(&runs, 10, 4, 4).is_empty(), "a caret selects nothing");
+        assert!(range_styles(&runs, 10, 12, 20).is_empty(), "past the end");
+        assert!(range_styles(&runs, 0, 0, 5).is_empty());
+    }
+
+    #[test]
+    fn range_styles_matches_the_expanded_text_for_every_range() {
+        // Overlapping, unsorted and out-of-range runs: later runs merge over earlier ones.
+        let red = CharStyle { fill: Some([1.0, 0.0, 0.0, 1.0]), ..Default::default() };
+        let big = CharStyle { size: Some(120.0), faux_bold: Some(false), ..Default::default() };
+        let runs = vec![StyleRun { start: 5, end: 9, style: red }, StyleRun { start: 1, end: 6, style: bold() }, StyleRun { start: 3, end: 40, style: big }];
+        let n = 10;
+        let all = expand(&runs, n);
+        for start in 0..=n + 2 {
+            for end in 0..=n + 2 {
+                let want: Vec<CharStyle> = all.iter().take(end.min(n)).skip(start.min(n)).cloned().collect();
+                assert_eq!(range_styles(&runs, n, start, end), want, "{start}..{end}");
+            }
+        }
+    }
+
+    #[test]
+    fn char_style_at_reads_the_overrides_covering_a_character() {
+        let red = CharStyle { fill: Some([1.0, 0.0, 0.0, 1.0]), ..Default::default() };
+        let big = CharStyle { size: Some(120.0), ..Default::default() };
+        let runs = apply_char_style(&apply_char_style(&[], 11, 6, 11, &red), 11, 8, 11, &big);
+        assert_eq!(char_style_at(&runs, 0), CharStyle::default());
+        assert_eq!(char_style_at(&runs, 6), red);
+        assert_eq!(char_style_at(&runs, 8), red.merged(&big));
+        assert_eq!(char_style_at(&runs, 11), CharStyle::default());
+    }
+
+    #[test]
     fn char_styles_merge_split_and_follow_edits() {
         let runs = apply_char_style(&[], 10, 2, 6, &bold());
         assert_eq!(runs, vec![StyleRun { start: 2, end: 6, style: bold() }]);
@@ -487,6 +621,64 @@ mod tests {
         // runs normalise and clamp
         let n = normalize_runs(&[StyleRun { start: 5, end: 50, style: bold() }, StyleRun { start: 0, end: 5, style: bold() }], 8);
         assert_eq!(n, vec![StyleRun { start: 0, end: 8, style: bold() }]);
+    }
+
+    #[test]
+    fn a_long_pin_chain_resolves_without_deep_recursion() {
+        // layer k is pinned to layer k + 1: a 200k-long acyclic chain from a template
+        let n = 200_000u64;
+        let b = [0.0, 0.0, 10.0, 10.0];
+        let nodes: Vec<PinNode> = (1..=n)
+            .map(|uid| PinNode { uid, pin: (uid < n).then(|| Pin::new(PinTarget::Layer(uid + 1), [true; 4], b, b)), bounds: b, resizable: true })
+            .collect();
+        let t = std::time::Instant::now();
+        let out = std::thread::Builder::new().stack_size(256 << 10).spawn(move || resolve_pins(&nodes, [0.0; 4])).unwrap().join().unwrap();
+        assert_eq!(out.len(), n as usize);
+        // Coverage instrumentation can slow this allocation- and hash-map-heavy stress test
+        // substantially. Keep the normal performance budget strict, with a bounded allowance
+        // only for instrumented runs (the shared SonarCloud workflow sets LLVM_PROFILE_FILE).
+        let budget = if std::env::var_os("LLVM_PROFILE_FILE").is_some() { 30 } else { 10 };
+        assert!(t.elapsed().as_secs() < budget, "{:?} (budget: {budget}s)", t.elapsed());
+    }
+
+    #[test]
+    fn indexed_pin_targets_keep_first_duplicate_and_reject_zero_self_and_missing() {
+        let own = [1.0, 2.0, 11.0, 12.0];
+        let first = [20.0, 30.0, 40.0, 50.0];
+        let pin = |uid, target| PinNode { uid, pin: Some(Pin::new(PinTarget::Layer(target), [true; 4], [0.0; 4], [0.0; 4])), bounds: own, resizable: true };
+        let nodes = vec![
+            pin(1, 7),
+            PinNode { uid: 7, pin: None, bounds: first, resizable: true },
+            PinNode { uid: 7, pin: None, bounds: [99.0; 4], resizable: true },
+            pin(2, 0),
+            PinNode { uid: 0, pin: None, bounds: [99.0; 4], resizable: true },
+            pin(3, 3),
+            pin(4, 999),
+        ];
+        let out = resolve_pins(&nodes, [0.0; 4]);
+        assert_eq!(out[0], first, "a duplicate UID still resolves to its first layer");
+        for i in [3, 5, 6] {
+            assert_eq!(out[i], own, "zero, self and missing targets leave the layer unchanged");
+        }
+    }
+
+    #[test]
+    fn layers_within_the_chain_limit_follow_the_frame_whatever_is_resolved_first() {
+        // layer k is pinned to layer k + 1 and the last one to the frame: resolving layer 0 first
+        // hits the depth cutoff far from the frame, which must not leak into the shorter chains
+        let n = MAX_PIN_CHAIN as u64 + 44;
+        let b = [0.0, 0.0, 10.0, 10.0];
+        let frame = [100.0, 100.0, 110.0, 110.0];
+        let nodes: Vec<PinNode> = (1..=n)
+            .map(|uid| {
+                let to = if uid < n { PinTarget::Layer(uid + 1) } else { PinTarget::Frame };
+                PinNode { uid, pin: Some(Pin::new(to, [true; 4], b, b)), bounds: b, resizable: true }
+            })
+            .collect();
+        let out = resolve_pins(&nodes, frame);
+        for k in 0..MAX_PIN_CHAIN {
+            assert_eq!(out[n as usize - 1 - k], frame, "layer {} is {} links from the frame", n as usize - 1 - k, k + 1);
+        }
     }
 
     #[test]

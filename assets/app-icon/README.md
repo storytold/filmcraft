@@ -23,10 +23,8 @@ Exactly three colours:
 
 ## Provenance
 
-The owner drew it in ArtCraft as a 2880 px engraving-style image. The original is kept in craftrules
-at `craftrules/assets/app-icons/filmcraft/source.png` (not in this repo). It was vectorised with
-craftrules `assets/logo-options/_tools/vectorize_tile.py`, which keys the drawing to the three-colour
-palette and traces the ink with potrace. Licence: [LICENSE.txt](LICENSE.txt) (MIT OR Apache-2.0).
+The owner drew it in ArtCraft as a 2880 px engraving-style image, vectorised with potrace, which keys
+the drawing to the three-colour palette and traces the ink. Licence: [LICENSE.txt](LICENSE.txt) (MIT OR Apache-2.0).
 
 ## Files
 
@@ -55,6 +53,25 @@ The web app's `apps/filmcraft-web/web/favicon.png` (128 px) comes from the same 
 ## Regenerate
 
 `packaging/icons.sh` (needs `resvg`; `iconutil` on macOS for the `.icns`; the `.ico` is packed by
-`cargo xtask ico`). To change the artwork, replace `filmcraft.svg` and `filmcraft-small.svg` with new
-exports from craftrules, then run the script. Every derived file needs its `.attribution` sidecar
+`cargo xtask ico`). To change the artwork, replace `filmcraft.svg` and `filmcraft-small.svg`, then run the script. Every derived file needs its `.attribution` sidecar
 and a row in `ATTRIBUTION.md`.
+
+## Nightly channel
+
+The nightly derivatives keep the foreground artwork, alpha and macOS padding unchanged. Only the
+background contribution changes, from the FilmCraft violet (`#8b5cf6`) to the deeper Nightly field
+(`#3c2a63`). There is no letter badge or crescent; the app and the Launcher also say the channel in
+text.
+
+| File | What |
+|---|---|
+| `filmcraft-nightly.png` | 256 px native icon: the Linux tar member and the runtime icon on Windows/Linux |
+| `filmcraft-nightly.ico` | Windows icon, 16–256 px, embedded in `filmcraft.exe` by `build.rs` for the nightly channel only |
+| `filmcraft-nightly-1024.png` | 1024 px master for the `.icns` slots |
+| `filmcraft-nightly.icns` | macOS bundle icon (`CFBundleIconFile`) of `FilmCraft Nightly.app` |
+| `filmcraft-nightly-macos-512.png` | Runtime Dock icon on macOS |
+
+Input/output hashes and the palette recipe are recorded in
+[`nightly-provenance.json`](nightly-provenance.json). Stable source files are not recoloured:
+`packaging/macos/nightly.sh`, `packaging/linux/nightly.sh` and `packaging/windows/nightly.ps1`
+select these files, and nothing in the stable package does.

@@ -1,14 +1,13 @@
 # Contributing
 
-Read [AGENTS.md](../AGENTS.md) first. Its rules on assets, clean-room code and licences are
-absolute and override everything here. Then read [architecture.md](architecture.md) and the README
+Read [AGENTS.md](../AGENTS.md) first: the shared rules and the facts about this repository. Then read [architecture.md](architecture.md) and the README
 of the crate you will change.
 
 ## 1. Setup
 
 | | All platforms |
 |---|---|
-| Rust | stable ≥ 1.95 (edition 2024; egui 0.36 requires it), via [rustup](https://rustup.rs) |
+| Rust | stable ≥ 1.95 (edition 2024; egui 0.37 requires it), via [rustup](https://rustup.rs) |
 | wasm target | `rustup target add wasm32-unknown-unknown` (for `cargo xtask wasm`) |
 | Components | `rustup component add rustfmt clippy` |
 | ffmpeg + ffprobe (optional) | test oracle and fixture generator only; tests skip without it |
@@ -39,6 +38,7 @@ cargo xtask web --serve 8765                          # the web app on http://12
 | Variable | Effect |
 |---|---|
 | `FILMCRAFT_CONTROL_PORT` | Same as `--control <port>` |
+| `FILMCRAFT_CONTROL_TOKEN` | Required for `--control`: 64 random hex characters, inherited by authorized clients; [setup](control-protocol.md) |
 | `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
 | `FILMCRAFT_DEV_DESKTOP_ENTRY=1` | Linux, opt-in: a run from a source tree installs a user-level desktop entry (and the icons from `assets/app-icon`) so the taskbar shows the FilmCraft icon. Nothing is written without it; packaged runs never write one |
 | `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |
@@ -73,7 +73,7 @@ browser console instead.
 ### Building with craft-fonts
 
 Font assets live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this
-repo ([standard](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)). It is an optional build input, not a Cargo
+repo. It is an optional build input, not a Cargo
 dependency:
 
 ```sh
@@ -88,7 +88,8 @@ Regular, to keep the wasm small). The Japanese ones become the last fallback of 
 (`crates/ui-egui/src/theme.rs`, BIZ UDPGothic first) and fallback faces in the text engine (Gothic
 for sans text, Mincho for serif text). Without `CRAFT_FONTS_DIR`, `CRAFT_FONTS` is empty and
 FilmCraft uses its bundled and system fonts. A `CRAFT_FONTS_DIR` that is not a checkout is a build
-warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). Tests on these fonts'
+warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). With
+`CRAFT_FONTS_REQUIRED=1`, a build without `CRAFT_FONTS_DIR` is an error too. Tests on these fonts'
 glyphs skip when it is empty; when you touch fonts, run the gates both with and without it.
 
 Chinese media names and track labels use the `Hans` / `Hant` craft-fonts faces after the Japanese
@@ -110,17 +111,17 @@ character index.
 
 ## 3. Quality gates
 
-Every commit must pass all of these:
+Run the checks that apply to the crates you changed. `cargo xtask ci` runs all of them:
 
 | Gate | Command |
 |---|---|
 | Format | `cargo fmt --check` (`rustfmt.toml`: `max_width = 160`) |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Tests | `cargo test --workspace` |
+| Tests | `cargo nextest run --workspace` ([cargo-nextest](https://nexte.st), or `cargo test --workspace`), then `cargo test --workspace --doc` |
 | Layering | `cargo xtask layers` |
 | Assets | `cargo xtask assets` |
 | wasm | `cargo xtask wasm` (checks every L0–L4 crate, `filmcraft-ui-egui` and `filmcraft-web` for `wasm32-unknown-unknown`) |
-| All of the above | `cargo xtask ci` (runs clippy and tests with `--release`) |
+| All of the above | `cargo xtask ci` |
 
 Run them with `CRAFT_FONTS_DIR` set too when you change font code ([craft-fonts](#building-with-craft-fonts)).
 
@@ -129,8 +130,8 @@ Run them with `CRAFT_FONTS_DIR` set too when you change font code ([craft-fonts]
 ### Never crash
 
 Production code must never crash: a crash loses someone's work, so this outranks feature work. The rules
-are in [AGENTS.md](../AGENTS.md) §0. In short: return `Result<T, E>` instead of `unwrap()` / `expect()` /
-`panic!` / `unreachable!` / `todo!` / `unimplemented!`; no `unsafe`; use `get()`, `checked_*` /
+are rule 13 of [AGENTS.md](../AGENTS.md). In short: return `Result<T, E>` instead of `unwrap()` / `expect()` /
+`panic!` / `unreachable!` / `todo!` / `unimplemented!`; no `unsafe` outside `crates/platform`; use `get()`, `checked_*` /
 `saturating_*` and validated bounds on anything that came from a file, a command parameter or the UI;
 bound recursion; tolerate lock poisoning; catch panics in background threads and report them as errors.
 Clean crates deny the panicking lints outside tests (`clippy.toml` allows them in tests). Every crash fix
@@ -143,7 +144,6 @@ comes with a regression test; parsers, decoders and commands get fuzz / hostile-
   `M9.9: Matroska/WebM import`. Milestones (`M0`–`M16`) are listed in
   [ROADMAP.md](../ROADMAP.md). If your change has no task id, use the area: `docs: …`,
   `README: …`, `ROADMAP: …`.
-- Commit only green states (all gates pass).
 - When a milestone lands, update its row in [roadmap.md](roadmap.md) (status, what's done, estimates), the summary in `ROADMAP.md`, and the parity doc and [gaps.md](gaps.md) entry it moves, with their "Last updated" lines and revision history.
 - AI agents end commit messages with the attribution line their environment requires.
 
@@ -190,6 +190,8 @@ export CARGO_TARGET_DIR=target/agent-hevc     # separate build dir, no lock figh
 4. The command now appears in menus (from `menu`), shortcuts, `filmcraft-cli commands`,
    `engine.commands` and MCP `command_list` without further work.
 
+**Move identity uniqueness.** A move plan lists each clip identity at most once. The core move operation rejects repeated ids before mutation or id allocation; placing one identity on multiple tracks makes selection and later identity-based editing ambiguous. Copies receive new ids and retain each entry's requested destination. Destination track creation and the edit commit together. In an idle session, a rejected duplicate move retains the project and its undo and redo history. Selection-derived edit plans keep each identity once in first-occurrence order before expanding linked partners; explicit move requests with repeated identities are still rejected.
+
 ### A video effect
 
 1. Define it in `build_effects()` in `crates/project/src/effect.rs` with the `video(id, name,
@@ -229,7 +231,7 @@ stream is cut into blocks (there are tests for this).
 ### A codec or container crate
 
 1. **Spec first.** Work only from the public specification (ITU-T, ISO/IEC, IETF RFCs, SMPTE,
-   published container specs). Never copy GPL/LGPL code, and follow AGENTS.md §2 on reading other
+   published container specs). Never copy GPL/LGPL code, and follow [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md) on reading other
    implementations. Name the spec edition in the crate README.
 2. Create `crates/<name>` as an L0 crate that depends only on `filmcraft-bitstream` (plus
    `thiserror` and optional `rayon` behind a `threads` feature). Add `[lints] workspace = true`, add
@@ -244,7 +246,7 @@ stream is cut into blocks (there are tests for this).
    - containers: an `Opener` in `codecs::openers()`;
    - encoders: an `export::VideoEncoder` / audio encoder plus a `Format` in `crates/export`.
 5. Write the README: features, API, test matrix, accuracy and speed numbers, limitations. Use
-   `crates/h264/README.md` as the model.
+   the H.264 README in craft-libs (`crates/video/src/h264/decode/README.md`) as the model.
 
 ### A panel or widget
 
@@ -258,13 +260,13 @@ stream is cut into blocks (there are tests for this).
 - UI state that should survive or be scriptable goes in `crates/ui-egui/src/state.rs` (serde), so
   `ui.inspect` and `ui.set` can reach it.
 - Project changes go through `session.execute(…)`, never by mutating the project directly.
-- Icons are drawn in code in `crates/ui-egui/src/icons.rs`, from scratch (AGENTS.md §1).
+- Icons are drawn in code in `crates/ui-egui/src/icons.rs`, from scratch ([standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)).
 - Look at the result: run with `--control`, drive it, take `ui.screenshot`
   ([agents.md](agents.md#3-verifying-ui-work)).
 
 ### An asset
 
-The rules are in [AGENTS.md §1](../AGENTS.md#1-assets-no-adobe-artwork-every-asset-licensed-and-attributed).
+The rules are in [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md) and [AGENTS.md](../AGENTS.md).
 In short:
 
 - No Adobe iconography, images, fonts, LUTs, presets or other Adobe assets, in any form, including
@@ -277,8 +279,7 @@ In short:
 - **Fonts live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), not here.**
   Don't commit new font files to this repo (the Latin UI fonts already in `assets/fonts/` stay): add
   the font to craft-fonts (file, licence, manifest line, `ATTRIBUTION.md` row) and use it through
-  `filmcraft_text::fonts::CRAFT_FONTS`. See [Building with craft-fonts](#building-with-craft-fonts)
-  and [`craftrules/standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md).
+  `filmcraft_text::fonts::CRAFT_FONTS`. See [Building with craft-fonts](#building-with-craft-fonts).
 
 For each asset file `X`, commit a sidecar `X.attribution`. This is the real one for
 `assets/fonts/Inter-Regular.ttf`:

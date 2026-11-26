@@ -280,6 +280,297 @@ fn phones(text: &str) -> Vec<Phone> {
     out
 }
 
+/// Context of the letter being spelled out by [`speak_word`].
+#[derive(Clone, Copy)]
+struct Letter {
+    a: char,
+    b: char,
+    d: char,
+    i: usize,
+    n: usize,
+    long: bool,
+    vd: f32,
+    stressed: bool,
+}
+
+/// Spelling rules for the letter 'a'.
+fn spell_a(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, long, vd, stressed, .. } = *cx;
+    match cx.a {
+        'a' if b == 'i' || b == 'y' => {
+            diphthong(out, EH, IY, stressed);
+            2
+        }
+        'a' if b == 'u' || b == 'w' => {
+            out.push(vowel(AO, vd));
+            2
+        }
+        'a' if b == 'r' => {
+            out.push(vowel(AA, vd));
+            out.push(glide([420.0, 1300.0, 1600.0]));
+            2
+        }
+        'a' if long => {
+            diphthong(out, EH, IY, stressed);
+            1
+        }
+        _ => {
+            out.push(vowel(if stressed { AE } else { AH }, vd));
+            1
+        }
+    }
+}
+
+/// Spelling rules for the letter 'e'.
+fn spell_e(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, i, n, vd, .. } = *cx;
+    match cx.a {
+        'e' if b == 'e' || b == 'a' => {
+            out.push(vowel(IY, vd + 20.0));
+            2
+        }
+        'e' if b == 'r' => {
+            out.push(vowel(ER, vd));
+            2
+        }
+        'e' if b == 'y' && i + 2 == n => {
+            out.push(vowel(IY, vd));
+            2
+        }
+        'e' if i == n - 1 && n > 2 => 1, // silent final e
+        _ => {
+            out.push(vowel(if i == n - 1 { IY } else { EH }, vd));
+            1
+        }
+    }
+}
+
+/// Spelling rules for the letter 'i'.
+fn spell_i(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, d, i, n, long, vd, stressed, .. } = *cx;
+    match cx.a {
+        'i' if b == 'g' && d == 'h' => {
+            diphthong(out, AA, IY, stressed);
+            3
+        }
+        'i' if long || (i == n - 1 && n <= 2) => {
+            diphthong(out, AA, IY, stressed);
+            1
+        }
+        'i' if b == 'r' => {
+            out.push(vowel(ER, vd));
+            2
+        }
+        _ => {
+            out.push(vowel(IH, vd));
+            1
+        }
+    }
+}
+
+/// Spelling rules for the letter 'o'.
+fn spell_o(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, d, i, n, long, vd, stressed, .. } = *cx;
+    match cx.a {
+        'o' if b == 'o' => {
+            out.push(vowel(if d == 'k' { UH } else { UW }, vd + 15.0));
+            2
+        }
+        'o' if b == 'u' || b == 'w' => {
+            diphthong(out, AA, UW, stressed);
+            2
+        }
+        'o' if b == 'i' || b == 'y' => {
+            diphthong(out, AO, IY, stressed);
+            2
+        }
+        'o' if b == 'a' || long || i == n - 1 => {
+            diphthong(out, AO, UW, stressed);
+            if b == 'a' { 2 } else { 1 }
+        }
+        'o' if b == 'r' => {
+            out.push(vowel(AO, vd));
+            out.push(glide([420.0, 1300.0, 1600.0]));
+            2
+        }
+        _ => {
+            out.push(vowel(AA, vd));
+            1
+        }
+    }
+}
+
+/// Spelling rules for the letter 'u'.
+fn spell_u(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, long, vd, .. } = *cx;
+    match cx.a {
+        'u' if long => {
+            out.push(glide([280.0, 2200.0, 3000.0]));
+            out.push(vowel(UW, vd));
+            1
+        }
+        'u' if b == 'r' => {
+            out.push(vowel(ER, vd));
+            2
+        }
+        _ => {
+            out.push(vowel(AH, vd));
+            1
+        }
+    }
+}
+
+/// Spelling rules for the letter 'y'.
+fn spell_y(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { i, n, vd, stressed, .. } = *cx;
+    match cx.a {
+        'y' if i == 0 => {
+            out.push(glide([280.0, 2200.0, 3000.0]));
+            1
+        }
+        _ => {
+            if i == n - 1 && n <= 3 {
+                diphthong(out, AA, IY, stressed);
+            } else {
+                out.push(vowel(if i == n - 1 { IY } else { IH }, vd));
+            }
+            1
+        }
+    }
+}
+
+/// Spelling rules for plosives and affricates.
+fn spell_stop(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, i, .. } = *cx;
+    match cx.a {
+        't' if b == 'h' => {
+            out.push(fricative(6000.0, 4000.0, 0.25, false, 80.0));
+            2
+        }
+        'c' if b == 'h' => {
+            stop(out, 4000.0, false);
+            out.push(fricative(2600.0, 1400.0, 0.7, false, 70.0));
+            2
+        }
+        'p' if b == 'h' => {
+            out.push(fricative(5000.0, 4000.0, 0.3, false, 90.0));
+            2
+        }
+        'c' if b == 'k' => {
+            stop(out, 2000.0, false);
+            2
+        }
+        'q' if b == 'u' => {
+            stop(out, 2000.0, false);
+            out.push(glide([300.0, 610.0, 2200.0]));
+            2
+        }
+        'c' if matches!(b, 'e' | 'i' | 'y') => {
+            out.push(fricative(6000.0, 2000.0, 0.6, false, 100.0));
+            1
+        }
+        'c' | 'k' | 'q' => {
+            stop(out, 2000.0, false);
+            1
+        }
+        'g' if matches!(b, 'e' | 'i') && i > 0 => {
+            stop(out, 3500.0, true);
+            out.push(fricative(2600.0, 1400.0, 0.5, true, 60.0));
+            1
+        }
+        'g' => {
+            stop(out, 2000.0, true);
+            1
+        }
+        'j' => {
+            stop(out, 3500.0, true);
+            out.push(fricative(2600.0, 1400.0, 0.5, true, 60.0));
+            1
+        }
+        'b' => {
+            stop(out, 800.0, true);
+            1
+        }
+        'd' => {
+            stop(out, 3500.0, true);
+            1
+        }
+        'p' => {
+            stop(out, 800.0, false);
+            1
+        }
+        't' => {
+            stop(out, 4000.0, false);
+            1
+        }
+        'x' => {
+            stop(out, 2000.0, false);
+            out.push(fricative(6000.0, 2000.0, 0.6, false, 90.0));
+            1
+        }
+        _ => 1,
+    }
+}
+
+/// Spelling rules for fricatives, glides and nasals.
+fn spell_other(cx: &Letter, out: &mut Vec<Phone>) -> usize {
+    let Letter { b, .. } = *cx;
+    match cx.a {
+        's' if b == 'h' => {
+            out.push(fricative(2600.0, 1400.0, 0.7, false, 110.0));
+            2
+        }
+        'w' if b == 'h' => {
+            out.push(glide([300.0, 610.0, 2200.0]));
+            2
+        }
+        'n' if b == 'g' => {
+            out.push(nasal([250.0, 2300.0, 2700.0]));
+            2
+        }
+        'f' => {
+            out.push(fricative(5000.0, 4000.0, 0.3, false, 90.0));
+            1
+        }
+        'v' => {
+            out.push(fricative(5000.0, 4000.0, 0.25, true, 70.0));
+            1
+        }
+        's' => {
+            out.push(fricative(6000.0, 2000.0, 0.6, false, 100.0));
+            1
+        }
+        'z' => {
+            out.push(fricative(6000.0, 2000.0, 0.45, true, 85.0));
+            1
+        }
+        'h' => {
+            out.push(fricative(1500.0, 2500.0, 0.3, false, 55.0));
+            1
+        }
+        'l' => {
+            out.push(glide([360.0, 1300.0, 2700.0]));
+            1
+        }
+        'r' => {
+            out.push(glide([420.0, 1300.0, 1600.0]));
+            1
+        }
+        'w' => {
+            out.push(glide([300.0, 610.0, 2200.0]));
+            1
+        }
+        'm' => {
+            out.push(nasal([250.0, 1100.0, 2400.0]));
+            1
+        }
+        'n' => {
+            out.push(nasal([250.0, 1700.0, 2600.0]));
+            1
+        }
+        _ => 1,
+    }
+}
 /// Spelling rules for one lowercase ASCII word.
 fn speak_word(w: &str, out: &mut Vec<Phone>) {
     let c: Vec<char> = w.chars().collect();
@@ -294,229 +585,16 @@ fn speak_word(w: &str, out: &mut Vec<Phone>) {
         let long = magic_e && i == n - 3;
         let vd = if stressed { 115.0 } else { 80.0 };
         let before = out.len();
+        let cx = Letter { a, b, d, i, n, long, vd, stressed };
         let step = match a {
-            'a' if b == 'i' || b == 'y' => {
-                diphthong(out, EH, IY, stressed);
-                2
-            }
-            'a' if b == 'u' || b == 'w' => {
-                out.push(vowel(AO, vd));
-                2
-            }
-            'a' if b == 'r' => {
-                out.push(vowel(AA, vd));
-                out.push(glide([420.0, 1300.0, 1600.0]));
-                2
-            }
-            'a' if long => {
-                diphthong(out, EH, IY, stressed);
-                1
-            }
-            'a' => {
-                out.push(vowel(if stressed { AE } else { AH }, vd));
-                1
-            }
-            'e' if b == 'e' || b == 'a' => {
-                out.push(vowel(IY, vd + 20.0));
-                2
-            }
-            'e' if b == 'r' => {
-                out.push(vowel(ER, vd));
-                2
-            }
-            'e' if b == 'y' && i + 2 == n => {
-                out.push(vowel(IY, vd));
-                2
-            }
-            'e' if i == n - 1 && n > 2 => 1, // silent final e
-            'e' => {
-                out.push(vowel(if i == n - 1 { IY } else { EH }, vd));
-                1
-            }
-            'i' if b == 'g' && d == 'h' => {
-                diphthong(out, AA, IY, stressed);
-                3
-            }
-            'i' if long || (i == n - 1 && n <= 2) => {
-                diphthong(out, AA, IY, stressed);
-                1
-            }
-            'i' if b == 'r' => {
-                out.push(vowel(ER, vd));
-                2
-            }
-            'i' => {
-                out.push(vowel(IH, vd));
-                1
-            }
-            'o' if b == 'o' => {
-                out.push(vowel(if d == 'k' { UH } else { UW }, vd + 15.0));
-                2
-            }
-            'o' if b == 'u' || b == 'w' => {
-                diphthong(out, AA, UW, stressed);
-                2
-            }
-            'o' if b == 'i' || b == 'y' => {
-                diphthong(out, AO, IY, stressed);
-                2
-            }
-            'o' if b == 'a' || long || i == n - 1 => {
-                diphthong(out, AO, UW, stressed);
-                if b == 'a' { 2 } else { 1 }
-            }
-            'o' if b == 'r' => {
-                out.push(vowel(AO, vd));
-                out.push(glide([420.0, 1300.0, 1600.0]));
-                2
-            }
-            'o' => {
-                out.push(vowel(AA, vd));
-                1
-            }
-            'u' if long => {
-                out.push(glide([280.0, 2200.0, 3000.0]));
-                out.push(vowel(UW, vd));
-                1
-            }
-            'u' if b == 'r' => {
-                out.push(vowel(ER, vd));
-                2
-            }
-            'u' => {
-                out.push(vowel(AH, vd));
-                1
-            }
-            'y' if i == 0 => {
-                out.push(glide([280.0, 2200.0, 3000.0]));
-                1
-            }
-            'y' => {
-                if i == n - 1 && n <= 3 {
-                    diphthong(out, AA, IY, stressed);
-                } else {
-                    out.push(vowel(if i == n - 1 { IY } else { IH }, vd));
-                }
-                1
-            }
-            't' if b == 'h' => {
-                out.push(fricative(6000.0, 4000.0, 0.25, false, 80.0));
-                2
-            }
-            's' if b == 'h' => {
-                out.push(fricative(2600.0, 1400.0, 0.7, false, 110.0));
-                2
-            }
-            'c' if b == 'h' => {
-                stop(out, 4000.0, false);
-                out.push(fricative(2600.0, 1400.0, 0.7, false, 70.0));
-                2
-            }
-            'p' if b == 'h' => {
-                out.push(fricative(5000.0, 4000.0, 0.3, false, 90.0));
-                2
-            }
-            'w' if b == 'h' => {
-                out.push(glide([300.0, 610.0, 2200.0]));
-                2
-            }
-            'n' if b == 'g' => {
-                out.push(nasal([250.0, 2300.0, 2700.0]));
-                2
-            }
-            'c' if b == 'k' => {
-                stop(out, 2000.0, false);
-                2
-            }
-            'q' if b == 'u' => {
-                stop(out, 2000.0, false);
-                out.push(glide([300.0, 610.0, 2200.0]));
-                2
-            }
-            'c' if matches!(b, 'e' | 'i' | 'y') => {
-                out.push(fricative(6000.0, 2000.0, 0.6, false, 100.0));
-                1
-            }
-            'c' | 'k' | 'q' => {
-                stop(out, 2000.0, false);
-                1
-            }
-            'g' if matches!(b, 'e' | 'i') && i > 0 => {
-                stop(out, 3500.0, true);
-                out.push(fricative(2600.0, 1400.0, 0.5, true, 60.0));
-                1
-            }
-            'g' => {
-                stop(out, 2000.0, true);
-                1
-            }
-            'j' => {
-                stop(out, 3500.0, true);
-                out.push(fricative(2600.0, 1400.0, 0.5, true, 60.0));
-                1
-            }
-            'b' => {
-                stop(out, 800.0, true);
-                1
-            }
-            'd' => {
-                stop(out, 3500.0, true);
-                1
-            }
-            'p' => {
-                stop(out, 800.0, false);
-                1
-            }
-            't' => {
-                stop(out, 4000.0, false);
-                1
-            }
-            'x' => {
-                stop(out, 2000.0, false);
-                out.push(fricative(6000.0, 2000.0, 0.6, false, 90.0));
-                1
-            }
-            'f' => {
-                out.push(fricative(5000.0, 4000.0, 0.3, false, 90.0));
-                1
-            }
-            'v' => {
-                out.push(fricative(5000.0, 4000.0, 0.25, true, 70.0));
-                1
-            }
-            's' => {
-                out.push(fricative(6000.0, 2000.0, 0.6, false, 100.0));
-                1
-            }
-            'z' => {
-                out.push(fricative(6000.0, 2000.0, 0.45, true, 85.0));
-                1
-            }
-            'h' => {
-                out.push(fricative(1500.0, 2500.0, 0.3, false, 55.0));
-                1
-            }
-            'l' => {
-                out.push(glide([360.0, 1300.0, 2700.0]));
-                1
-            }
-            'r' => {
-                out.push(glide([420.0, 1300.0, 1600.0]));
-                1
-            }
-            'w' => {
-                out.push(glide([300.0, 610.0, 2200.0]));
-                1
-            }
-            'm' => {
-                out.push(nasal([250.0, 1100.0, 2400.0]));
-                1
-            }
-            'n' => {
-                out.push(nasal([250.0, 1700.0, 2600.0]));
-                1
-            }
-            _ => 1,
+            'a' => spell_a(&cx, out),
+            'e' => spell_e(&cx, out),
+            'i' => spell_i(&cx, out),
+            'o' => spell_o(&cx, out),
+            'u' => spell_u(&cx, out),
+            'y' => spell_y(&cx, out),
+            'c' | 'k' | 'q' | 'g' | 'j' | 'b' | 'd' | 'p' | 't' | 'x' => spell_stop(&cx, out),
+            _ => spell_other(&cx, out),
         };
         let added_vowel = out.get(before..).is_some_and(|s| s.iter().any(|p| p.kind == Kind::Vowel));
         if added_vowel && stressed {

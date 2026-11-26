@@ -7,7 +7,12 @@ use std::ptr;
 use filmcraft_codecs::hw::NalCodec;
 use filmcraft_frame::VideoFrame;
 
-use super::ffi::*;
+use super::ffi::{
+    CUVID_PKT_ENDOFPICTURE, CUVID_PKT_ENDOFSTREAM, CUVID_PKT_TIMESTAMP, CUVIDDECODECAPS, CUVIDDECODECREATEINFO, CUVIDEOFORMAT, CUVIDPARSERDISPINFO,
+    CUVIDPARSERPARAMS, CUVIDPICPARAMS, CUVIDPROCPARAMS, CUVIDSOURCEDATAPACKET, CreateDecoder, CreateVideoParser, DecodePicture, DestroyDecoder,
+    DestroyVideoParser, GetDecoderCaps, MapVideoFrame, ParseVideoData, ShortRect, UnmapVideoFrame, cudaVideoChromaFormat_420, cudaVideoCodec_H264,
+    cudaVideoCodec_HEVC, cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat_NV12, cudaVideoSurfaceFormat_P016,
+};
 use crate::biplanar::{Biplanar, Geometry, to_frame};
 use crate::nvenc::device::Device;
 
@@ -238,7 +243,7 @@ impl State {
         device.copy_to_host(address, &mut host)?;
         let luma = host.get(..luma_size).ok_or("NVDEC luma range is invalid")?;
         let chroma = host.get(luma_size..).ok_or("NVDEC chroma range is invalid")?;
-        to_frame(&Biplanar { luma, chroma, stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
+        to_frame(&Biplanar { luma, chroma, stride: pitch as usize, chroma_stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
     }
 }
 fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32) -> Result<(usize, usize), String> {

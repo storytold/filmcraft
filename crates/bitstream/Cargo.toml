@@ -9,6 +9,4 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-
-[dev-dependencies]
-proptest = { workspace = true }
+craft-media = { workspace = true, features = ["bitstream"] }

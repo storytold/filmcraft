@@ -26,9 +26,26 @@ impl FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
+    }
+
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
+    }
 }
 
-fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
+/// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and
+/// Gaussian Blur, opaque, Normal, full frame: the kind the GPU runs as a `PlanStep::Adjust`).
+fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
     let mut p = filmcraft_project::Project::new("x");
     let g = GeneratorSource::new(
         Generator::ColorMatte { color: [0.2, 0.5, 0.9, 1.0] },
@@ -41,7 +58,7 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
     let red = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -51,10 +68,11 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
-    let seq = p.new_sequence("s", SequenceSettings { width, height, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+    let tracks = if adjusted { 2 } else { 1 };
+    let seq = p.new_sequence("s", SequenceSettings { width, height, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, tracks, 1, None);
     let v = p
         .make_track_item(
             red,
@@ -65,24 +83,85 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
         )
         .unwrap();
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+    if adjusted {
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let a = p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width, height, rate, duration: rate.tick_of(2) }, None);
+        let mut ti =
+            p.make_track_item(a, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, rate.tick_of(2)), rate).unwrap();
+        for (id, param, v) in [("proc_amp", "brightness", 25.0), ("gaussian_blur", "blurriness", 6.0)] {
+            let mut e = filmcraft_project::find_effect(id).unwrap().instance();
+            e.param_mut(param).unwrap().value = filmcraft_project::ParamValue::Float(v);
+            ti.effects.insert(0, e);
+        }
+        p.sequence_mut(seq).unwrap().video_tracks[1].items.push(ti);
+    }
     let mut m = SourceMap::default();
     m.0.insert(red, Arc::new(g));
     (Arc::new(p), seq, m)
 }
 
-fn png(dir: &str, name: &str) -> Vec<u8> {
-    // image_sequence_path flattens the path stem: <stem><index>.png in the temp dir itself.
-    let index: u64 = name.trim_start_matches("img").trim_end_matches(".png").parse().unwrap_or(0);
-    std::fs::read(std::env::temp_dir().join(format!("fc-gpu-export-{dir}{index:03}.png"))).unwrap()
+/// Two colour mattes joined by a 4-frame Push transition (`FramePlan::Composite` with
+/// `PlanStep::Transition`) across frames 2..6.
+fn project_with_push_transition(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
+    let mut p = filmcraft_project::Project::new("push");
+    let rate = filmcraft_time::FrameRate::FPS_24;
+    let mut m = SourceMap::default();
+    let mut clips = Vec::new();
+    for (i, color) in [[0.9, 0.2, 0.1, 1.0], [0.1, 0.4, 0.95, 1.0]].into_iter().enumerate() {
+        let g = GeneratorSource::new(Generator::ColorMatte { color }, width, height, rate, filmcraft_time::Tick(2 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let item = p.add_item(
+            &format!("c{i}"),
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        m.0.insert(item, Arc::new(g));
+        clips.push(item);
+    }
+    let seq = p.new_sequence("s", SequenceSettings { width, height, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let a =
+        p.make_track_item(clips[0], TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, rate.tick_of(4)), rate).unwrap();
+    let b = p.make_track_item(clips[1], TrackKind::Video, rate.tick_of(4), TimeRange::new(filmcraft_time::Tick::ZERO, rate.tick_of(4)), rate).unwrap();
+    let (a_id, b_id) = (a.id, b.id);
+    let q = p.sequence_mut(seq).unwrap();
+    q.video_tracks[0].items.extend([a, b]);
+    q.video_tracks[0].transitions.push(filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(1),
+        effect: filmcraft_project::find_effect("push").unwrap().instance(),
+        start: rate.tick_of(2),
+        duration: rate.tick_of(4),
+        from: Some(a_id),
+        to: Some(b_id),
+        align: Default::default(),
+        reverse: false,
+    });
+    (Arc::new(p), seq, m)
 }
 
-fn export_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
-    let (p, seq, m) = project(w, h);
-    let mut s = ExportSettings {
-        format: Format::PngSequence,
-        path: std::env::temp_dir().join(format!("fc-gpu-export-{dir}")).to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+fn png(base: &std::path::Path, dir: &str, name: &str) -> Vec<u8> {
+    // image_sequence_path flattens the path stem: <stem><index>.png in the temp dir itself.
+    let index: u64 = name.trim_start_matches("img").trim_end_matches(".png").parse().unwrap_or(0);
+    std::fs::read(base.join(format!("{dir}{index:03}.png"))).unwrap()
+}
+
+fn export_png(base: &std::path::Path, dir: &str, gpu: GpuRendering, size: (u32, u32)) {
+    export_project_png(base, dir, gpu, size, false);
+}
+
+fn export_project_png(base: &std::path::Path, dir: &str, gpu: GpuRendering, (w, h): (u32, u32), adjusted: bool) {
+    let (p, seq, m) = project_with(w, h, adjusted);
+    let mut s = ExportSettings { format: Format::PngSequence, path: base.join(dir).to_string_lossy().into_owned(), ..Default::default() };
     s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
     s.gpu_rendering = gpu;
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
@@ -108,27 +187,78 @@ fn assert_parity(cpu_png: &[u8], gpu_png: &[u8], what: &str) {
     assert!(p99 <= 6 && mean < 1.5, "{what}: GPU parity p99 {p99}, mean {mean:.3}");
 }
 
+fn assert_adjustment_layer_export(base: &std::path::Path) {
+    let composited = filmcraft_gpu::export_renderer::timing::get().frames;
+    let GpuRenderStats { fallbacks, .. } = filmcraft_export::gpu_render_stats();
+    export_project_png(base, "adj-cpu", GpuRendering::Off, (320, 180), true);
+    export_project_png(base, "adj-gpu", GpuRendering::Auto, (320, 180), true);
+    for f in ["000", "001"] {
+        assert_parity(&png(base, "adj-cpu", &format!("img{f}.png")), &png(base, "adj-gpu", &format!("img{f}.png")), &format!("adjustment layer frame {f}"));
+    }
+    assert_ne!(png(base, "adj-cpu", "img000.png"), png(base, "off-cpu", "img000.png"), "the adjustment layer changes the picture");
+    let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
+    assert_eq!(gpu, 2, "both frames with the adjustment layer composited on the GPU");
+    assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");
+}
+
+fn assert_push_transition_export(base: &std::path::Path) {
+    let (push_p, push_seq, push_m) = project_with_push_transition(320, 180);
+    let export_push = |dir: &str, gpu: GpuRendering| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: base.join(dir).to_string_lossy().into_owned(), ..Default::default() };
+        s.range = Some(TimeRange::new(filmcraft_time::FrameRate::FPS_24.tick_of(2), filmcraft_time::FrameRate::FPS_24.tick_of(4)));
+        s.gpu_rendering = gpu;
+        export(&push_p, push_seq, &s, &push_m, &Progress::default()).unwrap();
+    };
+    let composited = filmcraft_gpu::export_renderer::timing::get().frames;
+    let GpuRenderStats { fallbacks, .. } = filmcraft_export::gpu_render_stats();
+    export_push("push-cpu", GpuRendering::Off);
+    export_push("push-gpu", GpuRendering::Auto);
+    for f in ["000", "001", "002", "003"] {
+        assert_parity(&png(base, "push-cpu", &format!("img{f}.png")), &png(base, "push-gpu", &format!("img{f}.png")), &format!("push transition frame {f}"));
+    }
+    assert_ne!(png(base, "push-cpu", "img001.png"), png(base, "push-cpu", "img002.png"), "the Push transition moves across frames");
+    let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
+    assert_eq!(gpu, 4, "all four Push transition frames composited on the GPU");
+    assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no Push transition frame fell back to the CPU");
+}
+
 #[test]
 fn gpu_export_matches_cpu_and_counts() {
     let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
         eprintln!("SKIPPED (gpu export pipeline): no adapter");
         return;
     };
+    // A fresh private folder, never a predictable name another user could have prepared; removed when the test ends.
+    let mut b = tempfile::Builder::new();
+    b.prefix("fc-gpu-export-");
+    // owner-only, so another local user cannot swap an output for a symlink
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    let tmp = b.tempdir().unwrap();
+    let base = tmp.path();
     // Clean registry first: Auto with no factory must be byte-equal to Off.
-    export_png("off-cpu", GpuRendering::Off, (320, 180));
-    export_png("off-auto", GpuRendering::Auto, (320, 180));
-    assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
+    export_png(base, "off-cpu", GpuRendering::Off, (320, 180));
+    export_png(base, "off-auto", GpuRendering::Auto, (320, 180));
+    assert_eq!(png(base, "off-cpu", "img000.png"), png(base, "off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
 
     register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
     let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
     for (i, size) in sizes.into_iter().enumerate() {
-        export_png("cpu", GpuRendering::Off, size);
-        export_png("gpu", GpuRendering::Auto, size);
+        export_png(base, "cpu", GpuRendering::Off, size);
+        export_png(base, "gpu", GpuRendering::Auto, size);
         for f in ["000", "001"] {
-            assert_parity(&png("cpu", &format!("img{f}.png")), &png("gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
+            assert_parity(&png(base, "cpu", &format!("img{f}.png")), &png(base, "gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
         }
         let _ = i;
     }
     let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
     assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
+
+    // An adjustment layer is composited by the GPU too (a `PlanStep::Adjust`), not handed to the
+    // CPU renderer, and matches the CPU export.
+    assert_adjustment_layer_export(base);
+
+    // A Push transition (`FramePlan::Composite` with `PlanStep::Transition`) also exports on the
+    // GPU `render_rgba8` path without falling back to the CPU, and matches the CPU export.
+    assert_push_transition_export(base);
 }

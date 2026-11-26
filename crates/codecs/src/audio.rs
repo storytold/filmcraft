@@ -1,5 +1,6 @@
 //! Audio decoding: PCM directly; compressed codecs through symphonia (bootstrap, MPL-2.0 unmodified).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
@@ -14,10 +15,74 @@ use symphonia::core::probe::Hint;
 
 use crate::{CodecError, Result};
 
+#[cfg(test)]
+#[path = "audio_panic_tests.rs"]
+mod panic_tests;
+
+/// A decoder that unwound may have partially changed its state. Keep it quarantined, including
+/// across seeks, until its owner creates a fresh decoder. Ordinary decode errors remain retryable.
+struct SymphoniaDecoder {
+    decoder: Box<dyn Decoder>,
+    failed: bool,
+}
+
+fn audio_panic(operation: &str) -> CodecError {
+    CodecError::Decode(format!("audio decoder panicked while {operation}; reopen the media to retry"))
+}
+
+/// Converts decoder panics to `CodecError::Decode` only when built with `panic = "unwind"`.
+/// The default `wasm32-unknown-unknown` target uses `panic = "abort"`, so decoder panics cannot
+/// be caught or converted. Process aborts and allocation failures that abort remain unrecoverable.
+fn guard_audio<T>(operation: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| audio_panic(operation))?
+}
+
+impl SymphoniaDecoder {
+    fn new(params: &CodecParameters) -> Result<Self> {
+        guard_audio("initializing Symphonia", || {
+            let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
+            Ok(Self { decoder, failed: false })
+        })
+    }
+
+    fn call<T>(&mut self, operation: &str, f: impl FnOnce(&mut dyn Decoder) -> T) -> Result<T> {
+        if self.failed {
+            return Err(CodecError::Decode("audio decoder is unavailable after a panic; reopen the media to retry".into()));
+        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self.decoder.as_mut()))) {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                self.failed = true;
+                Err(audio_panic(operation))
+            }
+        }
+    }
+
+    // Keep the two errors distinct: standalone imports skip ordinary corrupt packets, but must
+    // stop on a panic rather than report partially decoded audio as a successful import.
+    fn decode(&mut self, packet: &Packet) -> Result<symphonia::core::errors::Result<Vec<Vec<f32>>>> {
+        self.call("decoding a Symphonia packet", |decoder| {
+            let buf = decoder.decode(packet)?;
+            let spec = *buf.spec();
+            let ch = spec.channels.count().max(1);
+            let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+            sb.copy_interleaved_ref(buf);
+            let mut out = vec![Vec::with_capacity(sb.samples().len() / ch); ch];
+            for frame in sb.samples().chunks_exact(ch) {
+                for (channel, sample) in out.iter_mut().zip(frame) {
+                    channel.push(*sample);
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
 enum Inner {
-    /// Our own AAC-LC decoder. `up` interpolates HE-AAC's core to the output rate (see [`Upsample2x`]).
+    /// Our own AAC decoder (craft-audio): AAC-LC, and HE-AAC with its SBR high band when the
+    /// stream plays at twice the core rate (see [`craft_audio::aac::Decoder::set_sbr`]).
     /// Surround output is reordered to WAV/SMPTE order (see [`aac_to_wav_order`]).
-    Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
+    Aac { dec: Box<craft_audio::aac::Decoder>, asc: Vec<u8> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
     /// MPEG audio at this rate whose layer arrives with the first frame (MP4 / QuickTime name the
@@ -25,13 +90,13 @@ enum Inner {
     MpegPending(u32),
     /// Our own Opus decoder (always 48 kHz output; pre-skip is left to container timestamps).
     /// `order` maps output channel → decoded channel (Vorbis → WAV/SMPTE order for surround).
-    Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
+    Opus { dec: Box<craft_audio::opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
-    Symphonia(Box<dyn Decoder>),
+    Symphonia(SymphoniaDecoder),
     /// Our AC-3 and E-AC-3 decoder (ATSC A/52, Annex E).
-    Ac3(Box<filmcraft_ac3::Decoder>),
+    Ac3(Box<craft_audio::ac3::Decoder>),
     /// Our MPEG-1/2 audio Layer I and II decoder (ISO/IEC 11172-3, 13818-3).
-    Mpa(Box<filmcraft_mpa::Decoder>),
+    Mpa(Box<craft_audio::mpa::Decoder>),
 }
 
 /// Opus always decodes at 48 kHz (RFC 7845 §5.1: the input rate in the header is informational).
@@ -75,6 +140,14 @@ fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
     })
 }
 
+/// [`aac_to_wav_order`] for a stream's configuration. Configuration 0 takes the speakers its
+/// program config element spells out (`craft_audio::aac::speaker_config`), so a PCE carried in an
+/// MP4 `esds` or in LATM's `StreamMuxConfig` in the shape of 5.1 is reordered like configuration 6;
+/// a layout that cannot be told keeps the decoded order.
+fn aac_wav_order(asc: &craft_audio::aac::AudioSpecificConfig) -> Option<&'static [usize]> {
+    aac_to_wav_order(craft_audio::aac::speaker_config(asc))
+}
+
 /// `channels` reordered by `order` (output channel → decoded channel). A decode whose channel count
 /// does not match the order is returned unchanged.
 fn reorder(mut channels: Vec<Vec<f32>>, order: Option<&[usize]>) -> Vec<Vec<f32>> {
@@ -88,7 +161,7 @@ fn reorder(mut channels: Vec<Vec<f32>>, order: Option<&[usize]>) -> Vec<Vec<f32>
 /// without parsing frame lengths. For a multistream packet this is the first stream's TOC, which
 /// every stream shares. `None` for an empty or invalid (> 120 ms) packet.
 pub fn opus_packet_samples(data: &[u8]) -> Option<usize> {
-    let toc = filmcraft_opus::Toc::parse(*data.first()?);
+    let toc = craft_audio::opus::Toc::parse(*data.first()?);
     let frames = match data[0] & 3 {
         0 => 1,
         1 | 2 => 2,
@@ -111,23 +184,24 @@ impl PacketDecoder {
         if let Some(x) = extra {
             p.with_extra_data(x.into_boxed_slice());
         }
-        let dec = symphonia::default::get_codecs().make(&p, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
+        let dec = SymphoniaDecoder::new(&p)?;
         Ok(Self { inner: Inner::Symphonia(dec), channels: 0 })
     }
-    /// AAC: our decoder for AAC-LC and the AAC-LC core of HE-AAC (v1/v2); symphonia for other
+    /// AAC: our decoder for AAC-LC and HE-AAC (v1; the mono core of v2); symphonia for other
     /// object types. `sample_rate` is the stream's output rate: when it is twice the core rate
-    /// (HE-AAC, see [`aac_output_rate`]) the decoded core is upsampled to it.
+    /// (HE-AAC, see [`aac_output_rate`]) the SBR high band is decoded at that rate.
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
-        if let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
-            let up = upsamples_core(dec.sample_rate(), sample_rate).then(|| Box::new(Upsample2x::new(dec.channels())));
-            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up }, channels: 0 });
+        if let Ok(mut dec) = craft_audio::aac::Decoder::new(asc) {
+            let sbr = decodes_sbr(dec.sample_rate(), sample_rate);
+            dec.set_sbr(sbr);
+            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() }, channels: 0 });
         }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
     }
     /// Opus from an `OpusHead` (Matroska `CodecPrivate`, Ogg) or a `dOps` box payload. Output is
     /// 48 kHz; pre-skip is *not* trimmed here (Matroska `CodecDelay` / MP4 edit lists do that).
-    pub fn opus(head: filmcraft_opus::OpusHead) -> Result<Self> {
-        let dec = filmcraft_opus::Decoder::from_head(head, OPUS_RATE).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
+    pub fn opus(head: craft_audio::opus::OpusHead) -> Result<Self> {
+        let dec = craft_audio::opus::Decoder::from_head(head, OPUS_RATE).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
         let channels = dec.channels();
         let order = if dec.head().mapping_family == 1 { vorbis_to_wav_order(channels) } else { None };
         Ok(Self { inner: Inner::Opus { dec: Box::new(dec), order }, channels })
@@ -159,13 +233,13 @@ impl PacketDecoder {
         {
             return Ok(());
         }
-        let dec = filmcraft_aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
-        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up: None };
+        let dec = craft_audio::aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
+        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() };
         Ok(())
     }
     /// AC-3 and E-AC-3 (ATSC A/52, Annex E).
     pub fn ac3() -> Result<Self> {
-        Ok(Self { inner: Inner::Ac3(Box::new(filmcraft_ac3::Decoder::new())), channels: 0 })
+        Ok(Self { inner: Inner::Ac3(Box::new(craft_audio::ac3::Decoder::new())), channels: 0 })
     }
     /// Whether this decodes Opus (which needs [`OPUS_PRE_ROLL`] of pre-roll after a seek).
     pub fn is_opus(&self) -> bool {
@@ -180,7 +254,7 @@ impl PacketDecoder {
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             // the decoder needs the STREAMINFO body: `dfLa` holds it after the 4-byte block header
             C::Flac(f) => Self::new(CODEC_TYPE_FLAC, rate, f.metadata_blocks.get(4..38).map(<[u8]>::to_vec)),
-            C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
+            C::Opus(o) => Self::opus(craft_audio::opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             other => Err(CodecError::Unsupported(format!("{} audio", other.name()))),
         }
     }
@@ -191,12 +265,9 @@ impl PacketDecoder {
             self.inner = Self::mpeg_audio(layer, rate)?.inner;
         }
         let dec = match &mut self.inner {
-            Inner::Aac { dec, up, .. } => {
-                let mut out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
-                if let Some(up) = up {
-                    out = up.process(out);
-                }
-                let out = reorder(out, aac_to_wav_order(dec.config().channel_config));
+            Inner::Aac { dec, .. } => {
+                let out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                let out = reorder(out, aac_wav_order(dec.config()));
                 self.channels = out.len();
                 return Ok(out);
             }
@@ -262,35 +333,27 @@ impl PacketDecoder {
             }
         };
         let pkt = Packet::new_from_slice(0, ts, 0, data);
-        let buf = dec.decode(&pkt).map_err(|e| CodecError::Decode(e.to_string()))?;
-        let spec = *buf.spec();
-        let ch = spec.channels.count().max(1);
-        self.channels = ch;
-        let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
-        sb.copy_interleaved_ref(buf);
-        let s = sb.samples();
-        let n = s.len() / ch;
-        let mut out = vec![Vec::with_capacity(n); ch];
-        for i in 0..n {
-            for (c, o) in out.iter_mut().enumerate() {
-                o.push(s[i * ch + c]);
-            }
-        }
+        let out = dec.decode(&pkt)?.map_err(|e| CodecError::Decode(e.to_string()))?;
+        self.channels = out.len();
         Ok(out)
     }
     pub fn reset(&mut self) {
         match &mut self.inner {
-            Inner::Aac { dec, asc, up } => {
-                if let Ok(d) = filmcraft_aac::Decoder::new(asc) {
-                    **dec = d;
-                }
-                if let Some(up) = up {
-                    up.reset();
-                }
-            }
+            // craft-audio's reset clears the overlap, noise and SBR signal state but keeps the
+            // SBR header the stream last sent, so packets after a seek that carry no header still
+            // get their high band. Rebuilding the decoder would drop it until the next header.
+            Inner::Aac { dec, .. } => dec.reset(),
             Inner::Mpa(d) => d.reset(),
             Inner::Opus { dec, .. } => dec.reset(),
-            Inner::Symphonia(d) => d.reset(),
+            Inner::Symphonia(d) => {
+                // The legacy reset API cannot return an error. Log it now and keep the failure
+                // latched so the next decode reports it to the caller as well.
+                if !d.failed
+                    && let Err(error) = d.call("resetting Symphonia", |decoder| decoder.reset())
+                {
+                    log::error!("{error}");
+                }
+            }
             Inner::Ac3(d) => d.reset(),
             Inner::AacPending | Inner::MpegPending(_) => {}
         }
@@ -307,29 +370,16 @@ pub fn mpeg_audio_layer(frame: &[u8]) -> Option<u8> {
     }
 }
 
-/// The output rate of an AAC stream: twice the core rate for HE-AAC (ISO/IEC 14496-3 §1.6.5).
-/// Explicit signalling names the rate in the `AudioSpecificConfig`; with implicit signalling (an
-/// AAC-LC config at 24 kHz or less) SBR is only visible as fill-element data in the access units,
-/// so the first ones are decoded to look for it. `None` if `asc` is not one our decoder reads.
+/// The output rate of an AAC stream: twice the core rate for HE-AAC (ISO/IEC 14496-3 §1.6.5),
+/// from the `AudioSpecificConfig` or, with implicit signalling, the first access units
+/// ([`craft_audio::aac::output_rate`]). `None` if `asc` is not one our decoder reads.
 pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a [u8]>) -> Option<u32> {
-    let mut dec = filmcraft_aac::Decoder::new(asc).ok()?;
-    let core = dec.sample_rate();
-    if let Some(ext) = dec.config().extension_sample_rate {
-        return Some(ext);
-    }
-    if core <= 24_000 {
-        for au in first_units {
-            let _ = dec.decode(au);
-            if dec.sbr() {
-                return Some(core * 2);
-            }
-        }
-    }
-    Some(core)
+    craft_audio::aac::output_rate(asc, first_units)
 }
 
-/// Whether [`PacketDecoder::aac`] upsamples a decoded AAC core at `core` Hz to `rate` (HE-AAC).
-fn upsamples_core(core: u32, rate: u32) -> bool {
+/// Whether [`PacketDecoder::aac`] decodes the SBR high band of an AAC core at `core` Hz to play
+/// it at `rate` (HE-AAC).
+fn decodes_sbr(core: u32, rate: u32) -> bool {
     core.checked_mul(2) == Some(rate)
 }
 
@@ -348,7 +398,7 @@ pub enum FixedFrames<'a> {
 }
 
 /// Samples each packet decodes to at the stream's output `rate`, for codecs where that is the same
-/// for every packet: AAC 1024 (2048 when [`PacketDecoder::aac`] upsamples an HE-AAC core); MPEG
+/// for every packet: AAC 1024 (2048 when [`PacketDecoder::aac`] decodes HE-AAC with SBR); MPEG
 /// audio and AC-3 from the frame header of `first`, the stream's first packet; E-AC-3 from the
 /// syncframes of the program we decode in `first`. `None` when it is not known: an AAC
 /// configuration our decoder does not read, a header that does not parse, or a header whose rate
@@ -356,13 +406,13 @@ pub enum FixedFrames<'a> {
 pub fn fixed_packet_samples(codec: FixedFrames, first: &[u8], rate: u32) -> Option<i64> {
     let mpegts = match codec {
         FixedFrames::Aac(asc) => {
-            let core = filmcraft_aac::Decoder::new(asc).ok()?.sample_rate();
-            return Some(if upsamples_core(core, rate) { 2048 } else { 1024 });
+            let core = craft_audio::aac::Decoder::new(asc).ok()?.sample_rate();
+            return Some(if decodes_sbr(core, rate) { 2048 } else { 1024 });
         }
         FixedFrames::Eac3 => {
             let mut samples = 0usize;
             let mut p = 0;
-            while let Some(h) = first.get(p..).and_then(|b| filmcraft_ac3::parse_header(b).ok()) {
+            while let Some(h) = first.get(p..).and_then(|b| craft_audio::ac3::parse_header(b).ok()) {
                 if h.is_primary() {
                     if h.sample_rate != rate {
                         return None;
@@ -373,10 +423,10 @@ pub fn fixed_packet_samples(codec: FixedFrames, first: &[u8], rate: u32) -> Opti
             }
             return i64::try_from(samples).ok().filter(|&n| n > 0);
         }
-        FixedFrames::MpegAudio => filmcraft_mpegts::Codec::MpegAudio,
-        FixedFrames::Ac3 => filmcraft_mpegts::Codec::Ac3,
+        FixedFrames::MpegAudio => craft_media::mpegts::Codec::MpegAudio,
+        FixedFrames::Ac3 => craft_media::mpegts::Codec::Ac3,
     };
-    let f = filmcraft_mpegts::frame_info(&mpegts, first)?;
+    let f = craft_media::mpegts::frame_info(&mpegts, first)?;
     (f.sample_rate == rate && f.samples > 0).then_some(f.samples as i64)
 }
 
@@ -417,73 +467,6 @@ pub fn contiguous_starts(packets: impl IntoIterator<Item = PacketTime>, toleranc
         .collect()
 }
 
-/// Taps on each side of the interpolation point in [`Upsample2x`].
-const UPSAMPLE_HALF: usize = 12;
-
-/// 2× upsampler for HE-AAC. Our decoder reconstructs the AAC-LC core at half the output rate and
-/// not yet the SBR high band, so the core is interpolated to the output rate: timing and pitch are
-/// right and the band above the core's Nyquist stays empty. Even outputs are the input samples,
-/// odd ones a Blackman-windowed sinc half-band interpolation over 2 × [`UPSAMPLE_HALF`] inputs.
-/// The look-ahead delays the output by `UPSAMPLE_HALF` input samples (0.5 ms at 24 kHz); the
-/// state carries across packets, so a seek primed with the preceding packet gives the same
-/// samples as continuous decoding.
-#[derive(Clone)]
-pub struct Upsample2x {
-    taps: [f32; 2 * UPSAMPLE_HALF],
-    /// The last `2 × UPSAMPLE_HALF` input samples per channel.
-    hist: Vec<Vec<f32>>,
-}
-
-impl Upsample2x {
-    pub fn new(channels: usize) -> Self {
-        let m = UPSAMPLE_HALF as f64;
-        let mut taps = [0f32; 2 * UPSAMPLE_HALF];
-        let mut sum = 0.0;
-        for (k, t) in taps.iter_mut().enumerate() {
-            // distance from the interpolation point (halfway between two inputs)
-            let x = k as f64 - m + 0.5;
-            let sinc = (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x);
-            let w = 0.42 + 0.5 * (std::f64::consts::PI * x / m).cos() + 0.08 * (2.0 * std::f64::consts::PI * x / m).cos();
-            *t = (sinc * w) as f32;
-            sum += sinc * w;
-        }
-        for t in &mut taps {
-            *t = (*t as f64 / sum) as f32;
-        }
-        Self { taps, hist: vec![vec![0.0; 2 * UPSAMPLE_HALF]; channels] }
-    }
-
-    pub fn reset(&mut self) {
-        for h in &mut self.hist {
-            h.fill(0.0);
-        }
-    }
-
-    pub fn process(&mut self, input: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
-        if self.hist.len() < input.len() {
-            self.hist.resize(input.len(), vec![0.0; 2 * UPSAMPLE_HALF]);
-        }
-        let m = UPSAMPLE_HALF;
-        input
-            .into_iter()
-            .zip(&mut self.hist)
-            .map(|(x, hist)| {
-                let mut buf = std::mem::take(hist);
-                buf.extend_from_slice(&x);
-                let mut out = Vec::with_capacity(x.len() * 2);
-                // output pair i is centred on buf[i + m]: the sample itself, then the point halfway
-                // to the next one from buf[i + 1 ..= i + 2m]
-                for w in buf.windows(2 * m + 1).take(x.len()) {
-                    out.push(w[m]);
-                    out.push(w[1..].iter().zip(&self.taps).map(|(a, b)| a * b).sum());
-                }
-                *hist = buf.split_off(buf.len() - 2 * m);
-                out
-            })
-            .collect()
-    }
-}
-
 /// Whether AC-3 and E-AC-3 audio decode (our ATSC A/52 decoder).
 pub const AC3_DECODER: bool = true;
 
@@ -494,278 +477,38 @@ fn asc_bytes(object_type: u8, sf_index: u8, channel_config: u8) -> Vec<u8> {
     v.to_be_bytes().to_vec()
 }
 
-/// An ADTS frame (ISO/IEC 13818-7 §6.2): the equivalent AudioSpecificConfig and the raw data
-/// block. Frames with several raw data blocks are not split (`None`).
+/// An ADTS frame (ISO/IEC 13818-7 §6.2, parsed by [`craft_audio::aac::AdtsHeader`]): the
+/// equivalent AudioSpecificConfig and the raw data block. Frames with several raw data blocks are
+/// not split (`None`).
 pub fn adts_split(frame: &[u8]) -> Option<(Vec<u8>, &[u8])> {
-    if frame.len() < 7 || frame[0] != 0xFF || frame[1] & 0xF6 != 0xF0 {
-        return None;
-    }
-    let protection_absent = frame[1] & 1 != 0;
-    let profile = frame[2] >> 6;
-    let sf = (frame[2] >> 2) & 15;
-    let ch = ((frame[2] & 1) << 2) | (frame[3] >> 6);
-    let len = (((frame[3] & 3) as usize) << 11) | (frame[4] as usize) << 3 | (frame[5] as usize) >> 5;
-    if frame[6] & 3 != 0 {
-        return None;
-    }
-    let hdr = if protection_absent { 7 } else { 9 };
-    let end = len.min(frame.len());
-    (end > hdr).then(|| (asc_bytes(profile + 1, sf, ch), &frame[hdr..end]))
+    let h = craft_audio::aac::AdtsHeader::parse(frame).ok().filter(|h| h.raw_data_blocks == 1)?;
+    let end = h.frame_length.min(frame.len());
+    (end > h.header_length).then(|| (asc_bytes(h.object_type, h.sf_index, h.channel_config), &frame[h.header_length..end]))
 }
 
-/// The parts of a LATM StreamMuxConfig (ISO/IEC 14496-3 §1.7.3) we decode: one program, one
-/// layer, AAC-LC, variable frame length (type 0).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LatmConfig {
-    pub asc: Vec<u8>,
-    pub sample_rate: u32,
-    pub channels: u32,
-}
+/// LOAS / LATM (AAC in MPEG transport streams): craft-audio reads the StreamMuxConfig and the
+/// payload of the single sub-frame.
+pub use craft_audio::aac::{LatmConfig, latm_config, latm_split};
 
-const AAC_RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
-
-fn latm_value(r: &mut filmcraft_bitstream::BitReader) -> Option<u32> {
-    let n = r.read_bits(2).ok()? + 1;
-    r.read_bits(8 * n).ok()
-}
-
-/// StreamMuxConfig after `audioMuxVersion`, leaving the reader after it.
-fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfig> {
-    let version = r.read_bits(1).ok()?;
-    let version_a = if version == 1 { r.read_bits(1).ok()? } else { 0 };
-    if version_a != 0 {
-        return None;
-    }
-    if version == 1 {
-        latm_value(r)?; // taraBufferFullness
-    }
-    let _all_same_framing = r.read_bits(1).ok()?;
-    let sub_frames = r.read_bits(6).ok()?;
-    let programs = r.read_bits(4).ok()?;
-    let layers = r.read_bits(3).ok()?;
-    if sub_frames != 0 || programs != 0 || layers != 0 {
-        return None;
-    }
-    if version == 1 {
-        latm_value(r)?; // ascLen
-    }
-    // AudioSpecificConfig
-    let aot = r.read_bits(5).ok()?;
-    let sf = r.read_bits(4).ok()?;
-    if aot != 2 || sf == 15 {
-        return None;
-    }
-    let ch = r.read_bits(4).ok()?;
-    let frame_length_flag = r.read_bits(1).ok()?;
-    let depends_on_core = r.read_bits(1).ok()?;
-    let _extension = r.read_bits(1).ok()?;
-    if frame_length_flag != 0 || depends_on_core != 0 {
-        return None;
-    }
-    let frame_length_type = r.read_bits(3).ok()?;
-    if frame_length_type != 0 {
-        return None;
-    }
-    r.read_bits(8).ok()?; // latmBufferFullness
-    if r.read_bits(1).ok()? == 1 {
-        // otherData
-        if version == 1 {
-            latm_value(r)?;
-        } else {
-            loop {
-                let esc = r.read_bits(1).ok()?;
-                r.read_bits(8).ok()?;
-                if esc == 0 {
-                    break;
-                }
-            }
-        }
-    }
-    if r.read_bits(1).ok()? == 1 {
-        r.read_bits(8).ok()?; // crcCheckSum
-    }
-    Some(LatmConfig { asc: asc_bytes(2, sf as u8, ch as u8), sample_rate: *AAC_RATES.get(sf as usize)?, channels: if ch == 0 { 2 } else { ch } })
-}
-
-/// The configuration carried in a LOAS frame (`None` if it reuses an earlier one or is not
-/// supported).
-pub fn latm_config(frame: &[u8]) -> Option<LatmConfig> {
-    if frame.len() < 4 || frame[0] != 0x56 || frame[1] & 0xE0 != 0xE0 {
-        return None;
-    }
-    let mut r = filmcraft_bitstream::BitReader::new(&frame[3..]);
-    if r.read_bits(1).ok()? == 1 {
-        return None; // useSameStreamMux
-    }
-    stream_mux_config(&mut r)
-}
-
-/// A LOAS/LATM frame: its AudioSpecificConfig and the AAC payload of the single sub-frame.
-/// `last` is the configuration of earlier frames (used by frames that set useSameStreamMux,
-/// updated by frames that carry one).
-pub fn latm_split(frame: &[u8], last: &mut Option<LatmConfig>) -> Option<(Vec<u8>, Vec<u8>)> {
-    if frame.len() < 4 || frame[0] != 0x56 || frame[1] & 0xE0 != 0xE0 {
-        return None;
-    }
-    let mut r = filmcraft_bitstream::BitReader::new(&frame[3..]);
-    let same = r.read_bits(1).ok()? == 1;
-    let cfg = if same {
-        last.clone()?
-    } else {
-        let c = stream_mux_config(&mut r)?;
-        *last = Some(c.clone());
-        c
-    };
-    // PayloadLengthInfo (frameLengthType 0) then PayloadMux, bit-aligned
-    let mut len = 0usize;
-    loop {
-        let b = r.read_bits(8).ok()? as usize;
-        len += b;
-        if b != 255 {
-            break;
-        }
-    }
-    let mut payload = Vec::with_capacity(len);
-    for _ in 0..len {
-        payload.push(r.read_bits(8).ok()? as u8);
-    }
-    Some((cfg.asc, payload))
-}
-
-/// Blu-ray / AVCHD LPCM packet header (4 bytes before the samples).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlurayLpcm {
-    pub sample_rate: u32,
-    pub channels: usize,
-    pub bits: u32,
-}
-
-/// Channels of each channel_assignment code (mono, stereo, 3/0, 2/1, 3/1, 2/2, 3/2, 3/2+LFE,
-/// 3/4, 3/4+LFE).
-const BD_LPCM_CHANNELS: [usize; 12] = [0, 1, 0, 2, 3, 3, 4, 4, 5, 6, 7, 8];
-
-pub fn bluray_lpcm_header(p: &[u8]) -> Option<BlurayLpcm> {
-    if p.len() < 4 {
-        return None;
-    }
-    let channels = *BD_LPCM_CHANNELS.get((p[2] >> 4) as usize).filter(|&&c| c > 0)?;
-    let sample_rate = match p[2] & 15 {
-        1 => 48_000,
-        4 => 96_000,
-        5 => 192_000,
-        _ => return None,
-    };
-    let bits = match p[3] >> 6 {
-        1 => 16,
-        2 => 20,
-        3 => 24,
-        _ => return None,
-    };
-    Some(BlurayLpcm { sample_rate, channels, bits })
-}
-
-/// Decode one Blu-ray LPCM packet (big-endian; channels padded to an even count; 20-bit
-/// samples are stored in 24 bits).
-pub fn decode_bluray_lpcm(p: &[u8]) -> Option<Vec<Vec<f32>>> {
-    let h = bluray_lpcm_header(p)?;
-    let coded = (h.channels + 1) & !1;
-    let bps = if h.bits == 16 { 2 } else { 3 };
-    let data = &p[4..];
-    let n = data.len() / (coded * bps);
-    let mut out = vec![Vec::with_capacity(n); h.channels];
-    for k in 0..n {
-        for (c, o) in out.iter_mut().enumerate() {
-            let at = (k * coded + c) * bps;
-            let v = if bps == 2 {
-                i16::from_be_bytes([data[at], data[at + 1]]) as f32 / 32768.0
-            } else {
-                (i32::from_be_bytes([data[at], data[at + 1], data[at + 2], 0]) >> 8) as f32 / 8_388_608.0
-            };
-            o.push(v);
-        }
-    }
-    Some(out)
-}
-
-/// Bytes per two sample frames of DVD LPCM.
-pub fn dvd_lpcm_group_bytes(channels: usize, bits: u32) -> usize {
-    match bits {
-        16 => 4 * channels,
-        20 => 5 * channels,
-        _ => 6 * channels,
-    }
-}
-
-/// Decode DVD-Video LPCM (big-endian). 16-bit samples are interleaved; 20- and 24-bit samples
-/// come in groups of two frames: the upper 16 bits of all the group's samples, then their low
-/// 4 / 8 bits.
-pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>> {
-    let ch = channels.max(1);
-    let group = dvd_lpcm_group_bytes(ch, bits);
-    let groups = data.len() / group;
-    let mut out = vec![Vec::with_capacity(groups * 2); ch];
-    for g in 0..groups {
-        let b = &data[g * group..(g + 1) * group];
-        for f in 0..2 {
-            for (c, o) in out.iter_mut().enumerate() {
-                let k = f * ch + c;
-                let hi = i16::from_be_bytes([b[2 * k], b[2 * k + 1]]) as i32;
-                let v = match bits {
-                    16 => hi as f32 / 32768.0,
-                    20 => {
-                        let nib = b[4 * ch + k / 2];
-                        let lo = if k.is_multiple_of(2) { nib >> 4 } else { nib & 15 } as i32;
-                        ((hi << 4) | lo) as f32 / 524_288.0
-                    }
-                    _ => ((hi << 8) | b[4 * ch + k] as i32) as f32 / 8_388_608.0,
-                };
-                o.push(v);
-            }
-        }
-    }
-    out
-}
+/// Blu-ray and DVD LPCM packet decoding from the shared audio library.
+pub use craft_audio::lpcm::{BlurayLpcm, bluray_lpcm_header, decode_bluray_lpcm, decode_dvd_lpcm, dvd_lpcm_group_bytes};
 
 /// Decode interleaved PCM bytes into planar f32.
 pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f32>> {
-    let ch = cfg.channels.max(1) as usize;
-    let bps = (cfg.bits as usize).div_ceil(8);
-    let n = data.len() / (bps * ch);
-    let mut out = vec![Vec::with_capacity(n); ch];
-    for i in 0..n {
-        for (c, o) in out.iter_mut().enumerate() {
-            let off = (i * ch + c) * bps;
-            let b = &data[off..off + bps];
-            let v = match (cfg.bits, cfg.float, cfg.big_endian) {
-                (32, true, false) => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-                (32, true, true) => f32::from_be_bytes([b[0], b[1], b[2], b[3]]),
-                (64, true, false) => f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32,
-                (64, true, true) => f64::from_be_bytes(b.try_into().unwrap_or([0; 8])) as f32,
-                (8, _, _) => {
-                    if cfg.signed {
-                        b[0] as i8 as f32 / 128.0
-                    } else {
-                        (b[0] as f32 - 128.0) / 128.0
-                    }
-                }
-                (16, _, false) => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
-                (16, _, true) => i16::from_be_bytes([b[0], b[1]]) as f32 / 32768.0,
-                (24, _, false) => (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0,
-                (24, _, true) => (i32::from_be_bytes([b[0], b[1], b[2], 0]) >> 8) as f32 / 8_388_608.0,
-                (32, false, false) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-                (32, false, true) => i32::from_be_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-                _ => 0.0,
-            };
-            o.push(v);
-        }
-    }
+    let mut out = vec![Vec::new(); cfg.channels.max(1) as usize];
+    let format = craft_audio::pcm_interleaved::Format { bits: cfg.bits, float: cfg.float, big_endian: cfg.big_endian, signed: cfg.signed };
+    craft_audio::pcm_interleaved::decode_into(data, format, &mut out);
     out
 }
 
 /// Resample-read `frames` from planar source audio at `src_rate` into a buffer at `rate`,
 /// starting at output sample `start` (linear interpolation; the audio crate adds sinc later).
-pub fn read_resampled(src: &[Vec<f32>], src_rate: u32, start: i64, frames: usize, rate: u32) -> AudioBuffer {
+pub fn read_resampled(src: &[Vec<f32>], src_rate: u32, start: i64, frames: usize, rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+    if rate == 0 {
+        return Err(MediaError::Decode("audio sample rate must be nonzero".into()));
+    }
     let ch = src.len().max(1);
+    filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
     let mut out = AudioBuffer::silence(rate, ch, frames);
     let total = src.first().map_or(0, Vec::len);
     let ratio = src_rate as f64 / rate as f64;
@@ -785,7 +528,7 @@ pub fn read_resampled(src: &[Vec<f32>], src_rate: u32, start: i64, frames: usize
             out.channels[c][i] = a + (b - a) * f;
         }
     }
-    out
+    Ok(out)
 }
 
 /// A standalone audio file decoded fully into memory (audio files are small next to video).
@@ -797,8 +540,48 @@ pub struct AudioFileSource {
 
 impl AudioFileSource {
     pub fn decode(name: &str, bytes: Arc<[u8]>) -> Result<Self> {
+        Self::decode_with(name, bytes, SymphoniaDecoder::new)
+    }
+
+    fn decode_with(name: &str, bytes: Arc<[u8]>, make_decoder: impl FnOnce(&CodecParameters) -> Result<SymphoniaDecoder>) -> Result<Self> {
+        // Probing, demuxing, decoder construction and sample conversion can all see hostile input.
+        // Everything owned by this attempt is discarded if it unwinds; no partial source escapes.
+        guard_audio(&format!("opening {name}"), || Self::decode_inner(name, bytes, make_decoder))
+    }
+
+    fn decode_inner(name: &str, bytes: Arc<[u8]>, make_decoder: impl FnOnce(&CodecParameters) -> Result<SymphoniaDecoder>) -> Result<Self> {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        if matches!(ext.as_str(), "mp2" | "mp3")
+        if ext == "mp3" {
+            let (audio, decoded) = craft_audio::decode(&bytes, Some("mp3")).map_err(|e| match e {
+                craft_audio::AudioError::Unsupported(message) | craft_audio::AudioError::TooLarge(message) => {
+                    CodecError::Unsupported(format!("{name}: {message}"))
+                }
+                error => CodecError::Decode(format!("{name}: {error}")),
+            })?;
+            let frames = decoded.frames();
+            let rate = decoded.sample_rate;
+            let samples = decoded.channels;
+            if samples.is_empty() || frames == 0 {
+                return Err(CodecError::Decode(format!("{name}: no audio decoded")));
+            }
+            let info = MediaInfo {
+                name: name.to_string(),
+                kind: MediaKind::AudioOnly,
+                duration: Tick::from_units(frames as i64, rate as i64),
+                video: None,
+                audio_streams: vec![AudioStreamInfo {
+                    sample_rate: rate,
+                    channels: samples.len() as u32,
+                    codec: audio.codec.name().to_uppercase(),
+                    bits_per_sample: None,
+                }],
+                container: ext.to_uppercase(),
+                start_timecode: None,
+                file_size: Some(bytes.len() as u64),
+            };
+            return Ok(Self { info, rate, samples });
+        }
+        if ext == "mp2"
             && let Some((layer, rate, samples)) = decode_mpeg_layer12(&bytes)
         {
             let frames = samples.first().map_or(0, Vec::len);
@@ -840,25 +623,20 @@ impl AudioFileSource {
         let mut format = probed.format;
         let track = format.default_track().ok_or_else(|| CodecError::Unsupported("no audio track".into()))?.clone();
         let rate = track.codec_params.sample_rate.unwrap_or(48_000);
-        let mut dec =
-            symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
+        let mut dec = make_decoder(&track.codec_params)?;
         let mut samples: Vec<Vec<f32>> = Vec::new();
         while let Ok(pkt) = format.next_packet() {
             if pkt.track_id() != track.id {
                 continue;
             }
-            let Ok(buf) = dec.decode(&pkt) else { continue };
-            let spec = *buf.spec();
-            let ch = spec.channels.count().max(1);
+            let Ok(channels) = dec.decode(&pkt)? else { continue };
             if samples.is_empty() {
-                samples = vec![Vec::new(); ch];
+                samples = vec![Vec::new(); channels.len()];
             }
-            let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
-            sb.copy_interleaved_ref(buf);
-            for (i, v) in sb.samples().iter().enumerate() {
-                if let Some(c) = samples.get_mut(i % ch) {
-                    c.push(*v);
-                }
+            let add: usize = channels.iter().map(Vec::len).sum();
+            check_decoded_budget(samples.iter().map(Vec::len).sum(), add)?;
+            for (out, channel) in samples.iter_mut().zip(channels) {
+                out.extend(channel);
             }
         }
         if samples.is_empty() {
@@ -898,27 +676,66 @@ fn id3v2_len(bytes: &[u8]) -> usize {
     }
 }
 
+/// Decoded-packet caches (AVI, MP4, Matroska) keep at most this many packets and this many bytes:
+/// one packet can decode to far more than it holds (a PCM chunk, or overlapping references that
+/// each decode in full), so the count alone does not bound memory.
+pub(crate) const MAX_PACKET_CACHE_ENTRIES: usize = 4096;
+pub(crate) const MAX_PACKET_CACHE_BYTES: usize = 256 << 20;
+
+/// A cached decoded packet: how many bytes it holds.
+pub(crate) trait PacketBytes {
+    fn packet_bytes(&self) -> usize;
+}
+
+impl PacketBytes for Vec<Vec<f32>> {
+    fn packet_bytes(&self) -> usize {
+        self.iter().map(|c| c.len().saturating_mul(4)).fold(0, usize::saturating_add)
+    }
+}
+
+/// Add packet `i` to a cache (`packets`, oldest-first `order`, running `bytes`), then drop the
+/// oldest packets, keeping the newest, until the cache is within both limits.
+pub(crate) fn cache_packet<P: PacketBytes>(packets: &mut HashMap<usize, Arc<P>>, order: &mut Vec<usize>, bytes: &mut usize, i: usize, p: &Arc<P>) {
+    packets.insert(i, p.clone());
+    order.push(i);
+    *bytes = bytes.saturating_add(p.packet_bytes());
+    while order.len() > 1 && (order.len() > MAX_PACKET_CACHE_ENTRIES || *bytes > MAX_PACKET_CACHE_BYTES) {
+        let old = order.remove(0);
+        if let Some(q) = packets.remove(&old) {
+            *bytes = bytes.saturating_sub(q.packet_bytes());
+        }
+    }
+}
+
 /// Most samples (all channels together) a standalone ADTS file decodes into memory: 4 GiB of f32,
 /// about three hours of 48 kHz stereo. Longer files are refused rather than allocated.
 const MAX_ADTS_SAMPLES: usize = 1 << 30;
 
-/// The length of the ADTS frame starting `b` (ISO/IEC 13818-7 §6.2: 12-bit sync word, layer `00`,
-/// 13-bit `frame_length` including the header), when it starts with a header and fits in `b`.
-fn adts_frame_len(b: &[u8]) -> Option<usize> {
-    let [0xFF, b1, _, b3, b4, b5, ..] = *b else { return None };
-    if b1 & 0xF6 != 0xF0 {
-        return None;
+/// Most samples (all channels together) a standalone file or an Ogg Vorbis stream keeps decoded in
+/// memory: the same 4 GiB of f32 as [`MAX_ADTS_SAMPLES`]. A file that decodes to more is refused.
+pub(crate) const MAX_DECODED_SAMPLES: usize = MAX_ADTS_SAMPLES;
+
+/// Whether `retained` samples plus `add` more stay within [`MAX_DECODED_SAMPLES`] (compact packets
+/// can decode to blocks far larger than themselves, so a small file could otherwise exhaust memory).
+pub(crate) fn check_decoded_budget(retained: usize, add: usize) -> Result<()> {
+    if retained.saturating_add(add) > MAX_DECODED_SAMPLES {
+        return Err(CodecError::Unsupported("audio too long to decode into memory (over 4 GiB decoded): shorten or transcode it".into()));
     }
-    let len = ((b3 as usize & 3) << 11) | (b4 as usize) << 3 | (b5 as usize) >> 5;
-    let hdr = if b1 & 1 != 0 { 7 } else { 9 };
-    (len > hdr && len <= b.len()).then_some(len)
+    Ok(())
+}
+
+/// The length of the ADTS frame starting `b` ([`craft_audio::aac::AdtsHeader`]: sync word, layer
+/// `00`, 13-bit `frame_length` including the header), when it starts with a header and fits in `b`.
+fn adts_frame_len(b: &[u8]) -> Option<usize> {
+    let h = craft_audio::aac::AdtsHeader::parse(b).ok()?;
+    (h.frame_length > h.header_length && h.frame_length <= b.len()).then_some(h.frame_length)
 }
 
 /// A raw ADTS stream (`.aac`) decoded with our AAC decoder: (output sample rate, planar samples).
 /// Frames follow each other from the first header (after an ID3v2 tag); damaged data is skipped
 /// up to the next header, frames with another configuration than the first are skipped, and a
-/// frame that does not decode keeps its duration as silence. HE-AAC is upsampled to its output
-/// rate. `Ok(None)` when no frame decodes.
+/// frame that does not decode keeps its duration as silence. HE-AAC decodes with its SBR high band
+/// at its output rate. `Ok(None)` when no frame decodes.
 fn decode_adts(bytes: &[u8]) -> Result<Option<(u32, Vec<Vec<f32>>)>> {
     let mut frames: Vec<(Vec<u8>, &[u8])> = Vec::new();
     let mut p = id3v2_len(bytes);
@@ -974,13 +791,13 @@ fn decode_adts(bytes: &[u8]) -> Result<Option<(u32, Vec<Vec<f32>>)>> {
 /// with a Layer I / II frame followed by another frame (or the end), e.g. MP3.
 fn decode_mpeg_layer12(bytes: &[u8]) -> Option<(u8, u32, Vec<Vec<f32>>)> {
     let mut p = id3v2_len(bytes);
-    let frame_at = |p: usize| bytes.get(p..).and_then(|b| filmcraft_mpa::parse_header(b).ok()).filter(|h| h.frame_bytes > 0);
+    let frame_at = |p: usize| bytes.get(p..).and_then(|b| craft_audio::mpa::parse_header(b).ok()).filter(|h| h.frame_bytes > 0);
     let first = frame_at(p)?;
     let next = p.saturating_add(first.frame_bytes);
     if first.layer == 3 || (next < bytes.len() && frame_at(next).is_none_or(|h| h.layer != first.layer || h.sample_rate != first.sample_rate)) {
         return None;
     }
-    let mut dec = filmcraft_mpa::Decoder::new();
+    let mut dec = craft_audio::mpa::Decoder::new();
     let mut out: Vec<Vec<f32>> = vec![Vec::new(); first.channels()];
     while let Some(rest) = bytes.get(p..).filter(|r| r.len() >= 4) {
         match dec.decode(rest) {
@@ -1011,7 +828,7 @@ impl MediaSource for AudioFileSource {
         Err(MediaError::NoStream("video"))
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> std::result::Result<AudioBuffer, MediaError> {
-        Ok(read_resampled(&self.samples, self.rate, start, frames, sample_rate))
+        read_resampled(&self.samples, self.rate, start, frames, sample_rate)
     }
 }
 
@@ -1024,6 +841,20 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<Shared
 }
 
 #[cfg(test)]
+mod resample_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn read_resampled_rejects_an_oversized_window() {
+        let src = vec![vec![0.0f32; 48]; 2];
+        assert!(read_resampled(&src, 48_000, 0, usize::MAX / 8, 48_000).is_err());
+        assert!(read_resampled(&src, 48_000, 0, filmcraft_media::MAX_AUDIO_BUFFER_BYTES, 48_000).is_err());
+        assert_eq!(read_resampled(&src, 48_000, 0, 24, 48_000).unwrap().channels[0].len(), 24);
+        assert!(read_resampled(&src, 48_000, 0, 24, 0).is_err(), "a zero output rate must not divide");
+    }
+}
+
+#[cfg(test)]
 mod mpeg_layer12_tests {
     use super::*;
 
@@ -1031,7 +862,7 @@ mod mpeg_layer12_tests {
     fn silent_frame(bitrate_index: u8, mode: u8) -> Vec<u8> {
         let h = [0xFF, 0xFD, bitrate_index << 4 | 0x04, mode << 6];
         let mut f = h.to_vec();
-        f.resize(filmcraft_mpa::parse_header(&h).unwrap().frame_bytes, 0);
+        f.resize(craft_audio::mpa::parse_header(&h).unwrap().frame_bytes, 0);
         f
     }
 
@@ -1094,23 +925,29 @@ mod he_aac_tests {
         assert_eq!(aac_output_rate(&[0x12, 0x10], [&SBR_FILL[..]]), Some(44_100));
     }
 
+    /// HE-AAC played at its output rate decodes through craft-audio's SBR tool (2048 samples an
+    /// access unit, the core's band carried through the filter banks), not an interpolated core;
+    /// the same stream at its core rate stays AAC-LC. A reset keeps the SBR choice.
     #[test]
-    fn upsampler_interpolates_continuously_across_packets() {
-        let f = 1000.0 / 22_050.0;
-        let x: Vec<f32> = (0..4096).map(|i| (2.0 * std::f32::consts::PI * f * i as f32).sin()).collect();
-        let mut up = Upsample2x::new(1);
-        let mut y = Vec::new();
-        for chunk in x.chunks(1024) {
-            y.extend(up.process(vec![chunk.to_vec()]).remove(0));
+    fn he_aac_decodes_its_sbr_band_at_the_output_rate() {
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(22_050, 2, 64_000)).unwrap();
+        let tone: Vec<f32> = (0..22_050).map(|i| (i as f32 * std::f32::consts::TAU * 440.0 / 22_050.0).sin() * 0.5).collect();
+        let mut aus = enc.encode(&[&tone, &tone]);
+        aus.extend(enc.flush());
+        // explicit signalling: AOT 5, 22.05 kHz core, stereo, 44.1 kHz output
+        let he = [0x2B, 0x92, 0x08, 0x00];
+        let mut dec = PacketDecoder::aac(&he, 44_100).unwrap();
+        let mut core = PacketDecoder::aac(&he, 22_050).unwrap();
+        let mut energy = 0.0f32;
+        for (i, au) in aus.iter().enumerate() {
+            let out = dec.decode(au, 0).unwrap();
+            assert_eq!((out.len(), out[0].len()), (2, 2048), "access unit {i}");
+            energy += out[0].iter().map(|v| v * v).sum::<f32>();
+            assert_eq!(core.decode(au, 0).unwrap()[0].len(), 1024);
         }
-        assert_eq!(y.len(), 8192);
-        // output 2k + 1 is input k − UPSAMPLE_HALF + ½ (the look-ahead delay), within 0.1 %
-        let d = UPSAMPLE_HALF as f32;
-        for k in 100..4000 {
-            let want = (2.0 * std::f32::consts::PI * f * (k as f32 - d + 0.5)).sin();
-            assert!((y[2 * k + 1] - want).abs() < 1e-3, "{k}: {} vs {want}", y[2 * k + 1]);
-            assert_eq!(y[2 * k], x[k - UPSAMPLE_HALF]);
-        }
+        assert!(energy > 1.0, "the core's tone comes through the SBR filter banks");
+        dec.reset();
+        assert_eq!(dec.decode(&aus[1], 0).unwrap()[0].len(), 2048);
     }
 }
 
@@ -1141,7 +978,7 @@ mod surround_order_tests {
         let wav: Vec<Vec<f32>> = hz.iter().map(|&f| tone(f)).collect();
         // the encoder takes AAC element order (as the exporter feeds it): C L R Ls Rs LFE
         let coded: Vec<&[f32]> = [2usize, 0, 1, 4, 5, 3].iter().map(|&c| wav[c].as_slice()).collect();
-        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 6, 384_000)).unwrap();
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 6, 384_000)).unwrap();
         let mut units = enc.encode(&coded);
         units.extend(enc.flush());
 
@@ -1168,6 +1005,27 @@ mod surround_order_tests {
         let chans = vec![vec![1.0], vec![2.0]];
         assert_eq!(reorder(chans.clone(), aac_to_wav_order(6)), chans);
         assert_eq!(reorder(vec![vec![0.0], vec![1.0], vec![2.0]], aac_to_wav_order(3)), vec![vec![1.0], vec![2.0], vec![0.0]]);
+    }
+
+    /// Configuration 0 with a program config element listing centre, front pair, back pair and LFE
+    /// (5.1 as configuration 6 lays it out) is reordered to WAV order like configuration 6; a
+    /// pair-first PCE (ffmpeg's 5.1(side)) already decodes in WAV order and is left alone.
+    #[test]
+    fn a_program_config_element_in_the_shape_of_5_1_is_reordered_like_configuration_6() {
+        use craft_audio::aac::{AudioSpecificConfig, ProgramConfig};
+        let with = |front: Vec<(bool, u8)>, side: Vec<(bool, u8)>, back: Vec<(bool, u8)>, lfe: Vec<u8>| {
+            let mut pce = ProgramConfig::default();
+            (pce.front, pce.side, pce.back, pce.lfe) = (front, side, back, lfe);
+            let mut asc = AudioSpecificConfig::lc(3, 0);
+            asc.pce = Some(pce);
+            asc
+        };
+        assert!(aac_to_wav_order(6).is_some());
+        let centre_first = with(vec![(false, 0), (true, 0)], vec![], vec![(true, 1)], vec![0]);
+        assert_eq!(aac_wav_order(&centre_first), aac_to_wav_order(6));
+        let pair_first = with(vec![(true, 0), (false, 0)], vec![(false, 1)], vec![(true, 1)], vec![]);
+        assert_eq!(aac_wav_order(&pair_first), None);
+        assert_eq!(aac_wav_order(&AudioSpecificConfig::lc(3, 6)), aac_to_wav_order(6));
     }
 }
 
@@ -1236,7 +1094,7 @@ mod packet_time_tests {
 
     #[test]
     fn fixed_frame_lengths() {
-        // AAC-LC 48 kHz stereo; HE-AAC (24 kHz core) played at 48 kHz is upsampled
+        // AAC-LC 48 kHz stereo; HE-AAC (24 kHz core) played at 48 kHz decodes its SBR band
         assert_eq!(fixed_packet_samples(FixedFrames::Aac(&[0x11, 0x90]), &[], 48_000), Some(1024));
         assert_eq!(fixed_packet_samples(FixedFrames::Aac(&[0x13, 0x10]), &[], 48_000), Some(2048));
         assert_eq!(fixed_packet_samples(FixedFrames::Aac(&[]), &[], 48_000), None);
@@ -1350,8 +1208,80 @@ mod gapless_tests {
 
     /// #1137: the LAME tag's encoder delay (576) plus the decoder delay (529) is cut from the start.
     #[test]
+    fn decoded_budget_is_enforced_without_allocating() {
+        assert!(check_decoded_budget(0, MAX_DECODED_SAMPLES).is_ok());
+        assert!(check_decoded_budget(MAX_DECODED_SAMPLES, 1).is_err());
+        assert!(check_decoded_budget(usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
+        assert_eq!(src.rate, 44_100);
+        assert_eq!(src.info.audio_streams.len(), 1);
+        assert_eq!(src.info.audio_streams[0].sample_rate, 44_100);
+        assert_eq!(src.info.audio_streams[0].channels, 1);
+        assert_eq!(src.info.audio_streams[0].codec, "MP3");
         assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+        assert!(src.samples[0].iter().all(|sample| sample.abs() < 1e-6));
+    }
+}
+
+#[cfg(test)]
+mod decode_pcm_tests {
+    use super::*;
+
+    #[test]
+    fn pcm_adapter_decodes_interleaved_big_endian_samples() {
+        let cfg = filmcraft_isobmff::PcmConfig { bits: 16, float: false, big_endian: true, signed: true, channels: 2, sample_rate: 48_000.0 };
+        assert_eq!(decode_pcm(&[0x40, 0, 0xc0, 0, 0xff], &cfg), [vec![0.5], vec![-0.5]]);
+    }
+
+    #[test]
+    fn zero_bits_decode_to_empty_channels_without_panicking() {
+        // A hostile `ipcm`/`fpcm` sample entry with `sample_size == 0` used to divide by zero
+        // (`bps * ch == 0`) and panic the audio worker on import/playback.
+        let cfg = filmcraft_isobmff::PcmConfig { bits: 0, float: false, big_endian: true, signed: true, channels: 2, sample_rate: 48_000.0 };
+        let out = decode_pcm(&[0u8; 64], &cfg);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(Vec::is_empty));
+    }
+}
+
+#[cfg(test)]
+mod packet_cache_tests {
+    use super::*;
+
+    /// A packet that claims a size (nothing is allocated).
+    struct Claim(usize);
+    impl PacketBytes for Claim {
+        fn packet_bytes(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[test]
+    fn the_cache_is_held_to_its_byte_budget_and_keeps_the_newest() {
+        let (mut packets, mut order, mut bytes) = (HashMap::new(), Vec::new(), 0usize);
+        let third = MAX_PACKET_CACHE_BYTES / 3 + 1;
+        for i in 0..5 {
+            cache_packet(&mut packets, &mut order, &mut bytes, i, &Arc::new(Claim(third)));
+        }
+        assert_eq!(order, [3, 4], "only what fits in the budget stays, newest last");
+        assert_eq!(bytes, 2 * third);
+        // one packet over the whole budget is still kept (it is the newest)
+        cache_packet(&mut packets, &mut order, &mut bytes, 9, &Arc::new(Claim(MAX_PACKET_CACHE_BYTES * 2)));
+        assert_eq!(order, [9]);
+        assert!(packets.contains_key(&9) && packets.len() == 1);
+    }
+
+    #[test]
+    fn the_entry_limit_still_applies() {
+        let (mut packets, mut order, mut bytes) = (HashMap::new(), Vec::new(), 0usize);
+        for i in 0..MAX_PACKET_CACHE_ENTRIES + 10 {
+            cache_packet(&mut packets, &mut order, &mut bytes, i, &Arc::new(Claim(1)));
+        }
+        assert_eq!(order.len(), MAX_PACKET_CACHE_ENTRIES);
+        assert_eq!(packets.len(), MAX_PACKET_CACHE_ENTRIES);
     }
 }
