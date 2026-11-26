@@ -31,7 +31,7 @@ pub(super) fn header(
     let controls = top.horizontal_wrapped(|ui| {
         let name =
             app.ui.script.item.and_then(|id| scripts.iter().find(|entry| entry.0.0 == id).map(|entry| entry.1.as_str())).unwrap_or(tl!("Choose a script"));
-        let document = craft_ui::ComboBox::from_id_salt("script.document").selected_text(name).width(180.0).show_ui(ui, |ui| {
+        let document = crate::legacy_dropdown::Dropdown::from_id_salt("script.document").selected_text(name).width(180.0).show_ui(ui, |ui| {
             for (id, name) in scripts {
                 let response = ui.selectable_label(app.ui.script.item == Some(id.0), name);
                 app.auto.add(&format!("script.document.{}", id.0), response.rect, name);
@@ -182,7 +182,7 @@ pub(super) fn header(
                 ui.allocate_ui_with_layout(group_size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.label(caption);
                     let combo =
-                        craft_ui::ComboBox::from_id_salt(format!("script.{key}.combo")).selected_text(selected.unwrap_or("—")).width(44.0).show_ui(ui, |ui| {
+                        crate::legacy_dropdown::Dropdown::from_id_salt(format!("script.{key}.combo")).selected_text(selected.unwrap_or("—")).width(44.0).show_ui(ui, |ui| {
                             for (value, line) in &values {
                                 let response = ui.selectable_label(selected_line.is_some_and(|selected| selected.id == line.id), *value);
                                 app.auto.add(&format!("script.{key}.option.{}", line.id.0), response.rect, value);
@@ -293,7 +293,7 @@ pub(super) fn header(
         if let Some(source) = app.ui.script.find_source {
             let matches = source_matches(app, ItemId(source));
             let chooser =
-                craft_ui::ComboBox::from_id_salt("script.findSource").selected_text(tlf!("Choose linked take ({count})", count = matches.len())).width(190.0);
+                crate::legacy_dropdown::Dropdown::from_id_salt("script.findSource").selected_text(tlf!("Choose linked take ({count})", count = matches.len())).width(190.0);
             chooser.show_ui(ui, |ui| {
                 for entry in matches {
                     let response = ui.selectable_label(false, &entry.label);

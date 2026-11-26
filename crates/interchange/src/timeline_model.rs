@@ -1,6 +1,6 @@
 //! Conversion between FilmCraft effect values and the shared timeline model.
 
-use craft_timeline::model as shared;
+use craft_timeline::interchange as shared;
 use filmcraft_project as film;
 use filmcraft_time::Tick;
 

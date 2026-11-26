@@ -2,56 +2,18 @@
 //! channel: dragging scrubs the playhead (1 frame per point, never before the start), a click
 //! turns the timecode into a field where Enter goes to the typed time and Escape cancels.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use super::hot_number_ui::Driver;
+use crate::support::{Drive, builder, demo_session, launch, start};
 use filmcraft_time::{FrameRate, parse_timecode};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    /// The window is in the background: egui sees it focused only on frames carrying control input.
-    background: bool,
-}
+use serde_json::json;
 
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+    /// The demo project with item 5 open in the Source Monitor.
+    fn with_source() -> Self {
+        let mut session = demo_session();
         session.execute("source.open", json!({"item": 5})).expect("source clip");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, background: false };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            raw.focused = !self.background;
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                self.frames(2);
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
+        let (harness, tx) = launch(session, builder());
+        start(Driver { harness, tx, background: false })
     }
     /// Centre of an element, from `ui.elements`.
     fn centre(&mut self, id: &str) -> (f64, f64) {
@@ -91,7 +53,7 @@ impl Driver {
 
 #[test]
 fn dragging_the_timeline_timecode_scrubs_and_stops_at_the_start() {
-    let mut d = Driver::demo();
+    let mut d = Driver::with_source();
     let before = d.harness.state().session.project.to_json();
     d.set_frame(30);
     d.drag_by("timeline.timecode", 20.0);
@@ -105,7 +67,7 @@ fn dragging_the_timeline_timecode_scrubs_and_stops_at_the_start() {
 
 #[test]
 fn typing_in_the_timeline_timecode_goes_to_that_time() {
-    let mut d = Driver::demo();
+    let mut d = Driver::with_source();
     d.set_frame(30);
     d.type_into("timeline.timecode", "1000", "Enter");
     let (rate, df) = {
@@ -119,7 +81,7 @@ fn typing_in_the_timeline_timecode_goes_to_that_time() {
 
 #[test]
 fn arrow_keys_move_the_caret_instead_of_committing() {
-    let mut d = Driver::demo();
+    let mut d = Driver::with_source();
     let (rate, df) = {
         let s = &d.harness.state().session;
         (s.sequence_rate(), s.active_sequence().unwrap().settings.drop_frame)
@@ -152,7 +114,7 @@ fn arrow_keys_move_the_caret_instead_of_committing() {
 /// that carry the input: a click still selects the whole time and Left still moves the caret.
 #[test]
 fn arrow_keys_move_the_caret_in_a_background_window() {
-    let mut d = Driver::demo();
+    let mut d = Driver::with_source();
     let (rate, df) = {
         let s = &d.harness.state().session;
         (s.sequence_rate(), s.active_sequence().unwrap().settings.drop_frame)
@@ -176,7 +138,7 @@ fn arrow_keys_move_the_caret_in_a_background_window() {
 
 #[test]
 fn escape_cancels_and_a_bad_time_is_reported_without_moving() {
-    let mut d = Driver::demo();
+    let mut d = Driver::with_source();
     d.set_frame(30);
     d.type_into("timeline.timecode", "1000", "Escape");
     assert_eq!(d.frame(), 30, "Escape cancels");
@@ -190,7 +152,7 @@ fn escape_cancels_and_a_bad_time_is_reported_without_moving() {
 
 #[test]
 fn the_program_and_source_timecodes_move_their_own_playheads() {
-    let mut d = Driver::demo();
+    let mut d = Driver::with_source();
     d.set_frame(30);
     d.drag_by("program.timecode", 20.0);
     assert_eq!(d.frame(), 50);
@@ -207,7 +169,7 @@ fn the_program_and_source_timecodes_move_their_own_playheads() {
 #[test]
 fn compact_floating_monitor_timecodes_keep_drag_typing_escape_and_caret_routing() {
     for scale in [1.0, 2.0] {
-        let mut d = Driver::demo();
+        let mut d = Driver::with_source();
         d.harness.ctx.set_pixels_per_point(scale);
         d.frames(4);
         for (panel, x) in [("Source", 70), ("Program", 360)] {

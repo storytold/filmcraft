@@ -2,13 +2,12 @@
 //! monitors would stay blank), and a panic in the UI pass must not close the app (losing unsaved
 //! work) — it shows an error window and the session carries on.
 
-use std::sync::mpsc::{Sender, channel};
-
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
+#[path = "it/support.rs"]
+mod support;
+use support::{Drive, builder, demo_session, driver, launch, start};
 
 /// The tests run one at a time: fault injection (`inject_job_panics`) is process-wide, so frame
 /// workers of a parallel test would consume the injected panics.
@@ -18,46 +17,13 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
         filmcraft_ui_egui::crash::install(None);
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // synthetic input (ui.click) enters through the app's raw input hook, as in eframe
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params}: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method}");
+        let (harness, tx) = launch(demo_session(), builder());
+        start(Driver { harness, tx })
     }
 
     fn frame_stats(&mut self) -> Value {
@@ -151,10 +117,12 @@ fn tiny_windows_and_squeezed_panels_do_not_panic() {
     let _serial = serial();
     filmcraft_ui_egui::crash::install(None);
     for (w, h) in [(120.0, 80.0), (300.0, 200.0), (60.0, 40.0), (900.0, 560.0)] {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let app = FilmcraftApp::new(session);
-        let mut harness = Harness::builder().with_size(egui::vec2(w, h)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut harness = Harness::builder().with_size(egui::vec2(w, h)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         for ws in ["Editing", "Color", "Audio", "Effects", "Captions and Graphics", "Assembly"] {
             harness.state_mut().set_workspace(ws);
             for _ in 0..3 {
