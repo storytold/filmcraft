@@ -204,7 +204,6 @@ fn unescape_string_value(value: &str) -> String {
 /// and the icon by theme name.
 fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
     let mut out = String::new();
-    out.push_str("# Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0\n");
     out.push_str("[Desktop Entry]\n");
     out.push_str("Type=Application\n");
     out.push_str(&format!("Name={name}\n"));
