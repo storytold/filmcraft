@@ -1,5 +1,5 @@
 //! Native Premiere import with owned snapshots and read-only source handling. MIT OR Apache-2.0.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -126,8 +126,9 @@ fn case_variant(path: &Path, listings: &mut FolderListings) -> Option<PathBuf> {
 /// Most entries read from one folder when looking for a letter-case variant; a folder with more
 /// offers none.
 const MAX_FOLDER_ENTRIES: usize = 100_000;
-/// Most names the folder listings of one import keep (tens of megabytes at most); past it, a
-/// further folder is read again for each lookup, as without a cache.
+/// Most names the folder listings of one import keep (tens of megabytes at most). Past it, the
+/// least-recently used folder is dropped so a new folder can be kept; same-folder lookups never
+/// re-scan once that folder is cached.
 const MAX_LISTED_NAMES: usize = 250_000;
 
 /// A folder's entries by lower-case name: the entry's own name, or None when several entries
@@ -135,41 +136,76 @@ const MAX_LISTED_NAMES: usize = 250_000;
 type CaseIndex = std::collections::HashMap<String, Option<std::ffi::OsString>>;
 
 /// Folder listings one import reads while looking for letter-case variants: each folder is read
-/// once, however many of its files are missing, up to a bounded number of names in all.
+/// once while cached, however many of its files are missing, with an LRU bound on names in all.
 struct FolderListings {
     /// Folder → its entries, or None when it could not be read in full.
     folders: std::collections::HashMap<PathBuf, Option<CaseIndex>>,
+    /// LRU order, oldest first.
+    order: VecDeque<PathBuf>,
     /// Names kept so far (a folder that could not be read in full counts as one).
     names: usize,
     /// Most entries read from one folder ([`MAX_FOLDER_ENTRIES`]).
     entries: usize,
-    /// Most names kept.
+    /// Most names kept (one listing alone may exceed this so it is not re-read every lookup).
     limit: usize,
 }
 
 impl FolderListings {
     /// No listings yet; each folder is read up to `entries` entries, and at most `limit` names
-    /// will be kept.
+    /// will be kept across folders (LRU eviction).
     fn new(entries: usize, limit: usize) -> Self {
-        Self { folders: std::collections::HashMap::new(), names: 0, entries, limit }
+        Self { folders: std::collections::HashMap::new(), order: VecDeque::new(), names: 0, entries, limit }
     }
 
     /// The one entry of `folder` whose name is `lower` (lower case) apart from letter case; None
     /// when there is no such entry, more than one, or the folder cannot be read in full (kept or
     /// read again, the listing follows the same rule).
     fn find(&mut self, folder: &Path, lower: &str) -> Option<std::ffi::OsString> {
-        if let Some(listing) = self.folders.get(folder) {
-            return listing.as_ref()?.get(lower).cloned().flatten();
+        if self.folders.contains_key(folder) {
+            self.touch(folder);
+            return self.folders.get(folder).and_then(|listing| listing.as_ref()?.get(lower).cloned().flatten());
         }
         let listing =
             std::fs::read_dir(folder).ok().and_then(|entries| index_by_lower_case(entries.map(|entry| entry.map(|entry| entry.file_name())), self.entries));
         let found = listing.as_ref().and_then(|listing| listing.get(lower).cloned().flatten());
-        let cost = listing.as_ref().map_or(0, CaseIndex::len).max(1);
-        if let Some(names) = self.names.checked_add(cost).filter(|names| *names <= self.limit) {
-            self.names = names;
-            self.folders.insert(folder.to_path_buf(), listing);
-        }
+        self.remember(folder.to_path_buf(), listing);
         found
+    }
+
+    /// Mark `folder` as most recently used (it must already be cached).
+    fn touch(&mut self, folder: &Path) {
+        if let Some(i) = self.order.iter().position(|p| p == folder)
+            && let Some(path) = self.order.remove(i)
+        {
+            self.order.push_back(path);
+        }
+    }
+
+    /// Drop the least-recently used folder listing.
+    fn evict_oldest(&mut self) {
+        let Some(old) = self.order.pop_front() else { return };
+        if let Some(listing) = self.folders.remove(&old) {
+            let cost = listing.as_ref().map_or(0, CaseIndex::len).max(1);
+            self.names = self.names.saturating_sub(cost);
+        }
+    }
+
+    /// Cache `listing` for `folder`, evicting older folders until it fits. A single listing larger
+    /// than [`Self::limit`] replaces the whole cache so repeated lookups in that folder stay O(1).
+    fn remember(&mut self, folder: PathBuf, listing: Option<CaseIndex>) {
+        let cost = listing.as_ref().map_or(0, CaseIndex::len).max(1);
+        while !self.order.is_empty() && self.names.saturating_add(cost) > self.limit {
+            self.evict_oldest();
+        }
+        if self.names.saturating_add(cost) > self.limit {
+            // Sole folder still over budget: keep only it.
+            self.folders.clear();
+            self.order.clear();
+            self.names = 0;
+        }
+        self.names = self.names.saturating_add(cost);
+        self.order.push_back(folder.clone());
+        self.folders.insert(folder, listing);
     }
 }
 
@@ -908,11 +944,23 @@ mod tests {
         std::fs::write(dir.join("Late.MOV"), b"").unwrap();
         assert_eq!(listings.find(&dir, "late.mov"), None);
         assert_eq!(listings.find(&dir.join("absent"), "clip.mov"), None, "a folder that cannot be read has no match");
-        // Past the limit a folder is read for every lookup, as without the cache.
-        let mut full = FolderListings::new(MAX_FOLDER_ENTRIES, 1);
-        assert_eq!(full.find(&dir, "late.mov"), Some("Late.MOV".into()));
+        // A listing larger than the names budget is still cached once (sticky) so repeats do not re-scan.
+        let mut tight = FolderListings::new(MAX_FOLDER_ENTRIES, 1);
+        assert_eq!(tight.find(&dir, "late.mov"), Some("Late.MOV".into()));
         std::fs::write(dir.join("Later.MOV"), b"").unwrap();
-        assert_eq!(full.find(&dir, "later.mov"), Some("Later.MOV".into()));
+        assert_eq!(tight.find(&dir, "later.mov"), None, "over-budget folder stays cached; no per-lookup re-read");
+        // LRU: a new folder evicts the older one; the evicted folder is listed again on next use.
+        let a = dir.join("a");
+        let b = dir.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("One.MOV"), b"").unwrap();
+        std::fs::write(b.join("Two.MOV"), b"").unwrap();
+        let mut lru = FolderListings::new(MAX_FOLDER_ENTRIES, 1);
+        assert_eq!(lru.find(&a, "one.mov"), Some("One.MOV".into()));
+        assert_eq!(lru.find(&b, "two.mov"), Some("Two.MOV".into()), "new folder evicts the older listing");
+        std::fs::write(a.join("Fresh.MOV"), b"").unwrap();
+        assert_eq!(lru.find(&a, "fresh.mov"), Some("Fresh.MOV".into()), "evicted folder is re-listed");
         // Two entries whose names differ only in letter case are ambiguous: no match. Built from
         // names, as a case-insensitive disk cannot hold both files.
         let index = index_by_lower_case(names(&["Take.mov", "take.MOV", "b.png"]), MAX_FOLDER_ENTRIES).unwrap();
@@ -935,7 +983,7 @@ mod tests {
         failed.push(Err(std::io::Error::other("entry could not be read")));
         assert_eq!(index_by_lower_case(failed, MAX_FOLDER_ENTRIES), None, "an entry that could not be read");
         // A real folder past the entry limit offers neither of its names (whichever is read
-        // first), from a kept listing and from one read again for each lookup past the names limit.
+        // first), whether the incomplete listing is kept under the names budget or as a sticky sole entry.
         let dir = filmcraft_testkit::workspace_root().join("target/premiere-partial-listing").join(std::process::id().to_string());
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
