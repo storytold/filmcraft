@@ -1,0 +1,65 @@
+{
+  "title": "FilmCraft nightly deep-background icons",
+  "author": "@skylartaylor",
+  "license": "MIT OR Apache-2.0",
+  "source_commit": null,
+  "inputs": [
+    {
+      "path": "assets/app-icon/hicolor/256x256/apps/ai.storyteller.filmcraft.png",
+      "sha256": "f07f1390c0467ab7e357f7bc102658caed40ec931e3614b255031c6adf555a2b",
+      "purpose": "Windows/Linux native256 master"
+    },
+    {
+      "path": "assets/app-icon/filmcraft-1024.png",
+      "sha256": "c3c301e00618c2ae391815cfaf330488d45bcfc79584b9680c434e4cfb99e13f",
+      "purpose": "native 1024 px master for the .icns slots (not an upscale)"
+    },
+    {
+      "path": "assets/app-icon/filmcraft-macos-512.png",
+      "sha256": "7c406fc67a309ad230b748b4e418ec973070572ec054acfd13d72b4a7e09fdb6",
+      "purpose": "runtime macOS Dock icon master"
+    }
+  ],
+  "method": {
+    "kind": "original code-generated derivative of the project-owned icon",
+    "original_palette": {
+      "ink": "#0b0b0c",
+      "paper": "#efe9dc",
+      "background": "#8b5cf6"
+    },
+    "nightly_background": "#3c2a63",
+    "transform": "Fit each pixel as a mixture of the three palette colours (least squares, clamped to the simplex) and change only the background contribution. Foreground detail, alpha and Mac padding are preserved byte for byte. Frame sizes are area-averaged in premultiplied alpha from the unchanged-resolution masters and packed into ICO/ICNS. No crescent, letter or badge."
+  },
+  "outputs": {
+    "filmcraft-nightly.png": "23c9759a41e11f2b4e55dd51e6eee625fd066ddf245fa87e8f3a094a55aa71bf",
+    "filmcraft-nightly.ico": "f130e590c84d45f98346e4f5dc86ea0eaa52b97138084c296f17c9220c385621",
+    "filmcraft-nightly-1024.png": "8a5b6f246d45256587d8a80881add5dcae3e25aff41ca72ec6530e0e99434d1c",
+    "filmcraft-nightly.icns": "62bf4c076de84a1a4564647441bb4077482afa97658f66a9e2b3883936c910a8",
+    "filmcraft-nightly-macos-512.png": "779fd833b25b40a4a9118f071551ed040dce8c55f186b787426da1bda3f1cb8e"
+  },
+  "ico_frame_sizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    128,
+    256
+  ],
+  "icns_png_slots": {
+    "icp4": 16,
+    "icp5": 32,
+    "ic11": 32,
+    "icp6": 64,
+    "ic12": 64,
+    "ic07": 128,
+    "ic08": 256,
+    "ic13": 256,
+    "ic09": 512,
+    "ic14": 512,
+    "ic10": 1024
+  },
+  "validation": "PNG CRCs and dimensions, ICO directory entries and ICNS slot lengths checked; the recolour leaves every foreground pixel identical (27 995 of 65 536 pixels in the 256 px master untouched) and maps the pure background colour to the Nightly field. Explorer/Finder/iconutil qualification remains unrun."
+}

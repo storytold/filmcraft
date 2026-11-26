@@ -296,7 +296,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // the list follows the playhead: each caption it reaches is brought to the middle
                 // once, but never while a field is being edited
                 let follow = egui::Id::unique("caption-follow");
-                if ui.data(|d| d.get_temp::<u64>(follow)) != Some(c.id.0) && ui.memory(|m| m.focused().is_none()) {
+                if ui.data(|d| d.get_temp::<u64>(follow)) != Some(c.id.0) && !crate::framework::field_focused(ui.ctx(), None) {
                     ui.scroll_to_rect(row, Some(egui::Align::Center));
                     ui.data_mut(|d| d.insert_temp(follow, c.id.0));
                 }
@@ -694,44 +694,49 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
     child.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-        let r = craft_ui::ComboBox::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
-            if !filmcraft_text::fonts::system_scanned() {
-                filmcraft_text::fonts::scan_system();
-            }
-            // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
-            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
-                let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
-                // An edge row may be only partly visible; automation must click its visible portion.
-                let visible = resp.rect.intersect(ui.clip_rect());
-                if visible.is_positive() {
-                    app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, &f);
+        let r =
+            crate::legacy_dropdown::Dropdown::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
+                if !filmcraft_text::fonts::system_scanned() {
+                    filmcraft_text::fonts::scan_system();
                 }
-                if resp.clicked() {
-                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
+                // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
+                for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
+                    let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
+                    // An edge row may be only partly visible; automation must click its visible portion.
+                    let visible = resp.rect.intersect(ui.clip_rect());
+                    if visible.is_positive() {
+                        app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, &f);
+                    }
+                    if resp.clicked() {
+                        actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
+                    }
                 }
-            }
-        });
+            });
         app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
         // the styles of the track's family, next to the font
         let styles = filmcraft_text::families().into_iter().find(|(f, _)| f.eq_ignore_ascii_case(&st.font)).map(|(_, v)| v).unwrap_or_default();
-        let r = craft_ui::ComboBox::from_id_salt(("caption-font-style", tr.id.0)).selected_text(&st.font_style).width(100.0).height(300.0).show_ui(ui, |ui| {
-            for name in &styles {
-                let resp = ui.selectable_label(name.eq_ignore_ascii_case(&st.font_style), name);
-                let visible = resp.rect.intersect(ui.clip_rect());
-                if visible.is_positive() {
-                    app.auto.add(&format!("text.captions.style.fontStyle.option.{name}"), visible, name);
+        let r = crate::legacy_dropdown::Dropdown::from_id_salt(("caption-font-style", tr.id.0))
+            .selected_text(&st.font_style)
+            .width(100.0)
+            .height(300.0)
+            .show_ui(ui, |ui| {
+                for name in &styles {
+                    let resp = ui.selectable_label(name.eq_ignore_ascii_case(&st.font_style), name);
+                    let visible = resp.rect.intersect(ui.clip_rect());
+                    if visible.is_positive() {
+                        app.auto.add(&format!("text.captions.style.fontStyle.option.{name}"), visible, name);
+                    }
+                    if resp.clicked() {
+                        actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": name})));
+                    }
                 }
-                if resp.clicked() {
-                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": name})));
-                }
-            }
-        });
+            });
         app.auto.add("text.captions.style.fontStyle", r.response.rect, "Caption font style");
         let mut size = st.size;
         let resp = ui.add(crate::widgets::number_drag(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");
         // a drag ended by Escape keeps the size it had (#580)
-        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let escaped = resp.drag_stopped() && crate::framework::escape_pressed(ui.ctx());
         if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "size": size})));
         }

@@ -12,7 +12,7 @@ FilmCraft from an agent. Part 2 covers developing FilmCraft as an agent.
 | Mode | Command | What it drives |
 |---|---|---|
 | Headless | `filmcraft-cli mcp --demo` or `--project p.fcproj` (neither = empty project) | an in-process engine session, no window |
-| Bridge | `filmcraft-cli mcp --bridge 127.0.0.1:9876` | the running desktop app started with `filmcraft --control 9876` |
+| Bridge | `filmcraft-cli mcp --bridge 127.0.0.1:9886` | the running desktop app started with `filmcraft --control 9886` |
 
 Headless mode also takes `--data-dir DIR` (user presets). Any other option is rejected (exit 2):
 there are no folder-confinement flags such as `--automation-read-root`, so the server can read
@@ -24,7 +24,7 @@ and write wherever the user can.
 ```sh
 cargo build --release -p filmcraft-cli -p filmcraft
 export FILMCRAFT_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-./target/release/filmcraft --control 9876 &      # only for the bridge server
+./target/release/filmcraft --control 9886 &      # only for the bridge server
 claude                                           # approve the project MCP servers when asked
 ```
 
@@ -35,7 +35,7 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 ```
 
 ```json
-{ "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
+{ "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9886"] } } }
 ```
 
 ### Effect parameter replies
@@ -159,16 +159,26 @@ progress and stop it:
   warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
   also prints the warning on stderr and suggests `--range entire`; the warning does not change
   the exit status. Frame counts here use the sequence rate, even when the export rate differs.
+- A finished export's `result` (`file.exportMedia` with `wait: true`, its job in `jobs.list`, each
+  finished item of `export.queue.list` and `export.queue.add`) names the video encoder that ran in `encoder`: `"NVENC"` or `"VideoToolbox"`, or `"software"` for
+  FilmCraft's own (absent for audio, image sequences and GIF). `hardwareEncoding: "auto"` asks for
+  a hardware encoder but does not promise one: when it declines the export (two-pass VBR, HDR, MXF,
+  no driver…) the software encoder runs, and `result.warnings` says so with the reason when there is
+  one, e.g. `hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran`. The
+  app logs the same line as a warning and shows it in Events after the job's "Finished" line, and
+  `filmcraft-cli export` (with or without `--queue`) prints it on stderr.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
 ## 2. Control channel
 
-`filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one
+`filmcraft --control 9886` (or `FILMCRAFT_CONTROL_PORT=9886`) listens on `127.0.0.1` only. Send one
 JSON request per line and get one JSON reply per line. Set a fresh `FILMCRAFT_CONTROL_TOKEN` for the
 desktop session as above; the CLI / MCP bridge must inherit the same variable. Raw requests must
-include it as `token` on every line (replace the placeholders below). Full setup and method table:
+include it as `token` on every line (replace the placeholders below). If the listener could not
+start (port already bound, missing token), `ui.inspect` reports it under `control`; a bridge that
+reaches another program's server names that instead of a parse error. Full setup and method table:
 [control-protocol.md](control-protocol.md).
 
 ```jsonc
@@ -188,7 +198,7 @@ Minimal client:
 
 ```python
 import json, os, socket
-s = socket.create_connection(("127.0.0.1", 9876)); f = s.makefile("rw")
+s = socket.create_connection(("127.0.0.1", 9886)); f = s.makefile("rw")
 def call(method, **params):
     f.write(json.dumps({"id": 1, "token": os.environ["FILMCRAFT_CONTROL_TOKEN"], "method": method, "params": params}) + "\n"); f.flush()
     return json.loads(f.readline())
@@ -247,7 +257,7 @@ filmcraft-cli --project p.fcproj export out --preset "YouTube 1080p Full HD" --s
 filmcraft-cli export --list-presets prores       # built-in + user presets (--data-dir for another library)
 filmcraft-cli --project p.fcproj exec export.queue.add preset="Apple ProRes 422 HQ" path=renders/ start=true wait=true
 echo '{"id":"file.newBin","params":{"name":"Selects"}}' | filmcraft-cli --project p.fcproj --save run -
-filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the running app
+filmcraft-cli --bridge 127.0.0.1:9886 exec window.workspace.color   # the running app
 ```
 
 `key=value` values are parsed as JSON when they can be (`3.5`, `true`, `[1,2]`), otherwise taken as
@@ -292,21 +302,21 @@ failed write reports an error. The menu opens the normal save dialog; cancelling
 
 For any UI change, look at the result:
 
-1. `cargo run --release -p filmcraft -- --control 9876`
+1. `cargo run --release -p filmcraft -- --control 9886`
 2. Drive the feature through the control channel or the MCP bridge: commands, then clicks and drags
    by automation id.
 3. Assert on `ui.inspect`, `ui.elements` and `sequence.inspect`.
 4. Take `ui.screenshot` (the whole window and the panel you changed) and open the PNG.
 
-Screenshots you commit must follow [AGENTS.md](../AGENTS.md) §1: FilmCraft only, openly licensed
+Screenshots you commit must follow [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md): FilmCraft only, openly licensed
 media, sidecar and `ATTRIBUTION.md` entry.
 
 # Part 2: developing FilmCraft
 
 ## 4. Orientation, in this order
 
-1. [AGENTS.md](../AGENTS.md): absolute rules (assets, clean-room, licences).
-2. [CLAUDE.md](../CLAUDE.md): working instructions and non-negotiables.
+1. [AGENTS.md](../AGENTS.md): the shared rules and the facts about this repository.
+2. [contributing.md](contributing.md): setup, checks and commits.
 3. [ROADMAP.md](../ROADMAP.md) for the summary, then [gaps.md](gaps.md) (the ranked shortfalls) first,
    [target-app-parity.md](target-app-parity.md) and [roadmap.md](roadmap.md) (milestones, current focus).
 4. [architecture.md](architecture.md), then the README and tests of the crate you'll touch.
@@ -324,7 +334,7 @@ everything you need to contribute is in the public docs above. Ask a maintainer 
    architecture section and crate README.
 2. **Plan tests first.** Write down the acceptance test before writing code.
 3. **Implement and test.**
-4. **Verify.** Run all gates (`cargo xtask ci`). For UI work, run the app with `--control`, drive it
+4. **Verify.** Run the checks for the crates you changed (contributing.md §3). For UI work, run the app with `--control`, drive it
    and look at the screenshots (§3).
 5. **Record.** Update the crate README (behaviour decisions, test results, limitations) and
    the progress docs when a milestone moves (ROADMAP.md, docs/roadmap.md, the relevant parity doc
@@ -339,7 +349,7 @@ Don't block on choices you can make yourself:
 
 - **Behaviour.** Match the publicly documented and observable behaviour of professional editors
   (help pages, published shortcut lists, using the app). Never inspect application internals
-  ([AGENTS.md](../AGENTS.md) §2). If behaviour is undocumented, choose what editors most commonly
+  ([standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)). If behaviour is undocumented, choose what editors most commonly
   expect and record the choice in the crate README.
 - **Ask a human only about:**
   - licences outside the allowlist;
@@ -354,11 +364,11 @@ Don't block on choices you can make yourself:
 A feature is done when:
 
 - [ ] its command(s) are registered with label, menu path, shortcut (if any) and a parameter doc;
-- [ ] engine tests cover it, including undo/redo and the disabled case;
+- [ ] tests cover its behaviour per [testing.md](https://github.com/storytold/craft-contrib/blob/main/standards/testing.md), including undo/redo and the disabled case where they apply;
 - [ ] the UI is wired: menu, panel control and shortcut;
 - [ ] every new interactive widget has an automation id;
 - [ ] you have driven it through the control channel and reviewed a screenshot;
-- [ ] all gates pass (`cargo xtask ci`), and new assets have sidecars;
+- [ ] the checks for the crates you changed pass, and new assets have sidecars;
 - [ ] the crate README and the progress docs (ROADMAP.md, docs/gaps.md, the parity docs) are updated where relevant;
 - [ ] it is committed with its task id.
 

@@ -286,47 +286,93 @@ pub struct PinNode {
 /// the layers pinned to them; pins in a cycle, or to a missing layer, are ignored.
 pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
     let mut out: Vec<Option<[f64; 4]>> = vec![None; nodes.len()];
-    fn solve(i: usize, nodes: &[PinNode], frame: [f64; 4], out: &mut Vec<Option<[f64; 4]>>, visiting: &mut Vec<usize>) -> [f64; 4] {
-        if let Some(b) = out[i] {
-            return b;
-        }
-        let n = &nodes[i];
-        let own = n.bounds;
-        let Some(pin) = n.pin.as_ref().filter(|p| p.any()) else {
-            out[i] = Some(own);
-            return own;
-        };
-        if visiting.contains(&i) {
-            return own; // cycle: this pin is ignored
-        }
-        visiting.push(i);
-        let target = match pin.to {
-            PinTarget::Frame => Some(frame),
-            PinTarget::Layer(uid) => nodes.iter().position(|m| m.uid == uid && uid != 0).filter(|&j| j != i).map(|j| solve(j, nodes, frame, out, visiting)),
-        };
-        visiting.pop();
-        let Some(t) = target else {
-            out[i] = Some(own);
-            return own;
-        };
-        let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
-            let size = own[hi] - own[lo];
-            match (lo_on, hi_on) {
-                (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
-                (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
-                (false, true) => (t[hi] + pin.offsets[hi] - size, t[hi] + pin.offsets[hi]),
-                (false, false) => (own[lo], own[hi]),
+    // first layer with each uid, as the linear search found it
+    let mut by_uid = std::collections::HashMap::with_capacity(nodes.len());
+    for (j, n) in nodes.iter().enumerate() {
+        by_uid.entry(n.uid).or_insert(j);
+    }
+    // A depth-limited chain can be revisited from many starting layers. Resolve its edges
+    // once, rather than hashing the same UID on every visit (up to MAX_PIN_CHAIN per layer).
+    let targets: Vec<Option<usize>> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| match n.pin.as_ref().map(|p| p.to) {
+            Some(PinTarget::Layer(uid)) if uid != 0 => by_uid.get(&uid).copied().filter(|&j| j != i),
+            _ => None,
+        })
+        .collect();
+    drop(by_uid);
+    // Reuse the bounded path buffer, and mark entries with the current start index
+    // instead of setting and clearing a visitation bit at every recursive call.
+    let mut seen_in = vec![usize::MAX; nodes.len()];
+    let mut path = Vec::with_capacity(MAX_PIN_CHAIN);
+    let mut result = Vec::with_capacity(nodes.len());
+    for start in 0..nodes.len() {
+        let mut i = start;
+        let (mut b, cacheable) = loop {
+            if let Some(b) = out[i] {
+                break (b, true);
+            }
+            let n = &nodes[i];
+            let own = n.bounds;
+            let Some(pin) = n.pin.as_ref().filter(|p| p.any()) else {
+                out[i] = Some(own);
+                break (own, true);
+            };
+            // As before, revisiting a layer wins over the depth limit. A cycle
+            // can be cached; a cutoff depends on the starting layer and cannot.
+            if seen_in[i] == start {
+                break (own, true);
+            }
+            if path.len() == MAX_PIN_CHAIN {
+                break (own, false);
+            }
+            match pin.to {
+                PinTarget::Frame => {
+                    path.push((i, pin));
+                    break (frame, true);
+                }
+                PinTarget::Layer(_) => {
+                    let Some(j) = targets[i] else {
+                        out[i] = Some(own);
+                        break (own, true);
+                    };
+                    seen_in[i] = start;
+                    path.push((i, pin));
+                    i = j;
+                }
             }
         };
-        let (x0, x1) = axis(pin.left, pin.right, 0, 2);
-        let (y0, y1) = axis(pin.top, pin.bottom, 1, 3);
-        let b = [x0, y0, x1, y1];
-        out[i] = Some(b);
-        b
+        while let Some((i, pin)) = path.pop() {
+            b = pinned_bounds(&nodes[i], pin, b);
+            if cacheable {
+                out[i] = Some(b);
+            }
+        }
+        result.push(b);
     }
-    let mut visiting = Vec::new();
-    (0..nodes.len()).map(|i| solve(i, nodes, frame, &mut out, &mut visiting)).collect()
+    result
 }
+
+fn pinned_bounds(n: &PinNode, pin: &Pin, t: [f64; 4]) -> [f64; 4] {
+    let own = n.bounds;
+    let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
+        let size = own[hi] - own[lo];
+        match (lo_on, hi_on) {
+            (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
+            (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
+            (false, true) => (t[hi] + pin.offsets[hi] - size, t[hi] + pin.offsets[hi]),
+            (false, false) => (own[lo], own[hi]),
+        }
+    };
+    let (x0, x1) = axis(pin.left, pin.right, 0, 2);
+    let (y0, y1) = axis(pin.top, pin.bottom, 1, 3);
+    [x0, y0, x1, y1]
+}
+
+/// Longest chain of layers pinned to layers that [`resolve_pins`] follows (a template can supply any
+/// number of layers).
+const MAX_PIN_CHAIN: usize = 256;
 
 /// Roll / crawl direction (Responsive Design – Time ▸ Roll).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -575,6 +621,64 @@ mod tests {
         // runs normalise and clamp
         let n = normalize_runs(&[StyleRun { start: 5, end: 50, style: bold() }, StyleRun { start: 0, end: 5, style: bold() }], 8);
         assert_eq!(n, vec![StyleRun { start: 0, end: 8, style: bold() }]);
+    }
+
+    #[test]
+    fn a_long_pin_chain_resolves_without_deep_recursion() {
+        // layer k is pinned to layer k + 1: a 200k-long acyclic chain from a template
+        let n = 200_000u64;
+        let b = [0.0, 0.0, 10.0, 10.0];
+        let nodes: Vec<PinNode> = (1..=n)
+            .map(|uid| PinNode { uid, pin: (uid < n).then(|| Pin::new(PinTarget::Layer(uid + 1), [true; 4], b, b)), bounds: b, resizable: true })
+            .collect();
+        let t = std::time::Instant::now();
+        let out = std::thread::Builder::new().stack_size(256 << 10).spawn(move || resolve_pins(&nodes, [0.0; 4])).unwrap().join().unwrap();
+        assert_eq!(out.len(), n as usize);
+        // Coverage instrumentation can slow this allocation- and hash-map-heavy stress test
+        // substantially. Keep the normal performance budget strict, with a bounded allowance
+        // only for instrumented runs (the shared SonarCloud workflow sets LLVM_PROFILE_FILE).
+        let budget = if std::env::var_os("LLVM_PROFILE_FILE").is_some() { 30 } else { 10 };
+        assert!(t.elapsed().as_secs() < budget, "{:?} (budget: {budget}s)", t.elapsed());
+    }
+
+    #[test]
+    fn indexed_pin_targets_keep_first_duplicate_and_reject_zero_self_and_missing() {
+        let own = [1.0, 2.0, 11.0, 12.0];
+        let first = [20.0, 30.0, 40.0, 50.0];
+        let pin = |uid, target| PinNode { uid, pin: Some(Pin::new(PinTarget::Layer(target), [true; 4], [0.0; 4], [0.0; 4])), bounds: own, resizable: true };
+        let nodes = vec![
+            pin(1, 7),
+            PinNode { uid: 7, pin: None, bounds: first, resizable: true },
+            PinNode { uid: 7, pin: None, bounds: [99.0; 4], resizable: true },
+            pin(2, 0),
+            PinNode { uid: 0, pin: None, bounds: [99.0; 4], resizable: true },
+            pin(3, 3),
+            pin(4, 999),
+        ];
+        let out = resolve_pins(&nodes, [0.0; 4]);
+        assert_eq!(out[0], first, "a duplicate UID still resolves to its first layer");
+        for i in [3, 5, 6] {
+            assert_eq!(out[i], own, "zero, self and missing targets leave the layer unchanged");
+        }
+    }
+
+    #[test]
+    fn layers_within_the_chain_limit_follow_the_frame_whatever_is_resolved_first() {
+        // layer k is pinned to layer k + 1 and the last one to the frame: resolving layer 0 first
+        // hits the depth cutoff far from the frame, which must not leak into the shorter chains
+        let n = MAX_PIN_CHAIN as u64 + 44;
+        let b = [0.0, 0.0, 10.0, 10.0];
+        let frame = [100.0, 100.0, 110.0, 110.0];
+        let nodes: Vec<PinNode> = (1..=n)
+            .map(|uid| {
+                let to = if uid < n { PinTarget::Layer(uid + 1) } else { PinTarget::Frame };
+                PinNode { uid, pin: Some(Pin::new(to, [true; 4], b, b)), bounds: b, resizable: true }
+            })
+            .collect();
+        let out = resolve_pins(&nodes, frame);
+        for k in 0..MAX_PIN_CHAIN {
+            assert_eq!(out[n as usize - 1 - k], frame, "layer {} is {} links from the frame", n as usize - 1 - k, k + 1);
+        }
     }
 
     #[test]

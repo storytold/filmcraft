@@ -4,7 +4,7 @@ OS media integration for FilmCraft (layer L5): hardware video decoding through t
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
 encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
-[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
+[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) (rule 13, `unsafe` in `## This repository`).
 
 ```rust
 // at startup (the desktop app, filmcraft-cli, the bench)

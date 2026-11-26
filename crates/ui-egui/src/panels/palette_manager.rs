@@ -118,7 +118,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
     });
     app.auto.add_response("palette.dialog", &modal.response, tl!("Project Colors"));
-    if !close && !modal.should_close() {
+    // The runtime takes Escape from egui as the window's cancel, so the modal does not see it.
+    if !close && !modal.should_close() && !crate::framework::escape_pressed(&modal.response.ctx) {
         app.ui.palette_manager = Some(draft);
     }
 }

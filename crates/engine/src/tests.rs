@@ -230,6 +230,26 @@ fn sequence_settings_scales_motion_with_the_frame_size_in_one_undo_step() {
 }
 
 #[test]
+fn sequence_settings_video_display_format() {
+    use filmcraft_time::TimeDisplay;
+    let mut s = demo();
+    assert_eq!(s.active_sequence().unwrap().settings.display, TimeDisplay::Timecode);
+    for (id, want) in [("feet35", TimeDisplay::Feet35), ("feet16", TimeDisplay::Feet16), ("frames", TimeDisplay::Frames), ("timecode", TimeDisplay::Timecode)] {
+        s.execute("sequence.settings", json!({"videoDisplay": id})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().settings.display, want, "{id}");
+    }
+    s.execute("sequence.settings", json!({"videoDisplay": "feet35"})).unwrap();
+    assert!(s.undo().is_some());
+    assert_eq!(s.active_sequence().unwrap().settings.display, TimeDisplay::Timecode, "one undo step");
+    // only the video formats; a refused value changes nothing
+    let before = (*s.project).clone();
+    for bad in ["samples", "seconds", "nope"] {
+        assert!(s.execute("sequence.settings", json!({"videoDisplay": bad})).is_err(), "{bad}");
+        assert_eq!(*s.project, before);
+    }
+}
+
+#[test]
 fn sequence_settings_timecode_render_quality_and_colour() {
     let mut s = demo();
     s.execute("sequence.settings", json!({"fps":29.97,"dropFrame":true,"maxRenderQuality":true})).unwrap();
@@ -353,6 +373,35 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (2, 50.0));
     s.redo();
     assert_eq!(scale(&s), (1, 100.0));
+    // A value graph double-click sends the sampled value with the timeline time (#1277).
+    let at = filmcraft_time::Tick::from_seconds_f64(1.0);
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": at.0, "value": 40.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["scale"];
+    let kf = p.keyframes.iter().find(|k| k.time == it.source_time_at(at)).expect("keyframe at 1s");
+    assert_eq!(kf.value, filmcraft_project::ParamValue::Float(40.0));
+    // The diamond still removes a keyframe that is already there, and ignores a value on that click.
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": at.0, "value": 10.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["scale"];
+    assert!(p.keyframes.iter().all(|k| k.time != it.source_time_at(at)));
+    // Position is a point: the graph sends [x, y]. A single number is the wrong type and adds nothing.
+    let at = filmcraft_time::Tick::from_seconds_f64(1.5);
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "position", "time": at.0, "value": [120.0, 80.0]})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["position"];
+    let kf = p.keyframes.iter().find(|k| k.time == it.source_time_at(at)).expect("position keyframe");
+    assert_eq!(kf.value, filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(120.0, 80.0)));
+    // A value outside the parameter's hard range is refused, as `effects.setParam` refuses it.
+    let out = filmcraft_time::Tick::from_seconds_f64(0.5);
+    assert!(s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": out.0, "value": 10001.0})).is_err());
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    assert!(it.effect("motion").unwrap().params["scale"].keyframes.iter().all(|k| k.time != it.source_time_at(out)));
+    let bad = filmcraft_time::Tick::from_seconds_f64(2.0);
+    assert!(s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "position", "time": bad.0, "value": 40.0})).is_err());
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["position"];
+    assert!(p.keyframes.iter().all(|k| k.time != it.source_time_at(bad)));
     // parameters that name nothing are errors and change nothing
     for bad in [
         json!({}),
