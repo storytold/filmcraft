@@ -3154,7 +3154,16 @@ fn build() -> Vec<CommandSpec> {
                 let comment = str_p(p, "comment").unwrap_or("").to_string();
                 let (color, custom_color) = marker_color_p(p, "markers.add")?.unwrap_or((Label::Green, None));
                 let author = marker_author_p(p, "markers.add")?.unwrap_or_default();
-                let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
+                let dur = match p.get("durationFrames").filter(|v| !v.is_null()) {
+                    None => Tick::ZERO,
+                    Some(value) => {
+                        let frames = value
+                            .as_i64()
+                            .filter(|f| (0..=10_000_000).contains(f))
+                            .ok_or_else(|| bad("markers.add", "durationFrames must be a whole number from 0 to 10000000"))?;
+                        s.sequence_rate().tick_of(frames)
+                    }
+                };
                 let id = s.edit_sequence("Add Marker", |q, ctx, _| {
                     let id = MarkerId(ctx.alloc());
                     q.markers.push(Marker {
@@ -4332,6 +4341,15 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
+        // the parameter's hard range, as `effects.setParam` checks it (a mask's own parameters have no definition)
+        let range = if p.get("mask").is_none_or(Value::is_null) {
+            e.def().and_then(|d| d.param(&pid)).and_then(|d| match d.kind {
+                filmcraft_project::ParamKind::Float { min, max, .. } => Some((min, max)),
+                _ => None,
+            })
+        } else {
+            None
+        };
         let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
         match op {
             "add" => {
@@ -4339,6 +4357,17 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 let added = !prm.remove_keyframe_at(mt_now);
                 if added {
                     prm.add_keyframe(mt_now);
+                    if let Some(v) = p.get("value")
+                        && let Some(k) = prm.keyframes.iter_mut().find(|k| k.time == mt_now)
+                    {
+                        let value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
+                        if let (Some((min, max)), ParamValue::Float(x)) = (range, &value)
+                            && !(min..=max).contains(x)
+                        {
+                            return Err(bad("keyframe", format!("`{pid}` must be between {min} and {max}, got {x}")));
+                        }
+                        k.value = value;
+                    }
                 }
                 reply = json!({"added": added, "mediaTime": mt_now.0});
             }
