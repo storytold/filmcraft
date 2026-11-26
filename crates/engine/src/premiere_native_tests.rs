@@ -81,3 +81,38 @@ fn save_as_fcproj_clears_native_premiere_state() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn failed_save_as_fcproj_keeps_premiere_native() {
+    // A refused `.fcproj` write must not drop the sidecar while the session still points at `.prproj`.
+    struct RefuseFcproj;
+    impl crate::Services for RefuseFcproj {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            crate::FsServices.read_file(path)
+        }
+        fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+            if path.ends_with(".fcproj") {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "refused"));
+            }
+            crate::FsServices.write_file(path, data)
+        }
+    }
+
+    let dir = filmcraft_testkit::workspace_root().join("target/premiere-native-fcproj-fail").join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let prproj = dir.join("src.prproj");
+    let fcproj = dir.join("out.fcproj");
+    std::fs::write(&prproj, fixture_xml()).unwrap();
+
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": prproj.to_string_lossy()})).unwrap();
+    assert!(s.premiere_native.is_some());
+    s.services = std::sync::Arc::new(RefuseFcproj);
+    assert!(s.execute("file.saveAs", json!({"path": fcproj.to_string_lossy()})).is_err());
+    assert!(s.premiere_native.is_some(), "sidecar must survive a failed Save As to .fcproj");
+    assert_eq!(s.path.as_deref(), Some(prproj.to_string_lossy().as_ref()));
+    assert!(!fcproj.exists());
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

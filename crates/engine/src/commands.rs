@@ -5363,10 +5363,6 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     if is_premiere_project_path(path) {
         return crate::premiere::save_document(s, path, adopt);
     }
-    // Saving as FilmCraft leaves the Premiere XML behind: further Saves go to `.fcproj`.
-    if adopt {
-        s.premiere_native = None;
-    }
     let t0 = web_time::Instant::now();
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
@@ -5390,6 +5386,8 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if adopt {
+        // Clear only after the `.fcproj` write succeeds so a failed Save As still leaves native Save working.
+        s.premiere_native = None;
         s.path = Some(path.to_string());
         s.previews_follow_path();
         s.note_recent_project();
