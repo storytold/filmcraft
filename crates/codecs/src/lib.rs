@@ -40,6 +40,7 @@ pub mod mp4;
 pub mod mpeg;
 pub mod mxf;
 pub mod ogg;
+pub mod spanned;
 pub mod stitch;
 mod stream_color;
 pub mod video;
@@ -59,6 +60,7 @@ pub use mp4::Mp4Source;
 pub use mpeg::MpegSource;
 pub use mxf::MxfSource;
 pub use ogg::OggSource;
+pub use spanned::SpannedSource;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
 pub use y4m::Y4mSource;
 
