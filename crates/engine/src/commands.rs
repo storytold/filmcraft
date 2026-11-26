@@ -270,7 +270,8 @@ pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 /// A call that only reports, so it is not journaled although its command edits: `sequence.settings`
 /// with nothing to change (`null` or `{}`) answers the settings, as `sequence.inspect` does (#1540).
 pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
-    id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty()))
+    (id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty())))
+        || (id == "clip.sceneEditDetection" && p.get("report") == Some(&Value::Bool(true)))
 }
 /// A marker accepts either an unchanged preset label or an exact six-digit sRGB hex color.
 pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<(Label, Option<filmcraft_project::HexColor>)>> {
@@ -4249,6 +4250,10 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
     v.extend(crate::paste_media::commands());
+    v.extend(crate::pacing::commands());
+    v.extend(crate::audio_levels::commands());
+    v.extend(crate::review::commands());
+    v.extend(crate::media_index::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

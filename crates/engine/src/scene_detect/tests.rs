@@ -278,3 +278,79 @@ fn results_of_a_replaced_project_are_not_applied() {
     crate::scene_detect::poll(&mut s);
     assert_eq!(count(&s), before + 1, "the current project's result applies");
 }
+
+#[test]
+fn report_lists_the_shots_and_changes_nothing() {
+    let dir = tmp_dir("scene-report");
+    let path = dir.join("cuts.mov");
+    make_cut_movie(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16), (DemoScene::Forest, 14)], 160, 90);
+    let (mut s, items, _) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    select_v1(&mut s);
+    let n_undo = s.history.undo.len();
+    let before = s.active_sequence().unwrap().clone();
+    // the apply options are ignored in a report
+    let r = s.execute("clip.sceneEditDetection", json!({"report": true, "applyCuts": true, "generateMarkers": true})).unwrap();
+    assert_eq!(s.history.undo.len(), n_undo, "no undo step");
+    assert_eq!(s.active_sequence().unwrap().video_tracks, before.video_tracks, "no cut was applied");
+    assert!(s.project.item(items[0]).unwrap().as_media().unwrap().markers.is_empty(), "no marker was added");
+    s.poll_persistence();
+    assert_eq!(s.history.undo.len(), n_undo, "nothing is applied later either");
+    let shots = r["shots"][0]["shots"].as_array().unwrap();
+    // the same cuts the applying run finds, as shots that tile the clip
+    assert_eq!(shots.len(), r["clips"][0]["cuts"].as_array().unwrap().len() + 1, "{r}");
+    let starts: Vec<i64> = shots.iter().map(|x| x["start"].as_i64().unwrap()).collect();
+    assert_eq!(&starts[1..], r["clips"][0]["cuts"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect::<Vec<_>>().as_slice());
+    for w in shots.windows(2) {
+        assert_eq!(w[0]["end"], w[1]["start"]);
+    }
+    assert_eq!(shots.last().unwrap()["end"].as_i64(), Some(before.video_tracks[0].items[0].end().0));
+    assert!(starts.contains(&rate.tick_of(20).0) && starts.contains(&rate.tick_of(36).0), "{r}");
+    // media times run on from shot to shot, to the clip's own media end
+    for w in shots.windows(2) {
+        assert_eq!(w[0]["mediaEnd"], w[1]["mediaStart"]);
+    }
+    assert_eq!(shots.last().unwrap()["mediaEnd"].as_i64(), Some(before.video_tracks[0].items[0].source_out().0));
+}
+
+#[test]
+fn a_report_leaves_another_finished_job_for_the_next_poll() {
+    use std::sync::atomic::Ordering;
+    let dir = tmp_dir("scene-report-poll");
+    let path = dir.join("cuts.mov");
+    make_cut_movie(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16), (DemoScene::Forest, 14)], 160, 90);
+    let (mut s, _, _) = session_with(&[&path]);
+    select_v1(&mut s);
+    let n_undo = s.history.undo.len();
+    // an applying job in the background, finished but not yet applied
+    let job = s.execute("clip.sceneEditDetection", json!({"applyCuts": true})).unwrap()["job"].as_u64().unwrap();
+    let t0 = std::time::Instant::now();
+    while !s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.progress.finished.load(Ordering::Relaxed)) {
+        assert!(t0.elapsed().as_secs() < 60, "the job didn't finish");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    select_v1(&mut s);
+    s.execute("clip.sceneEditDetection", json!({"report": true})).unwrap();
+    assert_eq!(s.history.undo.len(), n_undo, "the report applied the other job's cuts");
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
+    s.poll_persistence();
+    assert_eq!(s.history.undo.len(), n_undo + 1, "the finished job is applied by the next poll");
+}
+
+/// A held clip shows one frame: its report names that frame as the shot's media start and end.
+#[test]
+fn a_held_clip_reports_its_held_frame() {
+    let dir = tmp_dir("scene-report-hold");
+    let path = dir.join("cuts.mov");
+    make_cut_movie(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16)], 160, 90);
+    let (mut s, _, _) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    let held = rate.tick_of(5);
+    let seq = s.state.active_sequence.unwrap();
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().video_tracks[0].items[0].frame_hold = Some(held);
+    select_v1(&mut s);
+    let r = s.execute("clip.sceneEditDetection", json!({"report": true})).unwrap();
+    let shots = r["shots"][0]["shots"].as_array().unwrap();
+    assert_eq!(shots.len(), 1, "one frame has no cuts: {r}");
+    assert_eq!((shots[0]["mediaStart"].as_i64(), shots[0]["mediaEnd"].as_i64()), (Some(held.0), Some(held.0)), "{r}");
+}
