@@ -3,59 +3,26 @@
 //! counters plus playback, frame-worker and UI timings. Also how closely the Program monitor's
 //! picture follows a value that is dragged and a scrub.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use egui_kittest::kittest::Queryable;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::frames::{FrameKey, Target};
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params}: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method}");
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        // Align UI clock steps with the drag test's 16 ms worker yields. The default
+        // 250 ms steps can advance playback faster than the workers can show its frames.
+        let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+        start(Driver { harness, tx })
     }
 
     /// The frame due in the Program monitor: `shown` at the project's revision and the playhead.
@@ -312,12 +279,17 @@ fn program_monitor_plays_on_while_a_value_is_dragged() {
     d.harness.state_mut().play(1.0);
     let mut frames = std::collections::BTreeSet::new();
     let mut newest = at_rest.revision;
-    for i in 0..90 {
+    // Drag until five frames have shown, for up to ~10 s: on a busy CI runner the workers can take
+    // longer than a second and a half to finish frames. A picture held for the whole drag still fails.
+    for i in 0..600 {
         // one change and one UI pass, as a mouse move while dragging the value
         d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (i % 30) as f64}));
         let shown = d.harness.state().program_picture().unwrap();
         frames.insert(shown.frame);
         newest = newest.max(shown.revision);
+        if frames.len() >= 5 && newest > at_rest.revision {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
     assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");
@@ -331,13 +303,21 @@ fn playback_at_a_newer_revision_keeps_the_frame_being_rendered() {
     let d = Driver::demo();
     let app = d.harness.state();
     let idle = || {
-        for _ in 0..200_000 {
-            if app.frames.queue_len() == 0 {
-                return;
+        if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while app.frames.queue_len() != 0 {
+                assert!(std::time::Instant::now() < deadline, "the frame queue never emptied ({} queued)", app.frames.queue_len());
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            std::thread::sleep(std::time::Duration::from_micros(50));
+        } else {
+            for _ in 0..200_000 {
+                if app.frames.queue_len() == 0 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(50));
+            }
+            panic!("the frame queue never emptied ({} queued)", app.frames.queue_len());
         }
-        panic!("the frame queue never emptied");
     };
     // the clip with Color Grading at full resolution: tens of milliseconds on the CPU
     let seq = app.session.state.active_sequence.unwrap();

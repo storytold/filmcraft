@@ -1,6 +1,6 @@
 use super::*;
+use craft_media::mxf::{OpAtomPcm, PackageIds};
 use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind};
-use filmcraft_mxf::{OpAtomPcm, PackageIds};
 use filmcraft_project::{AudioComponent, ItemKind, MediaRef};
 use serde_json::json;
 
@@ -37,7 +37,7 @@ pub(super) fn fixtures(name: &str) -> (Session, Vec<filmcraft_project::AudioComp
     let mut channels = Vec::new();
     for (i, signal) in [4000, -8000].into_iter().enumerate() {
         let ids = PackageIds::from_seed(&format!("synthetic-{i}"), "test");
-        let bytes = filmcraft_mxf::write_opatom_pcm(
+        let bytes = craft_media::mxf::write_opatom_pcm(
             &OpAtomPcm { sample_rate: 48000, bits: 16, channels: 1, edit_rate: None, ids: ids.clone(), timecode: None },
             &vec![signal; 100],
         )

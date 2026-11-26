@@ -85,9 +85,81 @@ class InstallTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(launched.read_text().splitlines(), [str(prefix / "bin/filmcraft"), str(document)])
 
+    def test_a_nightly_bundle_keeps_an_installed_stable_tree(self):
+        prefix = self.root / "shared prefix"
+        stable = self.install("--prefix", prefix)
+        self.assertEqual(stable.returncode, 0, stable.stderr)
+        owned = {
+            path: path.read_bytes()
+            for path in (
+                prefix / "bin/filmcraft",
+                prefix / "bin/filmcraft-cli",
+                prefix / "share/applications" / f"{APP_ID}.desktop",
+                prefix / "share/icons/hicolor/test",
+                prefix / "share/mime/packages/test.xml",
+            )
+        }
+        nightly = self.root / "nightly bundle"
+        for path in ("bin", "share/applications", "share/icons/hicolor/256x256/apps", "share/doc/filmcraft"):
+            (nightly / path).mkdir(parents=True)
+        shutil.copyfile(HERE / "install.sh", nightly / "install.sh")
+        for name in ("filmcraft", "filmcraft-bin", "filmcraft-cli"):
+            binary = nightly / "bin" / name
+            binary.write_text("#!/bin/sh\necho 'nightly fixture'\n")
+            binary.chmod(0o755)
+        shutil.copyfile(
+            HERE / f"{APP_ID}.desktop", nightly / "share/applications" / f"{APP_ID}.desktop"
+        )
+        (nightly / "share/icons/hicolor/256x256/apps" / f"{APP_ID}.png").write_bytes(b"nightly icon")
+        (nightly / "share/doc/filmcraft/NOTICE").write_text("nightly notice\n")
+        result = subprocess.run(
+            ["bash", str(nightly / "install.sh"), "--prefix", str(prefix)],
+            cwd=self.root, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path, content in owned.items():
+            self.assertEqual(path.read_bytes(), content, f"{path.name} belongs to the Stable install")
+        for name in ("filmcraft-nightly", "filmcraft-bin", "filmcraft-nightly-cli"):
+            self.assertTrue(os.access(prefix / "bin" / name, os.X_OK), name)
+        entry = prefix / "share/applications" / f"{APP_ID}.nightly-v1.desktop"
+        text = entry.read_text()
+        self.assertIn(f'Exec="{prefix}/bin/filmcraft-nightly" %F\n', text)
+        self.assertIn("Name=FilmCraft Nightly\n", text)
+        self.assertIn(f"Icon={APP_ID}.nightly-v1\n", text)
+        self.assertNotIn("MimeType=", text, "a Nightly entry claims no file associations")
+        self.assertTrue((prefix / "share/icons/hicolor/256x256/apps" / f"{APP_ID}.nightly-v1.png").is_file())
+        self.assertEqual((prefix / "share/doc/filmcraft-nightly/NOTICE").read_text(), "nightly notice\n")
+
+    def test_the_nightly_tarball_stages_what_the_installer_selects(self):
+        version = "0.0.1-nightly.20251124.1.1.g0123456789ab"
+        target = self.root / "nightly-target"
+        binaries = target / "release"
+        binaries.mkdir(parents=True)
+        for name in ("filmcraft", "filmcraft-cli"):
+            binary = binaries / name
+            binary.write_text("#!/bin/sh\necho 'FilmCraft fixture'\n")
+            binary.chmod(0o755)
+        dist = self.root / "nightly-dist"
+        result = subprocess.run(
+            ["bash", str(HERE / "package.sh"), "--skip-build", "--formats", "tar"],
+            env={**os.environ, "CARGO_TARGET_DIR": str(target), "DIST": str(dist),
+                 "FILMCRAFT_BUILD_CHANNEL": "nightly-v1", "FILMCRAFT_VERSION": version},
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        base = f"filmcraft-{version}-linux-x86_64"
+        with tarfile.open(dist / f"{base}.tar.gz") as archive:
+            names = set(archive.getnames())
+        # The installer picks the Nightly layout from the GUI beside the launcher, and rewrites the
+        # Stable-named entry it stages into the Nightly's own id.
+        self.assertIn(f"{base}/bin/filmcraft", names)
+        self.assertIn(f"{base}/bin/filmcraft-bin", names)
+        self.assertIn(f"{base}/share/applications/{APP_ID}.desktop", names)
+
     def test_invalid_arguments_fail_before_writing(self):
         for args in (("--prefix",), ("--prefix", "relative"), ("--prefix", "/"), ("--unknown",),
-                     ("--prefix", "///"), ("--prefix", "/tmp/../"), ("--prefix", str(self.bundle)),
+                     ("--prefix", "///"), ("--prefix", tempfile.gettempdir() + "/../"),
+                     ("--prefix", str(self.bundle)),
                      ("--prefix", str(self.bundle / "nested")),
                      ("--prefix", str(self.root / "bad=path")),
                      ("--prefix", str(self.root / "bad%path")),

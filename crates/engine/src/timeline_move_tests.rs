@@ -503,7 +503,7 @@ fn the_group_stops_together_at_the_sequence_start() {
     s.active_sequence().unwrap().check().unwrap();
 }
 
-/// AGENTS.md §0.8: `time` is any i64. Out-of-range values are parameter errors, never a panic
+/// AGENTS.md rule 29: `time` is any i64. Out-of-range values are parameter errors, never a panic
 /// (which `execute` would report as an internal error) and never a wrapped position.
 #[test]
 fn hostile_times_are_refused_or_clamped_never_a_panic() {

@@ -12,7 +12,7 @@ fn bad(message: &str) -> MediaError {
 
 /// Open exactly the expected essence package. A matching filename is insufficient.
 pub fn open_component(c: &AudioComponent, services: &dyn Services) -> Result<SharedSource, MediaError> {
-    let source = open_mxf(c.path.as_deref(), c.file_package, filmcraft_mxf::TrackKind::Sound, c.source_start, c.length, services)?;
+    let source = open_mxf(c.path.as_deref(), c.file_package, craft_media::mxf::TrackKind::Sound, c.source_start, c.length, services)?;
     let stream = source.info().audio_streams.get(c.stream).ok_or_else(|| bad("component audio stream is missing"))?;
     if c.channel >= stream.channels as usize {
         return Err(bad("component audio channel is missing"));
@@ -23,7 +23,7 @@ pub fn open_component(c: &AudioComponent, services: &dyn Services) -> Result<Sha
 pub(super) fn open_mxf(
     path: Option<&str>,
     identity: [u8; 32],
-    kind: filmcraft_mxf::TrackKind,
+    kind: craft_media::mxf::TrackKind,
     start: Tick,
     length: Tick,
     services: &dyn Services,
@@ -34,7 +34,7 @@ pub(super) fn open_mxf(
 pub(super) fn inspect_mxf(
     path: Option<&str>,
     identity: [u8; 32],
-    kind: filmcraft_mxf::TrackKind,
+    kind: craft_media::mxf::TrackKind,
     start: Tick,
     length: Tick,
     services: &dyn Services,
@@ -50,7 +50,7 @@ pub(super) fn inspect_mxf(
         services.reader(path).ok_or_else(|| bad("component media requires random-access file services"))?.map_err(|e| MediaError::Io(e.to_string()))?;
     let source = filmcraft_codecs::mxf::MxfSource::open_reader(path, reader).map_err(|e| MediaError::Decode(e.to_string()))?;
     let tracks = source.essence_tracks();
-    if source.info().container != "MXF OP-Atom" || tracks.len() != 1 || tracks.first().is_none_or(|t| t.file_package_uid != identity || t.kind != kind) {
+    if source.info().container != "MXF OP-Atom" || tracks.len() != 1 || tracks.first().is_none_or(|t| t.file_package_uid != Some(identity) || t.kind != kind) {
         return Err(bad("MXF component identity or single-track profile does not match"));
     }
     if start < Tick::ZERO || length < Tick::ZERO || start.0.checked_add(length.0).is_none_or(|n| n > source.info().duration.0) {

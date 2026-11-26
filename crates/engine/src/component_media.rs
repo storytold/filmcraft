@@ -12,7 +12,7 @@ pub fn open_picture(c: &PictureComponent, services: &dyn Services) -> Result<Sha
     if c.track == 0 || c.length <= Tick::ZERO || c.length > Tick::MAX {
         return Err(MediaError::Unsupported("invalid picture component timing or track".into()));
     }
-    component_audio::open_mxf(c.path.as_deref(), c.file_package, filmcraft_mxf::TrackKind::Picture, c.source_start, c.length, services)
+    component_audio::open_mxf(c.path.as_deref(), c.file_package, craft_media::mxf::TrackKind::Picture, c.source_start, c.length, services)
 }
 
 /// Playback and status must agree on whether the saved picture binding is usable.

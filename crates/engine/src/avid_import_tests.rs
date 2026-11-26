@@ -38,10 +38,10 @@ fn fixture() -> (Value, BTreeMap<String, Vec<u8>>) {
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
     for i in 1..=2 {
-        let ids = filmcraft_mxf::PackageIds::from_seed(&format!("combined-{i}"), "test");
+        let ids = craft_media::mxf::PackageIds::from_seed(&format!("combined-{i}"), "test");
         let raw: String = ids.file.0.iter().map(|b| format!("{b:02x}")).collect();
-        let bytes = filmcraft_mxf::write_opatom_pcm(
-            &filmcraft_mxf::OpAtomPcm { sample_rate: 48000, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
+        let bytes = craft_media::mxf::write_opatom_pcm(
+            &craft_media::mxf::OpAtomPcm { sample_rate: 48000, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
             &vec![if i == 1 { 4000 } else { -8000 }; 4800],
         )
         .unwrap();
@@ -833,9 +833,9 @@ fn indexed_mxf_corroborates_full_audio_clock_before_binding_and_retains_raw_evid
         // not corroborate the candidate clock, even if the declared endpoint matches.
         let mut short_media = BTreeMap::new();
         for (i, path) in media.keys().enumerate() {
-            let ids = filmcraft_mxf::PackageIds::from_seed(&format!("clock-{sr}-{i}"), "test");
-            let mut bytes = filmcraft_mxf::write_opatom_pcm(
-                &filmcraft_mxf::OpAtomPcm { sample_rate: sr, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
+            let ids = craft_media::mxf::PackageIds::from_seed(&format!("clock-{sr}-{i}"), "test");
+            let mut bytes = craft_media::mxf::write_opatom_pcm(
+                &craft_media::mxf::OpAtomPcm { sample_rate: sr, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
                 &vec![4000; samples - 1],
             )
             .unwrap();
@@ -846,7 +846,7 @@ fn indexed_mxf_corroborates_full_audio_clock_before_binding_and_retains_raw_evid
             for at in positions {
                 bytes[at + 4..at + 12].copy_from_slice(&(samples as i64).to_be_bytes());
             }
-            let mxf = filmcraft_mxf::open(bytes.as_slice()).unwrap();
+            let mxf = craft_media::mxf::open(bytes.as_slice()).unwrap();
             assert_eq!(mxf.tracks[0].duration, Some(samples as i64));
             assert_eq!(mxf.tracks[0].stored_sample_frames(), samples as u64 - 1);
             short_media.insert(path.clone(), bytes);
@@ -923,12 +923,12 @@ fn audio_clock_fixture(
     clip["rate"] = json!({"numerator":23976,"denominator":1000});
     clip["workflow_evidence"] = json!("managed_avb_source_descriptors");
     for (i, t) in clip["tracks"].as_array_mut().unwrap().iter_mut().enumerate() {
-        let ids = filmcraft_mxf::PackageIds::from_seed(&format!("clock-{sr}-{i}"), "test");
+        let ids = craft_media::mxf::PackageIds::from_seed(&format!("clock-{sr}-{i}"), "test");
         let id = json!({"raw":ids.file.0.iter().map(|b|format!("{b:02x}")).collect::<String>(),"byte_order":"big"});
         identities.insert(ids.file.0);
         let path = folder.join(format!("channel-{i}.mxf"));
-        let bytes = filmcraft_mxf::write_opatom_pcm(
-            &filmcraft_mxf::OpAtomPcm { sample_rate: sr, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
+        let bytes = craft_media::mxf::write_opatom_pcm(
+            &craft_media::mxf::OpAtomPcm { sample_rate: sr, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
             &vec![if i == 0 { 4000 } else { -8000 }; samples],
         )
         .unwrap();

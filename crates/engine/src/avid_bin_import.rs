@@ -191,6 +191,8 @@ pub(crate) fn prepare(s: &mut Session, p: &Value) -> Result<Value> {
                 *lock(&output) = Some(plan);
                 *lock(&progress.status) = "Ready to review".into();
                 *lock(&result) = Some(Ok(filmcraft_export::Report {
+                    encoder: None,
+                    warnings: Vec::new(),
                     path: String::new(),
                     frames: 0,
                     seconds: started.elapsed().as_secs_f64(),

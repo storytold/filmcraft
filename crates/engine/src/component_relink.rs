@@ -219,7 +219,7 @@ struct Source {
     bytes: AtomicU64,
     calls: AtomicU64,
 }
-impl filmcraft_mxf::ByteSource for Source {
+impl craft_media::mxf::ByteSource for Source {
     fn len(&self) -> u64 {
         self.reader.len()
     }
@@ -359,7 +359,7 @@ pub(crate) fn index_identities(
                 }
             };
             let source = Source { reader, progress: progress.clone(), bytes: AtomicU64::new(0), calls: AtomicU64::new(0) };
-            let mxf = match filmcraft_mxf::open(&source) {
+            let mxf = match craft_media::mxf::open(&source) {
                 Ok(v) => v,
                 Err(e) => {
                     out.problem(format!("{path}: {e}"));
@@ -367,13 +367,13 @@ pub(crate) fn index_identities(
                 }
             };
             for warning in &mxf.warnings {
-                if mxf.operational_pattern == filmcraft_mxf::OperationalPattern::Atom && mxf.tracks.len() == 1 && known_atom_notice(warning) {
+                if mxf.operational_pattern == craft_media::mxf::OperationalPattern::Atom && mxf.tracks.len() == 1 && known_atom_notice(warning) {
                     out.notice(format!("{path}: {warning}"));
                 } else {
                     out.problem(format!("{path}: {warning}"));
                 }
             }
-            let ids: BTreeSet<_> = mxf.tracks.iter().map(|t| t.file_package_uid).collect();
+            let ids: BTreeSet<_> = mxf.tracks.iter().filter_map(|t| t.file_package_uid).collect();
             for id in ids {
                 if let Some(copies) = index.get_mut(&id) {
                     if copies.len() >= MAX_COPIES {
@@ -580,6 +580,8 @@ pub(crate) fn search(s: &mut Session, p: &Value) -> Result<Value> {
         let found = scan(&project, targets, vec![folder], &*services, progress.clone());
         *lock(&progress.status) = format!("Searched {} entries; {}", found.entries, if found.complete { "complete" } else { "incomplete: review diagnostics" });
         *lock(&result) = Some(Ok(filmcraft_export::Report {
+            encoder: None,
+            warnings: Vec::new(),
             path: String::new(),
             frames: found.entries as u64,
             seconds: t0.elapsed().as_secs_f64(),

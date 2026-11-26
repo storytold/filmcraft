@@ -2,63 +2,12 @@
 //! (Delete Caption Track / Delete Empty Caption Tracks) and the Caption Tracks section of
 //! Sequence ▸ Delete Tracks….
 
-use std::sync::mpsc::{Sender, channel};
+use crate::support::{Drive, Launch, driver};
+use serde_json::json;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn exec(&mut self, cmd: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": cmd, "params": params}))
-    }
-
     /// Caption track names top first, with their caption counts.
     fn caption_tracks(&mut self) -> Vec<(String, usize)> {
         let r = self.exec("captions.list", json!({}));

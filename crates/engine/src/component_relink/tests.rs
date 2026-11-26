@@ -87,6 +87,36 @@ fn explicitly_chosen_component_path_can_override_a_refused_stored_spelling() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[test]
+fn a_readable_same_name_atom_without_a_file_package_id_is_not_a_relink_candidate() {
+    let (mut s, _, channels, dir) = fixture("no-file-package-uid");
+    let source = &channels[0];
+    let path = source.path.as_ref().unwrap();
+    let mut bytes = std::fs::read(path).unwrap();
+    // Remove only the explicit file-package ID from each header/footer copy of this
+    // OP-Atom fixture. The same UMID bytes in a lookup table or elsewhere
+    // in the file cannot establish the source's identity.
+    let mut tag_and_uid = vec![0x44, 0x01, 0, 32];
+    tag_and_uid.extend_from_slice(&source.file_package);
+    let offsets: Vec<_> = bytes.windows(tag_and_uid.len()).enumerate().filter_map(|(i, v)| (v == tag_and_uid).then_some(i)).collect();
+    assert!(!offsets.is_empty());
+    for offset in offsets {
+        bytes[offset..offset + 2].copy_from_slice(&[0x7f, 0xfe]);
+    }
+    std::fs::write(path, &bytes).unwrap();
+    let tracks = craft_media::mxf::open(&bytes).unwrap();
+    let track = tracks.track_of_kind(craft_media::mxf::TrackKind::Sound).unwrap();
+    assert_eq!(tracks.operational_pattern, craft_media::mxf::OperationalPattern::Atom);
+    assert!(tracks.tracks[track].file_package_uid.is_none());
+    assert_eq!(tracks.read_pcm(&bytes, track, 0, 8).unwrap()[0], vec![4000.0 / 32768.0; 8]);
+    assert!(crate::component_audio::open_component(source, &*s.services).is_err());
+    let before = s.project.clone();
+    let (_, result) = search(&mut s, &dir);
+    assert_eq!(result["report"]["results"][0]["status"], "absent", "{result}");
+    assert_eq!(s.project, before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn duplicates_require_choice_and_wrong_identity_never_substitutes_missing_a1() {
     let (mut s, id, c, dir) = fixture("relink-duplicate");
     std::fs::copy(c[1].path.as_ref().unwrap(), dir.join("duplicate.mxf")).unwrap();
@@ -209,7 +239,7 @@ fn phase12_picture_and_audio_relink_preserve_native_sequence() {
 
 #[test]
 fn search_reader_enforces_budget_and_checks_cancellation_between_reads() {
-    use filmcraft_mxf::ByteSource;
+    use craft_media::mxf::ByteSource;
     let progress = Arc::new(filmcraft_export::Progress::default());
     let source = Source {
         reader: Arc::new(filmcraft_media::reader::MemReader(Arc::from([7u8; 8]))),

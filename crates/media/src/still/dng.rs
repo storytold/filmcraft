@@ -14,6 +14,7 @@ use std::sync::Arc;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
 use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
@@ -55,6 +56,14 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Decoded> {
     Ok(Decoded { frame, pixel_format, info: img.info })
 }
 
+/// The size [`still`] reports for this file, from its metadata alone: the developed
+/// (default-crop) size, read without developing a picture. DNG ignores EXIF
+/// Orientation, so the decoder applies none.
+pub fn geometry(bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let info = filmcraft_dng::Dng::parse(bytes).ok()?.info().ok()?;
+    Some((u32::try_from(info.width).ok()?, u32::try_from(info.height).ok()?, Orientation::NoTransforms))
+}
+
 /// Open a DNG file as a still.
 pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
     let d = decode(name, bytes)?;
@@ -80,7 +89,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillSource { info, frame: Arc::new(d.frame), orientation: Orientation::NoTransforms })
 }
 
 /// The frame rate and start time code (in frames at that rate) of a CinemaDNG sequence whose first

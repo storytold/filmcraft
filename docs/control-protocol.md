@@ -1,15 +1,15 @@
 # Control protocol & MCP
 
 ## Desktop control channel
-`filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
+`filmcraft --control 9886` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
 The listener requires `FILMCRAFT_CONTROL_TOKEN`: 64 random hex characters shared with authorized
 clients through their inherited environment. Generate a fresh token for each desktop session, then
 start the desktop and bridge from that environment:
 
 ```sh
 export FILMCRAFT_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-filmcraft --control 9876 &
-filmcraft-cli mcp --bridge 127.0.0.1:9876
+filmcraft --control 9886 &
+filmcraft-cli mcp --bridge 127.0.0.1:9886
 ```
 
 The CLI / MCP bridge reads this variable automatically. Keep it private: don't put the value in
@@ -17,6 +17,15 @@ command-line arguments, logs, checked-in MCP configuration, or shared files. Wit
 the desktop leaves the listener closed. Every raw JSON request must include the same top-level
 `token` string; missing or incorrect credentials get an error and close the connection before any
 request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.
+
+Port 9886 is the documented example; the other Craft apps use their own (PhotoCraft 7878,
+GridCraft 7979, WordCraft 7981, EffectCraft 9877). Pick a port nothing else listens on: Blender's
+MCP add-ons default to 9876, a frequent neighbour of a video editor. If the port can't be bound
+(already in use) or the token is missing, the app still starts but says so on stderr, in the log
+file and in the status bar, and the app's own `ui.inspect` state (read in-process, by the UI and
+test harnesses) reports it under `control` (`{port, listening, error}`). A listener that failed to
+start serves no requests, so the CLI / MCP bridge cannot read that state from it. A bridge that reaches a server which is not FilmCraft reports
+"not a FilmCraft control server: something else is listening on this port".
 
 Socket reads and writes time out after two minutes without progress, releasing the connection slot.
 Expiration closes the connection without an unsolicited reply; reconnect before the next request
@@ -48,7 +57,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 |---|---|---|
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
-| `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
+| `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…); `control` reports the control listener `{port, listening, error}` (`null` when neither `--control` nor a non-empty `FILMCRAFT_CONTROL_PORT` was given) |
 | `ui.docking` | – | the panel layout (craft-ui `Layout`), the focused and maximized panel, and `hitRects`: each docking gesture source drawn last frame (`{hit, rect}`) |
 | `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect (`status.text` carries the status bar's whole message or hint, even when the bar shows it shortened); `window` (the `n` of `panel.float.<n>`) marks an element drawn in a floating panel's own OS window, whose rect is in that window's coordinates |
 | `ui.set` | `{tool, workspace, mode, theme, focused, playbackRes, timeline:{pps,scroll,fit}, program:{…}, source:{…}, clipDialog:{param: value}, menuDialog:{param: value}, panels:{scopes, timecode, reference, events, progress}, export:{…}, keyframeSelection:[…]}` | `keyframeSelection` replaces the Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`, `time` in media ticks; read back as `ui.inspect` → `ui.keyframe_selection`; a click on a lane keyframe selects just that one); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `panels` merges into the panel settings (`ui.inspect` → `ui.panels`; see `panels::panel_state`): Video Scopes `{shown: ["vectorscopeYuv"|"vectorscopeHls"|"histogram"|"parade"|"waveform"], waveformType, paradeType, colorSpace, brightness, scale, clamp, targets}`, Timecode `{rows: [{source, mode, display}], showName}`, Reference Monitor `{ganged, time, display: "composite"|"scopes", scopes}`, Events `{level, selected}`, Progress `{showFinished}` `export` deep-merges into Export mode state (`preset` — applied first —, `settings` (ExportSettings JSON), `fileName`, `location`, `range`, `customStart`, `customEnd`, `openSections`, `manager` (Preset Manager: `query`, `favoritesOnly`, `selected`, `saveName`), `quickOpen`, `quickPath`, `quickPreset`); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `projectPanel` merges into the Project panel's view state (`bin` shown in place, `tabs` (bins in a tab or window: `{bin, floating, view, iconSize, nav}`), `activeTab`, `selectedBin`, `rename: {item|bin, text}`, `dialog` (`{"metadataDisplay": {columns, filter}}`, `{"savePresetAs": {name}}`, `{"managePresets": {selected, name}}`, `{"freeformOptions": {options}}`, `{"saveArrangement": {name, bin}}`)); `mediaBrowser` into the Media Browser's (`expanded`, `pathEdit`, `editColumns`, `treeWidth`). View settings, columns and presets are engine commands (`project.view.set`, `project.columns.set`, `project.viewPreset.*`, `mediaBrowser.settings`) |
@@ -62,7 +71,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
 | `ui.focus` | `{}` / `{id}` | empty parameters activate the native window; a widget ID requests egui focus without OS activation |
-| `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
+| `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled (while running), `replaced` (dropped while waiting for a newer frame in their view), `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
 
 For `ui.click` and `ui.drag`, omitted or null counts/steps use the defaults. Out-of-range or
 non-integer values return `{"ok": false, "error": "…"}` before queuing any pointer input.
@@ -165,6 +174,18 @@ Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
+**Slip Monitor** (`crates/engine/src/slip.rs`, `crates/ui-egui/src/panels/slip_monitor.rs`): while the
+Slip tool (Y) drags a clip, the Program monitor shows the slipped clip's new first and last frames
+large, side by side, with the previous clip's last frame and the next clip's first frame half size
+above their outer corners (ids `slipMonitor.previous`, `.in`, `.out`, `.next`, their `…Timecode`
+labels, `slipMonitor.offsetTimecode` (`+00:00:05:20`) and `slipMonitor.offset` (`Slip: +25 frames`)). `timeline.slipPreview
+{clip, delta|deltaFrames}` returns what `timeline.slip` with the same params would do without
+editing anything: `previous` / `in` / `out` / `next` (null where no clip touches it; each with
+`mediaTime`, `mediaFrame`, `sourceTimecode`), `shown` (the linked picture when the dragged clip is
+sound), `delta` (the slip after clamping at the media's ends), `offsetFrames`, `atLimit` and `clips`
+(each slipped clip's new `sourceIn` / `sourceOut`). Linked partners are clamped together, as
+`timeline.slip` does them.
+
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
 `{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now
@@ -202,7 +223,7 @@ Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcu
 
 ## MCP
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)
-or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `command_run`,
+or `--bridge 127.0.0.1:9886` to drive the running app. Tools: `command_list`, `command_run`,
 `command_batch`, `doc_inspect`, `render_preview`, `project_inspect`, `sequence_inspect`, `media_import`,
 `render_frame`, `ui_inspect`, `ui_elements`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_screenshot`,
 `ui_control`; resources `filmcraft://document` and `filmcraft://commands`. `.mcp.json` registers both.
@@ -210,6 +231,21 @@ Annotations, argument checking, errors and export progress / cancellation:
 [agents.md § Conventions](agents.md#conventions).
 
 Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `frame` or `timecode`.
+
+## Parameter dialogs
+
+From a menu, a shortcut or `ui.menu.invoke`, a command sent without parameters opens the dialog
+that asks for them (Sequence Settings…, Add Tracks…, Audio Gain…, Interpret Footage…, Remix
+Properties…, New Sequence…, Color Management…, Find…, Media Properties…, Simplify Sequence…, Link
+Media…, Make Offline…, Create Proxies…, Project Manager… and the other dialog commands).
+`engine.execute` never does (#1540): an agent can neither see nor close a dialog. The engine command runs with the parameters given (so `sequence.addTracks {}`
+adds its default one video track, `clip.audioGain {}` answers "need `db`"), and
+`sequence.settings {}` answers `{"settings"}`, the active sequence's settings as `sequence.inspect`
+reports them, instead of showing them. The same goes for the Clip Mismatch Warning (the clip goes into
+the sequence as it is), and for the export settings dialogs and file pickers of commands sent without a
+`path`: the engine command runs as given, which is an error for most of them, while `file.save` saves a
+project that already has a path to that path. Confirmations (`file.revert`, `file.recover`, Close
+Project and Quit with unsaved changes) still ask.
 
 ## Panel docking commands
 

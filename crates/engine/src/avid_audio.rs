@@ -214,7 +214,8 @@ pub(crate) fn prepare_binding_with_index(
                     let descriptor = crate::avid_offline::descriptor(&evidence, file_package)?;
                     crate::avid_offline::picture(descriptor, r, &evidence, index)?
                 } else {
-                    let source = component_audio::open_mxf(path.as_deref(), file_package, filmcraft_mxf::TrackKind::Picture, Tick::ZERO, Tick::ZERO, services)?;
+                    let source =
+                        component_audio::open_mxf(path.as_deref(), file_package, craft_media::mxf::TrackKind::Picture, Tick::ZERO, Tick::ZERO, services)?;
                     source.info().video.clone().ok_or_else(|| bad("no decoded picture"))?
                 };
                 if ![clip, direct, r].iter().all(|v| picture_rate_matches(v, video.frame_rate))

@@ -72,7 +72,7 @@ pub(super) fn reconcile(clip: &Value, index: Option<&IdentityIndex>, services: &
             return Err(bad("audio source identity disagrees with resolved reference"));
         }
         let Some(path) = index.unique_path(package) else { return Ok(None) };
-        let source = component_audio::inspect_mxf(Some(path), package, filmcraft_mxf::TrackKind::Sound, Tick::ZERO, Tick::ZERO, services)?;
+        let source = component_audio::inspect_mxf(Some(path), package, craft_media::mxf::TrackKind::Sound, Tick::ZERO, Tick::ZERO, services)?;
         let info = source.info();
         let Some(audio) = info.audio().filter(|a| a.channels == 1 && a.codec == "PCM") else { return Ok(None) };
         let Some(essence) = source.essence_tracks().first() else { return Ok(None) };
