@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::sequence_tools::{DuplicateFrames, duplicate_frames};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, TimeRange, format_time};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -23,7 +23,9 @@ use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
-use super::timeline_hit::{EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect};
+use super::timeline_hit::{
+    EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, hit_secondary, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect,
+};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 mod clips;
@@ -200,7 +202,11 @@ pub enum Drag {
     },
     Slip {
         clip: ClipId,
+        /// The media delta `timeline.slip` gets on release (it clamps it at the media's ends).
         delta: Tick,
+        /// What the Slip Monitor shows for `delta` (`timeline.slipPreview`), worked out when the
+        /// delta changes; `None` when it can't be (the Program monitor then stays as it is).
+        preview: Option<Arc<Value>>,
     },
     Slide {
         clip: ClipId,
@@ -257,6 +263,8 @@ pub enum Drag {
     Marquee {
         start: MarqueeAnchor,
         before: Vec<ClipId>,
+        /// The caption selection when the drag began (the box selects captions too, #1912).
+        before_captions: Vec<ClipId>,
         add: bool,
         individual: bool,
     },
@@ -409,13 +417,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
     painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, tl!("Mix"), Tokens::ui(11.5), t.text);
-    painter.text(
-        pos2(rect.min.x + header_w - 12.0, master.center().y),
-        Align2::RIGHT_CENTER,
-        format!("{:.1}", seq.master_volume_db),
-        Tokens::ui(11.5),
-        t.hot_text,
-    );
+    mix_volume(app, ui, seq, Rect::from_min_max(pos2(rect.min.x + header_w - 72.0, master.min.y + 6.0), pos2(rect.min.x + header_w - 8.0, master.max.y - 6.0)));
 
     // ---- caption tracks
     if cap_n > 0 {
@@ -798,6 +800,36 @@ fn paint_track_edits(
     }
 }
 
+/// The Mix track header's level (#3765): the Mix fader at the playhead (its automation, or a
+/// control held in the Audio Track Mixer), as hot text to drag or type, as on an audio track.
+/// Changes go through `mixer.setValue`, so automation is written where the Mix fader has it; the
+/// changes of one press are one undo step, a typed value its own.
+fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: Rect) {
+    use filmcraft_project::mixer::{FADER_MAX_DB, FADER_MIN_DB, LANE_VOLUME, MASTER_STRIP};
+    let now = app.session.playhead();
+    let db = app.session.previews.live.get(MASTER_STRIP, LANE_VOLUME).map(|o| o.value).unwrap_or_else(|| seq.master_strip().lane_value(LANE_VOLUME, now));
+    let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::right_to_left(egui::Align::Center)).id_salt("timeline-mix"));
+    let (resp, nv) = crate::widgets::hot_number(
+        &mut vui,
+        tl!("Mix"),
+        egui::Id::unique("timeline-mix-volume"),
+        db.max(FADER_MIN_DB),
+        crate::widgets::HotNumberOptions::new(0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &app.tokens),
+    );
+    app.auto.add("timeline.mix.volume", resp.rect, &format!("{db:.1}"));
+    // as the Audio Track Mixer's fader: a drag holds the control and lets go when it ends (one
+    // undo step, or one gesture of an automation pass); a typed value is set at once
+    let (cmd, p) = match nv {
+        Some(v) if resp.dragged() => ("mixer.touch", json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v, "time": now.0})),
+        Some(v) => ("mixer.setValue", json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v})),
+        None if resp.drag_stopped() => ("mixer.release", json!({"strip": "Mix", "lane": LANE_VOLUME, "time": now.0})),
+        None => return,
+    };
+    if let Err(e) = app.session.execute(cmd, p) {
+        app.ui.status = e.to_string();
+    }
+}
+
 /// Shown when no sequence is open: offers the demo project and accepts project or OS-file drops to create a sequence.
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
@@ -955,6 +987,32 @@ mod trim_preview_tests {
         let (mut out, mut edited) = (HashMap::new(), HashMap::new());
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert!(edited.is_empty() && out.contains_key(&left.id));
+    }
+
+    #[test]
+    fn a_slip_draws_the_clip_and_its_partners_from_the_slipped_media_in_place() {
+        let (mut app, seq) = demo();
+        let clip = seq.video_tracks[0].items.iter().find(|i| i.link.is_some()).unwrap().clone();
+        let delta = Tick(filmcraft_time::TICKS_PER_SECOND / 5);
+        let preview = crate::panels::slip_monitor::preview(&app, clip.id, delta);
+        let applied = Tick(preview.as_ref().unwrap()["delta"].as_i64().unwrap());
+        assert_ne!(applied, Tick::ZERO, "the demo clip has media to slip into");
+        app.tl.drag = Some(Drag::Slip { clip: clip.id, delta, preview });
+        let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+        preview_drag(&app, &seq, &mut out, &mut edited);
+        assert!(out.is_empty(), "nothing moves or changes length");
+        let partners = filmcraft_engine::commands::with_links(&app.session, &[clip.id]);
+        let sound: Vec<ClipId> = partners.iter().copied().filter(|c| seq.audio_tracks.iter().any(|t| t.item(*c).is_some())).collect();
+        assert!(!sound.is_empty(), "the demo clip has linked sound");
+        for c in &sound {
+            let was = seq.find_item(*c).unwrap().1;
+            let shown = &edited[c];
+            assert_eq!((shown.start, shown.duration), (was.start, was.duration));
+            assert_eq!(shown.source_in, was.source_in + applied, "the sound's waveform follows the slip");
+        }
+        // the picture's thumbnails would be a decode per position: they keep the clip's media
+        assert!(!edited.contains_key(&clip.id));
+        assert_eq!(edited.len(), sound.len());
     }
 }
 

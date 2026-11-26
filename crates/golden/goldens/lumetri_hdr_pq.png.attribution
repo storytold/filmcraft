@@ -1,5 +1,5 @@
 asset:        lumetri_hdr_pq.png
-title:        Lumetri grading in a Rec. 2100 PQ sequence (HDR White, HDR Specular), tone mapped
+title:        Color Grading in a Rec. 2100 PQ sequence (HDR White, HDR Specular), tone mapped
 author:       FilmCraft contributors
 source:       original work (rendered by FilmCraft's own renderer from a procedurally generated project; no external media)
 license:      MIT OR Apache-2.0

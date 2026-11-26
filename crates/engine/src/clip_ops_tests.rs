@@ -492,6 +492,14 @@ fn frame_hold_options_add_frame_hold_and_hold_segment() {
     s.execute("clip.frameHoldOptions", json!({"holdOn": "sequenceTime", "time": (c.start + rate.tick_of(5)).0})).unwrap();
     assert_eq!(clip(&s, c.id.0).frame_hold, Some(rate.snap(c.source_in + rate.tick_of(5))));
     assert!(s.execute("clip.frameHoldOptions", json!({"holdOn": "nowhere"})).is_err());
+    // a repeated clip id is held once, and a huge timecode is refused before it is parsed per clip
+    let r = s.execute("clip.frameHoldOptions", json!({"holdOn": "in", "clips": [c.id.0, c.id.0, c.id.0]})).unwrap();
+    assert_eq!(r["clips"].as_array().map(Vec::len), Some(1));
+    let long = format!("00:00:03:{}", "0".repeat(100_000));
+    assert!(s.execute("clip.frameHoldOptions", json!({"holdOn": "sourceTimecode", "timecode": long})).is_err());
+    // the limit counts characters, not bytes: 51 characters of multi-byte padding are accepted
+    let padded = format!("{pad}00:00:03:00{pad}", pad = "\u{3000}".repeat(20));
+    s.execute("clip.frameHoldOptions", json!({"holdOn": "sourceTimecode", "timecode": padded})).unwrap();
     s.execute("clip.frameHoldOptions", json!({"enabled": false})).unwrap();
     assert_eq!(clip(&s, c.id.0).frame_hold, None);
     // Hold Filters: effects animate through a hold unless it is on
@@ -568,11 +576,11 @@ fn frame_blending_renders_in_between_frames() {
     s.execute("playhead.set", json!({"time": t.0})).unwrap();
     let it = clip(&s, c.id.0);
     let src_rate = filmcraft_time::FrameRate::FPS_23_976;
-    assert!(filmcraft_render::interpolation_blend(&it, t, src_rate).is_none(), "frame sampling");
+    assert!(filmcraft_render::interpolation_blend(&it, t, src_rate, rate).is_none(), "frame sampling");
     let sampled = s.render_program(0.125).unwrap();
     s.execute("clip.timeInterpolation.frameBlending", json!({})).unwrap();
     let it = clip(&s, c.id.0);
-    let (next, w) = filmcraft_render::interpolation_blend(&it, t, src_rate).unwrap();
+    let (next, w) = filmcraft_render::interpolation_blend(&it, t, src_rate, rate).unwrap();
     assert!((w - 0.5).abs() < 0.01, "half-way: {w}");
     assert_eq!(next, src_rate.tick_of(src_rate.frame_at(it.source_time_at(t)) + 1));
     let blended = s.render_program(0.125).unwrap();
@@ -596,7 +604,42 @@ fn frame_blending_renders_in_between_frames() {
     assert!(d < mean_abs_diff(&blended, &sampled), "optical flow stays near the blend on mostly static footage: {d}");
     // at 100 % nothing is blended
     s.execute("clip.speedDuration", json!({"speed": 100.0})).unwrap();
-    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate).is_none());
+    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate, rate).is_none());
+}
+
+#[test]
+fn time_interpolation_applies_to_a_frame_rate_conform() {
+    // 23.976 fps media on a 29.97 sequence at 100 %: Frame Sampling shows every fourth source frame
+    // twice, Optical Flow synthesises the frames in between instead (#3948)
+    let mut s = demo();
+    let c = v1(&s)[2].clone();
+    assert!((c.speed - 1.0).abs() < 1e-9);
+    let own = s.sequence_rate();
+    let src_rate = filmcraft_time::FrameRate::FPS_23_976;
+    s.execute("sequence.settings", json!({"fps": 29.97})).unwrap();
+    let rate = s.sequence_rate();
+    assert_eq!(rate, filmcraft_time::FrameRate::FPS_29_97);
+    select(&mut s, &[c.id.0]);
+    s.execute("clip.timeInterpolation.opticalFlow", json!({})).unwrap();
+    let it = clip(&s, c.id.0);
+    // a sequence frame that falls well inside a source frame
+    let first = rate.frame_at(it.start) + 1;
+    let (t, (next, w)) = (first..first + 5)
+        .map(|f| rate.tick_of(f))
+        .find_map(|t| filmcraft_render::interpolation_blend(&it, t, src_rate, rate).filter(|(_, w)| (0.1..0.9).contains(w)).map(|b| (t, b)))
+        .expect("a 29.97 frame between two 23.976 frames");
+    assert_eq!(next, src_rate.tick_of(src_rate.frame_at(it.source_time_at(t)) + 1));
+    s.execute("playhead.set", json!({"time": t.0})).unwrap();
+    let flowed = s.render_program(0.125).unwrap();
+    s.execute("clip.timeInterpolation.frameSampling", json!({})).unwrap();
+    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate, rate).is_none());
+    let sampled = s.render_program(0.125).unwrap();
+    assert!(mean_abs_diff(&flowed, &sampled) > 1e-4, "optical flow changes the conformed frame (weight {w})");
+    // back at the media's own rate, 100 % needs no in-between frame
+    s.execute("clip.timeInterpolation.opticalFlow", json!({})).unwrap();
+    s.execute("sequence.settings", json!({"fps": own.as_f64()})).unwrap();
+    assert_eq!(s.sequence_rate(), src_rate);
+    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate, src_rate).is_none());
 }
 
 #[test]

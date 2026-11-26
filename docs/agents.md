@@ -139,12 +139,18 @@ progress and stop it:
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
-  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
-  no response, as the MCP cancellation utility asks.
+  deletes the partial output (the movie, or the frames and caption sidecar written so far, and no
+  other export's files beside them) and sends no response, as the MCP cancellation utility asks.
 - Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
+  `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
+  name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
+  add `lastPath`, the last still, and `basePath`, the name the stills are numbered from (a cancelled
+  long export's clean-up removes only the stills numbered from `basePath` with the digits of
+  `lastPath`, up to it). `filmcraft-cli export` prints the first and the last.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
@@ -153,6 +159,14 @@ progress and stop it:
   warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
   also prints the warning on stderr and suggests `--range entire`; the warning does not change
   the exit status. Frame counts here use the sequence rate, even when the export rate differs.
+- A finished export's `result` (`file.exportMedia` with `wait: true`, its job in `jobs.list`, each
+  finished item of `export.queue.list` and `export.queue.add`) names the video encoder that ran in `encoder`: `"NVENC"` or `"VideoToolbox"`, or `"software"` for
+  FilmCraft's own (absent for audio, image sequences and GIF). `hardwareEncoding: "auto"` asks for
+  a hardware encoder but does not promise one: when it declines the export (two-pass VBR, HDR, MXF,
+  no driver…) the software encoder runs, and `result.warnings` says so with the reason when there is
+  one, e.g. `hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran`. The
+  app logs the same line as a warning and shows it in Events after the job's "Finished" line, and
+  `filmcraft-cli export` (with or without `--queue`) prints it on stderr.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
@@ -294,15 +308,15 @@ For any UI change, look at the result:
 3. Assert on `ui.inspect`, `ui.elements` and `sequence.inspect`.
 4. Take `ui.screenshot` (the whole window and the panel you changed) and open the PNG.
 
-Screenshots you commit must follow [AGENTS.md](../AGENTS.md) §1: FilmCraft only, openly licensed
+Screenshots you commit must follow [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md): FilmCraft only, openly licensed
 media, sidecar and `ATTRIBUTION.md` entry.
 
 # Part 2: developing FilmCraft
 
 ## 4. Orientation, in this order
 
-1. [AGENTS.md](../AGENTS.md): absolute rules (assets, clean-room, licences).
-2. [CLAUDE.md](../CLAUDE.md): working instructions and non-negotiables.
+1. [AGENTS.md](../AGENTS.md): the shared rules and the facts about this repository.
+2. [contributing.md](contributing.md): setup, checks and commits.
 3. [ROADMAP.md](../ROADMAP.md) for the summary, then [gaps.md](gaps.md) (the ranked shortfalls) first,
    [target-app-parity.md](target-app-parity.md) and [roadmap.md](roadmap.md) (milestones, current focus).
 4. [architecture.md](architecture.md), then the README and tests of the crate you'll touch.
@@ -320,7 +334,7 @@ everything you need to contribute is in the public docs above. Ask a maintainer 
    architecture section and crate README.
 2. **Plan tests first.** Write down the acceptance test before writing code.
 3. **Implement and test.**
-4. **Verify.** Run all gates (`cargo xtask ci`). For UI work, run the app with `--control`, drive it
+4. **Verify.** Run the checks for the crates you changed (contributing.md §3). For UI work, run the app with `--control`, drive it
    and look at the screenshots (§3).
 5. **Record.** Update the crate README (behaviour decisions, test results, limitations) and
    the progress docs when a milestone moves (ROADMAP.md, docs/roadmap.md, the relevant parity doc
@@ -335,7 +349,7 @@ Don't block on choices you can make yourself:
 
 - **Behaviour.** Match the publicly documented and observable behaviour of professional editors
   (help pages, published shortcut lists, using the app). Never inspect application internals
-  ([AGENTS.md](../AGENTS.md) §2). If behaviour is undocumented, choose what editors most commonly
+  ([standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)). If behaviour is undocumented, choose what editors most commonly
   expect and record the choice in the crate README.
 - **Ask a human only about:**
   - licences outside the allowlist;
@@ -350,11 +364,11 @@ Don't block on choices you can make yourself:
 A feature is done when:
 
 - [ ] its command(s) are registered with label, menu path, shortcut (if any) and a parameter doc;
-- [ ] engine tests cover it, including undo/redo and the disabled case;
+- [ ] tests cover its behaviour per [testing.md](https://github.com/storytold/craft-contrib/blob/main/standards/testing.md), including undo/redo and the disabled case where they apply;
 - [ ] the UI is wired: menu, panel control and shortcut;
 - [ ] every new interactive widget has an automation id;
 - [ ] you have driven it through the control channel and reviewed a screenshot;
-- [ ] all gates pass (`cargo xtask ci`), and new assets have sidecars;
+- [ ] the checks for the crates you changed pass, and new assets have sidecars;
 - [ ] the crate README and the progress docs (ROADMAP.md, docs/gaps.md, the parity docs) are updated where relevant;
 - [ ] it is committed with its task id.
 

@@ -28,15 +28,33 @@ pub(super) fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, 
 
 /// [`combo`] whose options carry why they are greyed out (label, `Some(reason)` when disabled).
 fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, Option<&str>)], width: f32) -> Option<usize> {
+    combo_tips(ui, reg, id, selected, options, width, |_| None)
+}
+
+/// [`combo_why`] with a hover tip per option (`tip(i)`), also shown on the closed box while that
+/// option is selected.
+fn combo_tips(
+    ui: &mut egui::Ui,
+    reg: &mut Reg,
+    id: &str,
+    selected: &str,
+    options: &[(String, Option<&str>)],
+    width: f32,
+    tip: impl Fn(usize) -> Option<&'static str>,
+) -> Option<usize> {
     let mut chosen = None;
     // no row limit of our own: the list grows to the popup limit, so Frame Rate's last rates
     // (119.88, 120) show without scrolling (the default 200 px cut them off)
-    let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).height(f32::INFINITY).show_ui(ui, |ui| {
+    let r = crate::legacy_dropdown::Dropdown::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).height(f32::INFINITY).show_ui(ui, |ui| {
         for (i, (label, why)) in options.iter().enumerate() {
             let enabled = why.is_none();
             let resp = ui.add_enabled(enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
             let resp = match why {
                 Some(why) => resp.on_disabled_hover_text(*why),
+                None => resp,
+            };
+            let resp = match tip(i) {
+                Some(t) => resp.on_hover_text(t),
                 None => resp,
             };
             reg.add(format!("{id}.option.{i}"), resp.rect, label.clone());
@@ -45,6 +63,10 @@ fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options
             }
         }
     });
+    let current = options.iter().position(|(l, _)| l == selected);
+    if let Some(t) = current.and_then(&tip) {
+        r.response.clone().on_hover_text(t);
+    }
     reg.add(id, r.response.rect, selected);
     chosen
 }
@@ -101,7 +123,7 @@ pub(super) fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, opti
     }
     if r.drag_stopped()
         && let Some(b) = ui.data_mut(|d| d.remove_temp::<f64>(home))
-        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && crate::framework::escape_pressed(ui.ctx())
     {
         *v = b;
         return true;
@@ -256,9 +278,10 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             });
             // Preset: favourites, then every preset by category, then More presets…
             row(ui, &t, tl!("Preset"), |ui| {
-                let r = craft_ui::ComboBox::from_id_salt("export.preset").selected_text(crate::i18n::t(&ex.preset)).width(ui.available_width() - 4.0).show_ui(
-                    ui,
-                    |ui| {
+                let r = crate::legacy_dropdown::Dropdown::from_id_salt("export.preset")
+                    .selected_text(crate::i18n::t(&ex.preset))
+                    .width(ui.available_width() - 4.0)
+                    .show_ui(ui, |ui| {
                         if !favs.is_empty() {
                             ui.label(egui::RichText::new(tl!("Favorites")).color(t.text_dim).size(11.0));
                             for f in &favs {
@@ -282,8 +305,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                         if ui.button(tl!("More presets…")).clicked() {
                             open_manager = true;
                         }
-                    },
-                );
+                    });
                 reg.add("export.preset", r.response.rect, ex.preset.clone());
             });
             ui.horizontal(|ui| {
@@ -500,11 +522,15 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             } else {
                 row(ui, t, tl!("Profile"), |ui| {
-                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
-                    let labels: Vec<(String, bool)> = o.iter().map(|p| (p.label().to_string(), true)).collect();
-                    if let Some(i) = combo(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0) {
+                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10];
+                    let labels: Vec<(String, Option<&str>)> = o.iter().map(|p| (p.label().to_string(), None)).collect();
+                    let tip = |i: usize| (o.get(i) == Some(&H264Profile::High10)).then(|| tl!("10-bit color"));
+                    if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0, tip) {
                         s.h264_profile = o[i];
                     }
+                });
+                row(ui, t, tl!("All Intra"), |ui| {
+                    check(ui, reg, "export.video.intraOnly", &mut s.h264_intra_only, tl!("Every frame a keyframe (edit-friendly, larger files)"));
                 });
                 row(ui, t, tl!("Level"), |ui| {
                     let levels: [Option<u8>; 13] =
@@ -558,15 +584,17 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             }
             row(ui, t, tl!("Key Frame Distance"), |ui| {
-                let mut on = s.keyframe_distance.is_some();
-                if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
-                    s.keyframe_distance = on.then_some(48);
-                }
-                if let Some(k) = s.keyframe_distance.as_mut() {
-                    let mut v = *k as f64;
-                    drag(ui, reg, "export.video.keyframe", &mut v, DragOptions { range: 1.0..=600.0, speed: 1.0, suffix: " frames", decimals: 0 });
-                    *k = v as u32;
-                }
+                ui.add_enabled_ui(hevc || !s.h264_intra_only, |ui| {
+                    let mut on = s.keyframe_distance.is_some();
+                    if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
+                        s.keyframe_distance = on.then_some(48);
+                    }
+                    if let Some(k) = s.keyframe_distance.as_mut() {
+                        let mut v = *k as f64;
+                        drag(ui, reg, "export.video.keyframe", &mut v, DragOptions { range: 1.0..=600.0, speed: 1.0, suffix: " frames", decimals: 0 });
+                        *k = v as u32;
+                    }
+                });
             });
             // The system's hardware encoder where there is one (VideoToolbox on macOS, NVENC on NVIDIA
             // GPUs on Windows, VA-API on Linux); everything it does not take (two-pass, HDR, MXF) and
@@ -660,6 +688,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let fixed = audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
+            AudioCodec::Mp3 => "MP3",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
@@ -694,12 +723,13 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
-    if s.audio_codec() == AudioCodec::Aac {
+    if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3) {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
-            let rates = [128u32, 160, 192, 256, 320];
+            // MP3 bit rates are Layer III's (16-24 kHz streams stop at 160 kbps)
+            let rates: &[u32] = if s.audio_codec() == AudioCodec::Mp3 { &[64, 96, 128, 160, 192, 256, 320] } else { &[128, 160, 192, 256, 320] };
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();
-            if let Some(i) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0) {
-                s.audio.bitrate_kbps = rates[i];
+            if let Some(&r) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0).and_then(|i| rates.get(i)) {
+                s.audio.bitrate_kbps = r;
             }
         });
     } else {

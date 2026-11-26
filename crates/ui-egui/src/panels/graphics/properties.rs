@@ -51,6 +51,14 @@ fn char_style_key(id: &str) -> Option<&'static str> {
         "font_style" => "fontStyle",
         "size" => "size",
         "fill_color" => "color",
+        "stroke_color" => "strokeColor",
+        "stroke2_color" => "stroke2Color",
+        "stroke" => "stroke",
+        "stroke_width" => "strokeWidth",
+        "stroke_type" => "strokeType",
+        "stroke2" => "stroke2",
+        "stroke2_width" => "stroke2Width",
+        "stroke2_type" => "stroke2Type",
         "faux_bold" => "bold",
         "faux_italic" => "italic",
         "underline" => "underline",
@@ -78,6 +86,14 @@ impl Ctx<'_> {
             "font_style" => s.font_style.map(ParamValue::Text),
             "size" => s.size.map(|v| ParamValue::Float(v as f64)),
             "fill_color" => s.fill.map(ParamValue::Color),
+            "stroke_color" => s.stroke_color.map(ParamValue::Color),
+            "stroke2_color" => s.stroke2_color.map(ParamValue::Color),
+            "stroke" => s.stroke.map(ParamValue::Bool),
+            "stroke_width" => s.stroke_width.map(|v| ParamValue::Float(v as f64)),
+            "stroke_type" => s.stroke_type.map(ParamValue::Choice),
+            "stroke2" => s.stroke2.map(ParamValue::Bool),
+            "stroke2_width" => s.stroke2_width.map(|v| ParamValue::Float(v as f64)),
+            "stroke2_type" => s.stroke2_type.map(ParamValue::Choice),
             "faux_bold" => s.faux_bold.map(ParamValue::Bool),
             "faux_italic" => s.faux_italic.map(ParamValue::Bool),
             "underline" => s.underline.map(ParamValue::Bool),
@@ -267,7 +283,7 @@ impl Ctx<'_> {
             _ => 0,
         };
         let mut sel = cur;
-        let r = craft_ui::ComboBox::from_id_salt(("gfxc", self.clip.0, self.layer, id))
+        let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfxc", self.clip.0, self.layer, id))
             .selected_text(opts.get(cur).map_or("", |o| crate::i18n::t(o)))
             .width(width)
             .show_ui(vui, |ui| {
@@ -526,6 +542,23 @@ fn text_section_header(
     open
 }
 
+/// The clips a layer property change in the editor goes to (#4625): `clip`, the one it shows,
+/// then each other selected graphic clip whose layer `l` is the same kind of layer (text or
+/// shape), outside locked tracks. With several text clips selected, a Font or Font Size change
+/// sets that value on all of them.
+fn property_targets(app: &FilmcraftApp, clip: ClipId, it: &TrackItem, l: usize) -> Vec<u64> {
+    let mut ids = vec![clip.0];
+    let layer_kind = |it: &TrackItem| layer_indices(&it.effects).get(l).and_then(|&i| it.effects.get(i)).map(|e| e.effect.clone());
+    let (Some(q), Some(kind)) = (app.session.active_sequence(), layer_kind(it)) else { return ids };
+    for &c in &app.session.state.selection {
+        let Some((track, other)) = q.find_item(c) else { continue };
+        if !ids.contains(&c.0) && q.track(track).is_some_and(|t| !t.locked) && is_graphic_clip(app, c) && layer_kind(other).as_ref() == Some(&kind) {
+            ids.push(c.0);
+        }
+    }
+    ids
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -544,6 +577,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let idx = layer_indices(&it.effects);
     let sel = app.session.state.graphic_layers.first().copied().filter(|l| *l < idx.len());
+    let group = sel.map_or_else(Vec::new, |l| property_targets(app, clip, &it, l));
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut autos: Vec<(String, Rect, String)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 6.0))).id_salt("gfx-props"));
@@ -645,18 +679,21 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             };
             let fams = filmcraft_text::picker_families();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
-                        cx.set("font", json!(f));
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(
+                &mut vui,
+                |ui| {
+                    for (f, _) in &fams {
+                        if ui.selectable_label(*f == family, f).clicked() {
+                            cx.set("font", json!(f));
+                        }
                     }
-                }
-            });
+                },
+            );
             let response = crate::widgets::accessible_name(r.response, "Font");
             cx.auto("font", response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
                     let mut seen = Vec::new();
                     move |x: &&str| {
@@ -785,6 +822,18 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, tl!("   Blur"), NumberField { id: "shadow_blur", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
             }
         }
+        // a property change goes to the layer of every clip in the group (#4625); character styles
+        // of a Type-tool selection stay on their own clip
+        if group.len() > 1 {
+            for (cmd, p) in &mut cx.actions {
+                if cmd == "graphics.set"
+                    && let Some(o) = p.as_object_mut()
+                {
+                    o.remove("clip");
+                    o.insert("clips".into(), json!(group));
+                }
+            }
+        }
         actions.append(&mut cx.actions);
         autos.append(&mut cx.autos);
     });
@@ -824,7 +873,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let id = egui::Id::unique("gfx-text-properties");
     egui::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         ui.label(tl!("Text Layer Type"));
-        let r = craft_ui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
+        let r = crate::legacy_dropdown::Dropdown::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
             for paragraph in [false, true] {
                 // vertical text has no box to wrap in
                 let r = ui.add_enabled_ui(!(paragraph && d.vertical), |ui| ui.selectable_label(d.paragraph == paragraph, name(paragraph))).inner;
@@ -925,6 +974,78 @@ mod tests {
             assert_eq!(c.value("size").as_f64(), layer_size);
             assert!(!c.flag("faux_bold") && !c.flag("underline"));
             assert_eq!(c.caps(), 0);
+        }
+    }
+
+    #[test]
+    fn stroke_controls_write_and_read_the_selected_characters() {
+        let mut e = graphic::new_text_layer("1234", Vec2::new(100.0, 100.0), 72.0);
+        let mut cx = Ctx {
+            clip: ClipId(1),
+            layer: 0,
+            eidx: 0,
+            e: &e,
+            mt: Tick(0),
+            t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+            actions: Vec::new(),
+            autos: Vec::new(),
+            range: Some((0, 2)),
+        };
+        for (id, key, value) in [
+            ("stroke_color", "strokeColor", json!("#ff0000")),
+            ("stroke2_color", "stroke2Color", json!("#00ff00")),
+            ("stroke", "stroke", json!(false)),
+            ("stroke_width", "strokeWidth", json!(24.0)),
+            ("stroke_type", "strokeType", json!(1)),
+            ("stroke2", "stroke2", json!(true)),
+            ("stroke2_width", "stroke2Width", json!(48.0)),
+            ("stroke2_type", "stroke2Type", json!(2)),
+        ] {
+            cx.set(id, value.clone());
+            assert_eq!(
+                cx.actions.last(),
+                Some(&(
+                    "graphics.setCharStyle".into(),
+                    json!({
+                        "clip": 1, "layer": 0, "start": 0, "end": 2, "style": {key: value}
+                    })
+                ))
+            );
+        }
+        cx.range = None;
+        cx.set("stroke_color", json!("#0000ff"));
+        assert_eq!(cx.actions.last(), Some(&("graphics.set".into(), json!({"clip": 1, "layer": 0, "props": {"stroke_color": "#0000ff"}}))));
+        drop(cx);
+        let red = serde_json::from_value(json!({"strokeColor": [1.0, 0.0, 0.0, 1.0], "stroke2Color": [0.0, 1.0, 0.0, 1.0],
+            "stroke": false, "strokeWidth": 24.0, "strokeType": 1, "stroke2": true, "stroke2Width": 48.0, "stroke2Type": 2}))
+        .unwrap();
+        e.layer = Some(Box::new(LayerExtra { runs: apply_char_style(&[], 4, 0, 2, &red), ..Default::default() }));
+        for range in [Some((0, 2)), Some((2, 4)), None] {
+            let cx = Ctx {
+                clip: ClipId(1),
+                layer: 0,
+                eidx: 0,
+                e: &e,
+                mt: Tick(0),
+                t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+                actions: Vec::new(),
+                autos: Vec::new(),
+                range,
+            };
+            for (id, colour) in [("stroke_color", [1.0, 0.0, 0.0, 1.0]), ("stroke2_color", [0.0, 1.0, 0.0, 1.0])] {
+                let expected = if range == Some((0, 2)) { Some(colour) } else { pv(&e, id, Tick(0)).as_color() };
+                assert_eq!(cx.value(id).as_color(), expected, "{id} {range:?}");
+            }
+            for (id, own) in [
+                ("stroke", ParamValue::Bool(false)),
+                ("stroke_width", ParamValue::Float(24.0)),
+                ("stroke_type", ParamValue::Choice(1)),
+                ("stroke2", ParamValue::Bool(true)),
+                ("stroke2_width", ParamValue::Float(48.0)),
+                ("stroke2_type", ParamValue::Choice(2)),
+            ] {
+                assert_eq!(cx.value(id), if range == Some((0, 2)) { own } else { pv(&e, id, Tick(0)) }, "{id} {range:?}");
+            }
         }
     }
 

@@ -28,18 +28,29 @@ fn same_file(a: &str, b: &str) -> bool {
 }
 
 /// The path this run saves over, when that is the file it opens. `--save-as` somewhere else replaces
-/// that file whatever it held, so there is no edit of its to lose. A project that isn't a file gets
-/// no lock file beside it: opening it fails with its own error.
+/// that file whatever it held, so there is no edit of its to lose.
 ///
 /// The lock goes by this path as written, not by where a symlink points. A save replaces the link
 /// itself, so resolving it would give the runs before and after that save different locks.
-fn saved_in_place(a: &Args) -> Option<&Path> {
-    let project = a.opt("--project")?;
-    let target = match a.opt("--save-as") {
-        Some(target) => same_file(target, project).then_some(target)?,
-        None => a.flag("--save").then_some(project)?,
-    };
-    Some(Path::new(target)).filter(|target| target.is_file())
+///
+/// A missing `--project` is an error here, before anything else, the same one `Backend::open` would
+/// give. If the run went on, another one could create the project before `Backend::open` reads it,
+/// and this run would edit and save it with no lock. Checking first also means the paths compared
+/// below exist, so `canonicalize` tells exactly whether they are one file, however they are spelt.
+/// A project that exists but isn't a file gets no lock file beside it, and opening it reports why.
+fn saved_in_place(a: &Args) -> Result<Option<&Path>, String> {
+    // `--bridge` with `--project` is a usage error, which `Backend::open` reports
+    let Some(project) = a.opt("--project").filter(|_| a.opt("--bridge").is_none()) else { return Ok(None) };
+    match Path::new(project).metadata() {
+        Ok(meta) if meta.is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{project}: {e}")),
+        _ => return Ok(None),
+    }
+    match a.opt("--save-as") {
+        Some(target) if same_file(target, project) => Ok(Some(Path::new(target))),
+        None if a.flag("--save") => Ok(Some(Path::new(project))),
+        _ => Ok(None),
+    }
 }
 
 /// Lock `project`, calling `waiting` first if another run holds the lock.
@@ -56,12 +67,13 @@ fn lock(project: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Take the project's lock if this run saves over the file it opens. Call it before opening the
-/// project and keep the result until the save is done. Blocks while another run holds the lock,
-/// which is fine here: nothing else is running yet. A lock that can't be had (a read-only folder, a
-/// file system without locks) is a warning and not an error, so that saving works where it did.
+/// Take the project's lock if this run saves over the file it opens, or exit if `--project` is
+/// missing. Call it before opening the project and keep the result until the save is done. Blocks
+/// while another run holds the lock, which is fine here: nothing else is running yet. A lock that
+/// can't be had (a read-only folder, a file system without locks) is a warning and not an error, so
+/// that saving works where it did.
 pub fn for_save(a: &Args) -> Option<File> {
-    let project = saved_in_place(a)?;
+    let project = saved_in_place(a).unwrap_or_else(|e| crate::fail(e))?;
     let shown = project.display();
     let waiting = || crate::diag(format_args!("filmcraft-cli: waiting for another run saving {shown}"));
     match lock(project, waiting) {
@@ -76,6 +88,43 @@ pub fn for_save(a: &Args) -> Option<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(list: &[&str]) -> Args {
+        Args::parse(list.iter().map(|s| s.to_string()))
+    }
+
+    /// The moment between this check and `Backend::open` can't be hit on demand, so this pins the
+    /// decision that closes it: a run never goes on to open a project that wasn't there, however
+    /// its paths are spelt and whatever it saves.
+    #[test]
+    fn a_missing_project_stops_the_run_before_anything_opens_it() {
+        let name = format!("fc-cli-gone-{}.fcproj", std::process::id());
+        let gone = std::env::temp_dir().join(&name);
+        let gone = gone.to_str().unwrap();
+        let alias = std::env::temp_dir().join(".").join(&name);
+        let alias = alias.to_str().unwrap();
+        let dotted = format!("./{name}");
+        // in a folder that doesn't exist either, so no part of either spelling can be resolved
+        let new_dir = std::env::temp_dir().join(format!("fc-cli-new-dir-{}", std::process::id()));
+        let in_new_dir = new_dir.join("p.fcproj");
+        let in_new_dir = in_new_dir.to_str().unwrap();
+        let in_new_dir_alias = new_dir.join(".").join("p.fcproj");
+        let in_new_dir_alias = in_new_dir_alias.to_str().unwrap();
+        for list in [
+            &["--project", gone, "--save", "exec"][..],
+            &["--project", gone, "--save-as", gone, "exec"],
+            &["--project", gone, "--save-as", alias, "exec"],
+            &["--project", &name, "--save-as", &dotted, "exec"],
+            &["--project", in_new_dir, "--save-as", in_new_dir_alias, "exec"],
+            &["--project", gone, "--save-as", "other.fcproj", "exec"],
+            &["--project", gone, "exec"],
+        ] {
+            let error = saved_in_place(&args(list)).unwrap_err();
+            assert!(error.starts_with(list[1]), "{list:?}: {error}");
+        }
+        // --project with --bridge is a usage error, which `Backend::open` reports
+        assert_eq!(saved_in_place(&args(&["--bridge", "127.0.0.1:1", "--project", gone, "--save", "exec"])), Ok(None));
+    }
 
     #[test]
     fn the_lock_sits_next_to_the_project() {

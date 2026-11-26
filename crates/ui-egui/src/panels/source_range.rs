@@ -64,7 +64,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
     };
     let enabled = view.subclip.is_none() && view.start.0 >= 0 && view.end > view.start;
     if let Some(d) = drag(&ctx, which)
-        && (d.item != item || d.revision != app.session.revision || ctx.input(|i| i.key_pressed(egui::Key::Escape)))
+        && (d.item != item || d.revision != app.session.revision || crate::framework::escape_pressed(&ctx))
     {
         clear(&ctx, which);
     }
