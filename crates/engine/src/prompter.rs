@@ -15,17 +15,42 @@
 //! the section, the result carries an [`Overrun`]. Every other line is script, which runs from the
 //! section's start to its end in proportion to its characters.
 //!
-//! **Time is a parameter.** [`prompt_at`] answers for any time; the overlay passes the playhead.
+//! **Time is a parameter.** [`prompt_at`] answers for any time; the overlay passes the prompt time.
 //! The function only reads the sequence: it changes nothing and is never part of a render.
+//!
+//! **Prompt time.** The prompter has its own position, normally the playhead. `prompter.next` and
+//! `prompter.previous` move it to the start of the next or previous step; `prompter.toPlayhead`,
+//! starting playback (the UI) and starting a voice-over take put it back. Off the playhead it is
+//! held as an [`Anchor`] (prompt time P at playhead H) and keeps moving with the playhead, so the
+//! gap stays the same through playback, seeks and stops until something returns it. It is session
+//! state ([`PrompterState`] on `Session::prompter`): never saved and never an undo step; another
+//! sequence or a replaced project starts in step. `prompter.inspect` reports `promptTime`,
+//! `playhead`, `gap` (prompt time minus playhead) and `direction` (`ahead`, `behind` or null).
+//!
+//! **Steps.** A section's steps are its start and the starts of its talking points, or, without
+//! points, of its script paragraphs (text after a blank line); a section without either is one
+//! step. Points that start after the section's end (an overrun) are not steps. Only what the
+//! overlay shows counts: points hidden under a nested section are skipped, and a parent section is
+//! a step again where it resumes. Next goes to the first step after the prompt time, across a gap
+//! to the next section's start. Previous goes to the start of the current step once it is more than
+//! [`PREVIOUS_GRACE_SECONDS`] in, else to the step before (from the first point of a section, the
+//! previous section's last point; from a gap, the last point before it). Both are disabled, with a
+//! reason, without range markers, after the last step (Next) and at or before the first (Previous).
+//!
+//! **Take log.** During a voice-over take each move is logged ([`TakeLog`], [`PromptMove`]): the
+//! first entry is where the prompt was when the capture began, then one per move. It is kept for
+//! the take in progress and the last finished take (`prompter.takeLog`), and `audio.voiceover.stop`
+//! returns it as `promptLog`. It is not stored on the recorded clip yet (that needs a project
+//! schema change).
 
 use std::cmp::Reverse;
 
-use filmcraft_project::{ClipId, Marker, MarkerId, Sequence, TrackId};
+use filmcraft_project::{ClipId, ItemId, Marker, MarkerId, Sequence, TrackId};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, has_seq, sequence_time_p};
+use crate::commands::{CommandSpec, bad, has_seq, sequence_time_p};
 use crate::{EngineError, Result, Session};
 
 /// Only the start of a longer comment is read, so a damaged or pasted-in comment cannot stall
@@ -247,6 +272,30 @@ pub struct Script {
     pub chars: usize,
     /// The character the narrator should be reading now (0 at the section's start, `chars` at its end).
     pub offset: usize,
+    /// The paragraph `offset` is in (0-based; paragraphs are separated by blank lines).
+    pub paragraph: usize,
+}
+
+/// Character offsets where the script's paragraphs start: 0, and the first character after each
+/// blank line ([`parse_notes`] collapses blank runs to one blank line).
+pub fn paragraph_starts(script: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    let mut prev = None;
+    for (i, c) in script.chars().enumerate() {
+        if prev == Some('\n') && c == '\n' {
+            starts.push(i + 1);
+        }
+        prev = Some(c);
+    }
+    starts.retain(|&i| i < script.chars().count());
+    starts.dedup();
+    starts
+}
+
+/// The script character read `elapsed` into a section of `duration`: linear in characters.
+fn script_offset(chars: usize, elapsed: Tick, duration: Tick) -> usize {
+    let progress = if duration > Tick::ZERO { (elapsed.0 as f64 / duration.0 as f64).clamp(0.0, 1.0) } else { 0.0 };
+    ((chars as f64) * progress).floor().clamp(0.0, chars as f64) as usize
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -345,8 +394,9 @@ fn section(m: &Marker, t: Tick) -> Section {
     let current = points.iter().position(|p| p.state == PointState::Current);
     let script = (!notes.script.is_empty()).then(|| {
         let chars = notes.script.chars().count();
-        let offset = ((chars as f64) * progress).floor().clamp(0.0, chars as f64) as usize;
-        Script { text: notes.script, chars, offset }
+        let offset = script_offset(chars, elapsed, m.duration);
+        let paragraph = paragraph_starts(&notes.script).iter().filter(|&&p| p <= offset).count().saturating_sub(1);
+        Script { text: notes.script, chars, offset, paragraph }
     });
     Section {
         marker: m.id,
@@ -384,11 +434,333 @@ pub fn prompt_at(seq: &Sequence, t: Tick) -> Prompt {
     }
 }
 
+// ------------------------------------------------------------------------------- prompt time
+
+/// Previous within this long of a step's start goes to the step before it; later, to the
+/// step's own start (the usual rule for "previous" controls).
+pub const PREVIOUS_GRACE_SECONDS: i64 = 2;
+/// Moves kept in one take's log; later moves are counted in [`TakeLog::dropped`].
+pub const MAX_TAKE_LOG_ENTRIES: usize = 10_000;
+
+/// Where the prompter is when it is not in step with the playhead: prompt time `prompt` at
+/// playhead `playhead`, in `sequence` of the document `epoch`. From there the prompt time moves
+/// with the playhead, so the gap stays `prompt - playhead`. A rate (#5263) is a factor on the
+/// playhead's movement since `playhead`, added here; nothing else changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Anchor {
+    pub sequence: ItemId,
+    pub epoch: u64,
+    pub prompt: Tick,
+    pub playhead: Tick,
+}
+
+impl Anchor {
+    /// The prompt time when the playhead is at `playhead`.
+    pub fn at(&self, playhead: Tick) -> Tick {
+        self.prompt.saturating_add(playhead.saturating_sub(self.playhead))
+    }
+}
+
+/// The prompter's session state: never saved with the project and never an undo step.
+#[derive(Clone, Debug, Default)]
+pub struct PrompterState {
+    /// None: the prompter follows the playhead.
+    pub anchor: Option<Anchor>,
+    /// The log of the voice-over take in progress.
+    pub take: Option<TakeLog>,
+    /// The log of the last finished take.
+    pub last_take: Option<TakeLog>,
+}
+
+/// The anchor, when it belongs to the active sequence of the current document (another sequence
+/// or a replaced project starts in step).
+fn anchor(s: &Session) -> Option<Anchor> {
+    s.prompter.anchor.filter(|a| Some(a.sequence) == s.state.active_sequence && a.epoch == s.document_epoch)
+}
+
+/// The prompt time when the playhead is at `playhead` (the overlay passes the playhead it draws).
+pub fn prompt_time_at(s: &Session, playhead: Tick) -> Tick {
+    anchor(s).map_or(playhead, |a| a.at(playhead))
+}
+
+/// The prompt time now.
+pub fn prompt_time(s: &Session) -> Tick {
+    prompt_time_at(s, s.playhead())
+}
+
+/// Prompt time minus playhead: positive when the prompter is ahead of the picture.
+pub fn gap(s: &Session) -> Tick {
+    prompt_time(s).saturating_sub(s.playhead())
+}
+
+/// Which side of the picture the prompter is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    /// The prompt time is later than the playhead: the narrator moved on first.
+    Ahead,
+    /// The prompt time is earlier: the picture moved on without the narrator.
+    Behind,
+}
+
+/// The direction of a gap; None when there is none.
+pub fn direction(gap: Tick) -> Option<Direction> {
+    match gap.0.signum() {
+        1 => Some(Direction::Ahead),
+        -1 => Some(Direction::Behind),
+        _ => None,
+    }
+}
+
+// ------------------------------------------------------------------------------- steps
+
+/// The start times of a section's steps after its start: its talking points, else its script
+/// paragraphs. Points that start at or after the section's end (an overrun) are not steps.
+fn inner_steps(m: &Marker) -> Vec<Tick> {
+    let notes = parse_notes(&m.comment);
+    let end = end_of(m);
+    if !notes.points.is_empty() {
+        let (spans, _) = allocate(&notes.points, m.start, m.duration);
+        return spans.into_iter().map(|(a, _)| a).filter(|&a| a > m.start && a < end).collect();
+    }
+    let chars = notes.script.chars().count();
+    if chars == 0 {
+        return Vec::new();
+    }
+    paragraph_starts(&notes.script)
+        .into_iter()
+        .skip(1)
+        .filter_map(|c| {
+            // the first tick at which the script position has reached the paragraph
+            let ideal = (c as i128 * m.duration.0 as i128 + chars as i128 - 1) / chars as i128;
+            let mut e = Tick(i64::try_from(ideal).ok()?);
+            for _ in 0..8 {
+                if script_offset(chars, e, m.duration) >= c {
+                    break;
+                }
+                e = e.saturating_add(Tick(1));
+            }
+            let t = m.start.saturating_add(e);
+            (t > m.start && t < end).then_some(t)
+        })
+        .collect()
+}
+
+/// Times the prompter can be moved to, with the section they belong to (None: a time where the
+/// shown section may change, such as a parent resuming after a nested marker), of the sections
+/// `keep` selects.
+fn candidates(seq: &Sequence, keep: impl Fn(&Marker) -> bool) -> Vec<(Tick, Option<MarkerId>)> {
+    let mut out = Vec::new();
+    for m in seq.markers.iter().filter(|m| is_section(m) && keep(m)) {
+        out.push((m.start, Some(m.id)));
+        out.extend(inner_steps(m).into_iter().map(|t| (t, Some(m.id))));
+        out.push((end_of(m), None));
+    }
+    out
+}
+
+/// Whether `t` is a step: inside the section shown there, and either one of that section's own
+/// steps or the moment that section comes into view.
+fn is_step(seq: &Sequence, t: Tick, of: Option<MarkerId>) -> bool {
+    let Some(shown) = section_at(seq, t) else { return false };
+    of == Some(shown.id) || t.0.checked_sub(1).is_none_or(|b| section_at(seq, Tick(b)).map(|m| m.id) != Some(shown.id))
+}
+
+/// The first step after `p`.
+pub fn next_step(seq: &Sequence, p: Tick) -> Option<Tick> {
+    let mut c: Vec<_> = candidates(seq, |m| end_of(m) > p).into_iter().filter(|(t, _)| *t > p).collect();
+    c.sort_by_key(|(t, of)| (*t, of.is_none()));
+    c.into_iter().find(|(t, of)| is_step(seq, *t, *of)).map(|(t, _)| t)
+}
+
+/// Where Previous goes from `p`: the start of the step `p` is in when that started more than
+/// [`PREVIOUS_GRACE_SECONDS`] ago (or no step comes before it), else the step before it. None
+/// before the first step, or at it.
+pub fn previous_step(seq: &Sequence, p: Tick) -> Option<Tick> {
+    let mut c: Vec<_> = candidates(seq, |m| m.start <= p).into_iter().filter(|(t, _)| *t <= p).collect();
+    c.sort_by_key(|(t, of)| (Reverse(*t), of.is_none()));
+    let mut valid = c.into_iter().filter(|(t, of)| is_step(seq, *t, *of)).map(|(t, _)| t);
+    let current = valid.next()?;
+    let mut earlier = valid.filter(|&t| t < current);
+    let grace = Tick(TICKS_PER_SECOND.saturating_mul(PREVIOUS_GRACE_SECONDS));
+    let target = if p.saturating_sub(current) > grace { Some(current) } else { earlier.next().or(Some(current)) };
+    target.filter(|&t| t != p)
+}
+
+// ------------------------------------------------------------------------------- take log
+
+/// What moved the prompter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MoveKind {
+    /// Where the prompt was when the take began (the first entry of every log).
+    Start,
+    Next,
+    Previous,
+    ToPlayhead,
+}
+
+/// One entry of a take's prompter log. Times are ticks. Between two entries the prompt time runs
+/// with the playhead, so the prompt time at take time `x` is `promptAfter + (x - takeTime)` of the
+/// last entry before `x`, and the section and point on screen follow from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptMove {
+    pub kind: MoveKind,
+    /// The playhead minus the take's record point (negative during the pre-roll).
+    pub take_time: Tick,
+    /// The playhead (sequence time).
+    pub playhead: Tick,
+    pub prompt_before: Tick,
+    pub prompt_after: Tick,
+    /// The section (range marker) shown at `promptAfter`, if any.
+    pub marker: Option<MarkerId>,
+    /// Its talking point current at `promptAfter` (index in the marker's points).
+    pub point: Option<usize>,
+    /// Its script paragraph at `promptAfter`, for a section without talking points.
+    pub paragraph: Option<usize>,
+}
+
+/// The prompter log of one voice-over take: kept in the session for the take in progress and the
+/// last finished one, and returned by `audio.voiceover.stop` and `prompter.takeLog`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeLog {
+    pub sequence: ItemId,
+    /// The take's record point (sequence time): where its clip starts.
+    pub record_start: Tick,
+    pub entries: Vec<PromptMove>,
+    /// Moves not kept after [`MAX_TAKE_LOG_ENTRIES`].
+    pub dropped: u64,
+}
+
+fn entry(seq: Option<&Sequence>, kind: MoveKind, record_start: Tick, playhead: Tick, before: Tick, after: Tick) -> PromptMove {
+    let section = seq.and_then(|q| prompt_at(q, after).section);
+    PromptMove {
+        kind,
+        take_time: playhead.saturating_sub(record_start),
+        playhead,
+        prompt_before: before,
+        prompt_after: after,
+        marker: section.as_ref().map(|x| x.marker),
+        point: section.as_ref().and_then(|x| x.current),
+        paragraph: section.as_ref().filter(|x| x.points.is_empty()).and_then(|x| x.script.as_ref()).map(|x| x.paragraph),
+    }
+}
+
+/// A voice-over take starts with its capture at `capture_start`: the prompter returns to the
+/// playhead and a new log starts with where the prompt is then.
+pub(crate) fn begin_take(s: &mut Session, record_start: Tick, capture_start: Tick) {
+    s.prompter.anchor = None;
+    let Some(sequence) = s.state.active_sequence else { return };
+    let first = entry(s.active_sequence(), MoveKind::Start, record_start, capture_start, capture_start, capture_start);
+    s.prompter.take = Some(TakeLog { sequence, record_start, entries: vec![first], dropped: 0 });
+}
+
+/// The take ended (placed, discarded or failed): its log becomes the last take's, returned as JSON.
+pub(crate) fn finish_take(s: &mut Session) -> Value {
+    match s.prompter.take.take() {
+        Some(log) => {
+            let v = serde_json::to_value(&log).unwrap_or(Value::Null);
+            s.prompter.last_take = Some(log);
+            v
+        }
+        None => Value::Null,
+    }
+}
+
+// ------------------------------------------------------------------------------- commands
+
+/// Move the prompt time to `to` (in step when that is the playhead) and log the move on the take
+/// in progress.
+fn move_to(s: &mut Session, kind: MoveKind, to: Tick) -> Result<Value> {
+    let sequence = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let (before, playhead) = (prompt_time(s), s.playhead());
+    s.prompter.anchor = (to != playhead).then_some(Anchor { sequence, epoch: s.document_epoch, prompt: to, playhead });
+    if s.voiceover.recording() {
+        let seq = s.active_sequence();
+        let e = s.prompter.take.as_ref().map(|log| entry(seq, kind, log.record_start, playhead, before, to));
+        if let (Some(log), Some(e)) = (s.prompter.take.as_mut(), e) {
+            if log.entries.len() < MAX_TAKE_LOG_ENTRIES {
+                log.entries.push(e);
+            } else {
+                log.dropped = log.dropped.saturating_add(1);
+            }
+        }
+    }
+    Ok(status(s))
+}
+
+/// The prompter's position: prompt time, playhead, the gap and its direction, and what the
+/// prompt time lands on.
+fn status(s: &Session) -> Value {
+    let (prompt, playhead) = (prompt_time(s), s.playhead());
+    let gap = prompt.saturating_sub(playhead);
+    let section = s.active_sequence().and_then(|q| prompt_at(q, prompt).section);
+    json!({
+        "promptTime": prompt,
+        "playhead": playhead,
+        "gap": gap,
+        "direction": direction(gap),
+        "marker": section.as_ref().map(|x| x.marker),
+        "point": section.as_ref().and_then(|x| x.current),
+        "paragraph": section.as_ref().and_then(|x| x.script.as_ref()).map(|x| x.paragraph),
+    })
+}
+
+fn sections_enabled(s: &Session) -> std::result::Result<&Sequence, String> {
+    has_seq(s)?;
+    let seq = s.active_sequence().ok_or("no sequence is open")?;
+    if !seq.markers.iter().any(is_section) {
+        return Err("the sequence has no sections: range markers become prompter sections".into());
+    }
+    Ok(seq)
+}
+
+fn can_next(s: &Session) -> std::result::Result<(), String> {
+    let seq = sections_enabled(s)?;
+    next_step(seq, prompt_time(s)).map(|_| ()).ok_or_else(|| "the prompter is at the last point of the last section".into())
+}
+
+fn can_previous(s: &Session) -> std::result::Result<(), String> {
+    let seq = sections_enabled(s)?;
+    previous_step(seq, prompt_time(s)).map(|_| ()).ok_or_else(|| "the prompter is at the start of the first section".into())
+}
+
+fn can_return(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if gap(s) == Tick::ZERO { Err("the prompter is already at the playhead".into()) } else { Ok(()) }
+}
+
+fn next(s: &mut Session, _: &Value) -> Result<Value> {
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let to = next_step(seq, prompt_time(s)).ok_or_else(|| bad("prompter.next", "the prompter is at the last point of the last section"))?;
+    move_to(s, MoveKind::Next, to)
+}
+
+fn previous(s: &mut Session, _: &Value) -> Result<Value> {
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let to = previous_step(seq, prompt_time(s)).ok_or_else(|| bad("prompter.previous", "the prompter is at the start of the first section"))?;
+    move_to(s, MoveKind::Previous, to)
+}
+
+fn to_playhead(s: &mut Session, _: &Value) -> Result<Value> {
+    let playhead = s.playhead();
+    move_to(s, MoveKind::ToPlayhead, playhead)
+}
+
+/// `prompter.takeLog`: the log of the take in progress and of the last finished take.
+fn take_log(s: &mut Session, _: &Value) -> Result<Value> {
+    Ok(json!({"recording": s.voiceover.recording(), "inProgress": s.prompter.take, "last": s.prompter.last_take}))
+}
+
 /// The time parameters `prompter.inspect` reads.
 const TIME_KEYS: [&str; 4] = ["time", "frame", "seconds", "timecode"];
 
 /// `prompter.inspect`: the prompt for the active sequence at `time` (any time format), else at the
-/// playhead. A time that is given but cannot be read is refused, not answered for the playhead.
+/// prompt time, with the prompter's position (`promptTime`, `playhead`, `gap`, `direction`). A
+/// time that is given but cannot be read is refused, not answered for the prompt time.
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let given = TIME_KEYS.iter().any(|k| p.get(k).is_some_and(|v| !v.is_null()));
     let t = match sequence_time_p(s, p, "", "prompter.inspect")? {
@@ -396,22 +768,37 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         None if given => {
             return Err(crate::commands::bad("prompter.inspect", "the time must be ticks, a frame, seconds or a timecode such as 00:00:01:00"));
         }
-        None => s.playhead(),
+        None => prompt_time(s),
     };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    serde_json::to_value(prompt_at(seq, t)).map_err(|e| EngineError::Other(e.to_string()))
+    let mut v = serde_json::to_value(prompt_at(seq, t)).map_err(|e| EngineError::Other(e.to_string()))?;
+    if let (Some(o), Value::Object(pos)) = (v.as_object_mut(), status(s)) {
+        for k in ["promptTime", "playhead", "gap", "direction"] {
+            if let Some(x) = pos.get(k) {
+                o.insert(k.into(), x.clone());
+            }
+        }
+    }
+    Ok(v)
 }
 
 pub fn commands() -> Vec<CommandSpec> {
-    vec![CommandSpec {
-        id: "prompter.inspect",
-        label: "Inspect Prompter",
-        menu: &[],
-        shortcut: None,
-        params: r#"{"time":ticks?,"frame":i64?,"seconds":f64?,"timecode":str?}"#,
-        enabled: has_seq,
-        run: inspect,
-        journal: false,
+    let spec = |id, label, menu, shortcut, params, enabled, run, journal| CommandSpec {
+        id,
+        label,
+        menu,
+        shortcut,
+        params,
+        enabled,
+        run,
+        journal,
         named: crate::commands::NamedKeys::NONE,
-    }]
+    };
+    vec![
+        spec("prompter.inspect", "Inspect Prompter", &[], None, r#"{"time":ticks?,"frame":i64?,"seconds":f64?,"timecode":str?}"#, has_seq, inspect, false),
+        spec("prompter.next", "Next Point", &["Markers", "Prompter"], Some("Alt+PageDown"), "{}", can_next, next, true),
+        spec("prompter.previous", "Previous Point", &["Markers", "Prompter"], Some("Alt+PageUp"), "{}", can_previous, previous, true),
+        spec("prompter.toPlayhead", "Return to Playhead", &["Markers", "Prompter"], Some("Alt+Home"), "{}", can_return, to_playhead, true),
+        spec("prompter.takeLog", "Prompter Take Log", &[], None, "{}", crate::commands::always, take_log, false),
+    ]
 }

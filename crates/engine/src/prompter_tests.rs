@@ -1,12 +1,13 @@
 //! Tests of [`crate::prompter`]: talking points and script from a marker comment, their timing in
 //! the section, sections and the next one around overlapping range markers, the caption line, the
-//! `prompter.inspect` query, and hostile comments and markers.
+//! `prompter.inspect` query, and hostile comments and markers; Next and Previous through points,
+//! paragraphs and sections, the ahead/behind gap, and the prompter log of a voice-over take.
 
 use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, ClipId, Label, Marker, MarkerId, MarkerKind, Project, Sequence, SequenceSettings, TrackId};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
-use crate::prompter::{MAX_POINTS, Note, PointState, allocate, parse_notes, prompt_at, section_at};
+use crate::prompter::{Anchor, MAX_POINTS, Note, PointState, allocate, next_step, parse_notes, previous_step, prompt_at, section_at};
 use crate::{EngineError, Session};
 
 fn sec(s: f64) -> Tick {
@@ -272,4 +273,240 @@ fn hostile_comments_markers_and_times_never_panic() {
     }
     assert!(parse_notes(&long_line).truncated && parse_notes(&many_points).truncated, "a cut is reported");
     assert!(prompt_at(&sequence(), Tick::ZERO).section.is_none(), "a sequence with no markers");
+}
+
+/// What is shown at `t`: the section and its current point or script paragraph.
+fn shown(q: &Sequence, t: Tick) -> Option<(u64, Option<usize>, Option<usize>)> {
+    prompt_at(q, t).section.map(|s| (s.marker.0, s.current, s.script.map(|x| x.paragraph)))
+}
+
+fn three_sections() -> Sequence {
+    with_markers(vec![
+        marker(1, 0.0, 30.0, "Points", "- One [0:10]\n- Two\n- Three"),
+        marker(2, 40.0, 30.0, "Script", "First paragraph, a long one.\nStill the first.\n\nSecond.\n\n\nThird and last paragraph."),
+        marker(3, 70.0, 10.0, "Bare", ""),
+    ])
+}
+
+#[test]
+fn next_visits_every_point_and_paragraph_in_order_across_sections_and_stops_at_the_last() {
+    let q = three_sections();
+    let mut t = Tick::ZERO;
+    let mut visited = vec![shown(&q, t)];
+    while let Some(n) = next_step(&q, t) {
+        assert!(n > t, "Next moves forward: {t:?} -> {n:?}");
+        assert_ne!(shown(&q, n), shown(&q, Tick(n.0 - 1)), "a step is where the point, paragraph or section changes ({n:?})");
+        visited.push(shown(&q, n));
+        t = n;
+        assert!(visited.len() < 20, "Next must end");
+    }
+    let expected = vec![
+        Some((1, Some(0), None)),
+        Some((1, Some(1), None)),
+        Some((1, Some(2), None)),
+        Some((2, None, Some(0))),
+        Some((2, None, Some(1))),
+        Some((2, None, Some(2))),
+        Some((3, None, None)),
+    ];
+    assert_eq!(visited, expected, "each point, then each paragraph, then the section without notes; the gap is skipped");
+
+    // back again, pressing Previous at each step's start
+    let mut back = vec![shown(&q, t)];
+    while let Some(p) = previous_step(&q, t) {
+        assert!(p < t);
+        back.push(shown(&q, p));
+        t = p;
+    }
+    back.reverse();
+    assert_eq!(back, expected, "Previous at a step's start goes to the step before, across sections");
+    assert_eq!(t, Tick::ZERO, "and stops at the first section's start");
+}
+
+#[test]
+fn previous_restarts_the_current_point_unless_it_has_just_started() {
+    let q = three_sections();
+    let grace = sec(crate::prompter::PREVIOUS_GRACE_SECONDS as f64);
+    let second = sec(10.0);
+    assert_eq!(previous_step(&q, second + grace + sec(1.0)), Some(second), "well into a point: back to its start");
+    assert_eq!(previous_step(&q, second + sec(0.5)), Some(Tick::ZERO), "just after its start: the point before");
+    assert_eq!(previous_step(&q, sec(0.5)), Some(Tick::ZERO), "just into the first point: its start");
+    assert_eq!(previous_step(&q, Tick::ZERO), None, "at the first step there is nothing before");
+    let gap = sec(35.0);
+    assert!(section_at(&q, gap).is_none());
+    assert_eq!(previous_step(&q, gap).and_then(|t| shown(&q, t)), Some((1, Some(2), None)), "from a gap: the previous section's last point");
+    assert_eq!(next_step(&q, gap), Some(sec(40.0)), "and Next: the next section's start");
+    let late = with_markers(vec![marker(1, 10.0, 10.0, "Late", "")]);
+    assert_eq!(previous_step(&late, sec(5.0)), None, "before the first section");
+    assert_eq!(next_step(&late, sec(5.0)), Some(sec(10.0)));
+    assert_eq!(next_step(&late, sec(25.0)), None, "after the last section");
+}
+
+#[test]
+fn next_follows_what_is_shown_where_sections_overlap() {
+    let q = with_markers(vec![marker(1, 0.0, 100.0, "Outer", "- o1\n- o2\n- o3\n- o4"), marker(2, 20.0, 20.0, "Inner", "- i1\n- i2")]);
+    let mut t = Tick::ZERO;
+    let mut steps = vec![t];
+    while let Some(n) = next_step(&q, t) {
+        steps.push(n);
+        t = n;
+    }
+    for &s in &steps {
+        let p = prompt_at(&q, s);
+        assert_eq!(p.section.map(|x| x.marker), section_at(&q, s).map(|m| m.id), "a step shows the section the overlay shows");
+    }
+    assert!(!steps.contains(&sec(25.0)), "the outer point hidden under the nested section is skipped: {steps:?}");
+    assert!(steps.contains(&sec(20.0)) && steps.contains(&sec(30.0)), "the nested section's points are visited");
+    assert!(steps.contains(&sec(40.0)), "the outer section is a step where it resumes, mid-point: {steps:?}");
+    assert_eq!(previous_step(&q, sec(40.0)), Some(sec(30.0)), "Previous from the resumed section goes into the nested one");
+}
+
+/// The demo project with two sections at frame boundaries; returns the playhead to start from.
+fn session_with_sections() -> Session {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let rate = s.sequence_rate();
+    let fps = rate.frame_at(Tick(TICKS_PER_SECOND));
+    s.execute("markers.add", json!({"time": 0, "name": "Intro", "comment": "- Hello [0:02]\n- Topic [0:02]\n- Plan", "durationFrames": 6 * fps})).unwrap();
+    s.execute("markers.add", json!({"time": rate.tick_of(8 * fps).0, "name": "Outro", "durationFrames": 3 * fps})).unwrap();
+    s
+}
+
+fn prompter(s: &mut Session) -> serde_json::Value {
+    s.execute("prompter.inspect", json!({})).unwrap()
+}
+
+#[test]
+fn moving_the_prompter_changes_neither_the_playhead_nor_the_project_nor_the_history() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    let (project, undo, playhead) = (s.project.clone(), s.history.undo.len(), s.playhead());
+    assert!(prompter(&mut s)["direction"].is_null() && prompter(&mut s)["gap"] == 0, "in step to begin with");
+
+    let r = s.execute("prompter.next", json!({})).unwrap();
+    assert!(r["gap"].as_i64().unwrap() > 0 && r["direction"] == "ahead", "Next before the picture gets there: ahead: {r}");
+    assert_eq!(r["point"], 1, "on the next point");
+    let q = prompter(&mut s);
+    assert_eq!(q["section"]["current"], 1, "the query answers for the prompt time, not the playhead");
+    assert_eq!(q["promptTime"].as_i64().unwrap() - q["playhead"].as_i64().unwrap(), q["gap"].as_i64().unwrap());
+
+    // the prompter keeps moving with the playhead from its new place
+    let gap = q["gap"].as_i64().unwrap();
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    assert_eq!(prompter(&mut s)["gap"].as_i64(), Some(gap), "the gap stays as the playhead moves");
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+
+    // two steps back: behind the picture
+    s.execute("prompter.previous", json!({})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 4.5})).unwrap();
+    let r = s.execute("prompter.previous", json!({})).unwrap();
+    assert!(r["gap"].as_i64().unwrap() < 0 && r["direction"] == "behind", "the picture moved on without the prompter: {r}");
+
+    let r = s.execute("prompter.toPlayhead", json!({})).unwrap();
+    assert!(r["gap"] == 0 && r["direction"].is_null(), "back in step: {r}");
+    assert!(matches!(s.execute("prompter.toPlayhead", json!({})), Err(EngineError::Disabled(..))), "nothing to return from");
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    assert_eq!(s.playhead(), playhead);
+    assert_eq!(*s.project, *project, "no command changed the project");
+    assert_eq!(s.history.undo.len(), undo, "or made an undo step");
+}
+
+#[test]
+fn next_and_previous_are_disabled_with_a_reason_where_they_cannot_move() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    for id in ["prompter.next", "prompter.previous"] {
+        match s.execute(id, json!({})) {
+            Err(EngineError::Disabled(_, why)) => assert!(why.contains("range markers"), "{id} says how to make sections: {why}"),
+            other => panic!("{id} without sections: {other:?}"),
+        }
+    }
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 0})).unwrap();
+    assert!(matches!(s.execute("prompter.previous", json!({})), Err(EngineError::Disabled(..))), "at the first section's start");
+    while s.execute("prompter.next", json!({})).is_ok() {}
+    let last = prompter(&mut s);
+    assert_eq!(last["section"]["name"], "Outro", "Next ends on the last section");
+    assert!(matches!(s.execute("prompter.next", json!({})), Err(EngineError::Disabled(..))), "and is then disabled");
+}
+
+#[test]
+fn a_take_logs_every_prompter_move_relative_to_its_record_point() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("prompter.next", json!({})).unwrap();
+    let record = s.playhead();
+    s.execute("audio.voiceover.start", json!({"preroll": 0})).unwrap();
+    assert_eq!(prompter(&mut s)["gap"], 0, "a recording starts with the prompter at the playhead");
+
+    for (at, id) in [(1.5, "prompter.next"), (3.5, "prompter.previous"), (3.75, "prompter.next"), (4.0, "prompter.toPlayhead")] {
+        s.execute("playhead.set", json!({"seconds": at})).unwrap();
+        s.execute(id, json!({})).unwrap();
+    }
+    let live = s.execute("prompter.takeLog", json!({})).unwrap();
+    assert_eq!(live["recording"], true);
+    let log = live["inProgress"].clone();
+    let entries = log["entries"].as_array().unwrap();
+    let kinds: Vec<&str> = entries.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["start", "next", "previous", "next", "toPlayhead"], "a starting entry, then each move in order");
+    let n = |e: &serde_json::Value, k: &str| e[k].as_i64().unwrap();
+    assert_eq!(n(&entries[0], "takeTime"), 0, "the take starts at its record point");
+    for e in entries {
+        assert_eq!(n(e, "takeTime"), n(e, "playhead") - record.0, "take times count from the record point");
+        let at = s.execute("prompter.inspect", json!({"time": n(e, "promptAfter")})).unwrap();
+        assert_eq!(e["marker"], at["section"]["marker"], "the entry names the section the prompt landed in");
+        assert_eq!(e["point"], at["section"]["current"], "and its point");
+    }
+    for w in entries.windows(2) {
+        let ran = n(&w[0], "promptAfter") + (n(&w[1], "playhead") - n(&w[0], "playhead"));
+        assert_eq!(n(&w[1], "promptBefore"), ran, "between moves the prompt runs with the playhead, so the log replays");
+    }
+    assert_eq!(n(&entries[4], "promptAfter"), n(&entries[4], "playhead"), "return-to-playhead lands on the playhead");
+
+    let project_before_stop = s.project.clone();
+    let dir = std::env::temp_dir().join(format!("filmcraft-prompter-{}", std::process::id()));
+    let stop = s.execute("audio.voiceover.stop", json!({"time": sec(5.0).0, "dir": dir.to_string_lossy()})).unwrap();
+    assert_eq!(stop["promptLog"], log, "stop returns the finished take's log");
+    let after = s.execute("prompter.takeLog", json!({})).unwrap();
+    assert!(after["recording"] == false && after["inProgress"].is_null() && after["last"] == log, "and keeps it as the last take's");
+    assert!(!std::sync::Arc::ptr_eq(&project_before_stop, &s.project), "the take was placed");
+
+    // a take without moves logs only where it started, during the pre-roll
+    s.execute("playhead.set", json!({"seconds": 4.0})).unwrap();
+    let start = s.execute("audio.voiceover.start", json!({"preroll": 1.0})).unwrap();
+    let quiet = s.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
+    let entries = quiet["promptLog"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{quiet}");
+    assert!(n(&entries[0], "takeTime") < 0, "the capture starts before the record point");
+    assert_eq!(n(&entries[0], "playhead"), start["captureStart"].as_i64().unwrap());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn hostile_prompter_positions_never_panic() {
+    let q = with_markers(vec![
+        marker(1, 0.0, 30.0, "A", "x\n\ny\n\nz"),
+        Marker { start: Tick::MAX, duration: Tick::MAX, ..marker(2, 0.0, 0.0, "", "- a\n- b") },
+        Marker { start: Tick(i64::MIN), duration: Tick(i64::MAX), ..marker(3, 0.0, 0.0, "", "p\n\nq") },
+        Marker { duration: Tick(1), ..marker(4, 10.0, 0.0, "one tick", "a\n\nb\n\nc") },
+        marker(5, 10.0, 30.0, "overlap", "- [99:59:59]\n- b"),
+    ]);
+    let times = [i64::MIN, Tick::MIN.0, -1, 0, 1, sec(10.0).0, sec(25.0).0, Tick::MAX.0, i64::MAX];
+    for &t in &times {
+        let r = std::panic::catch_unwind(|| (next_step(&q, Tick(t)), previous_step(&q, Tick(t))));
+        let (n, p) = r.unwrap_or_else(|_| panic!("steps from {t} panicked"));
+        assert!(n.is_none_or(|n| n > Tick(t)) && p.is_none_or(|p| p < Tick(t)), "steps move the right way from {t}");
+    }
+    let mut s = session_with_sections();
+    let sequence = s.state.active_sequence.unwrap();
+    for &prompt in &times {
+        for &playhead in &[i64::MIN, 0, i64::MAX] {
+            s.prompter.anchor = Some(Anchor { sequence, epoch: s.document_epoch, prompt: Tick(prompt), playhead: Tick(playhead) });
+            for id in ["prompter.next", "prompter.previous", "prompter.toPlayhead", "prompter.inspect", "prompter.takeLog"] {
+                let mut s2 = std::panic::AssertUnwindSafe(&mut s);
+                let r = std::panic::catch_unwind(move || s2.execute(id, json!({})).map(|_| ()));
+                assert!(r.is_ok(), "{id} at prompt {prompt}, anchor playhead {playhead} panicked");
+            }
+        }
+    }
 }
