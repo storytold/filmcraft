@@ -20,7 +20,7 @@ pub enum ParamValue {
     Bool(bool),
     Choice(u32),
     Text(String),
-    /// Curve control points (x, y) in 0..1, sorted by x (Lumetri curves).
+    /// Curve control points (x, y) in 0..1, sorted by x (Color Grading curves).
     Curve(Vec<[f32; 2]>),
     /// A mask path (Bézier vertices in clip pixels); interpolates vertex-wise.
     Path(crate::mask::MaskPath),

@@ -6,11 +6,14 @@
 //! format's extension ([`destination`]). If a file with that new name already exists, nothing is
 //! written: the save dialog only asked about replacing the name as typed (with WebVTT chosen, typing
 //! `keep` when `keep.vtt` exists leaves `keep.vtt` alone). The format written last
-//! (`caption_export_format` in the UI state) is offered the next time. With a `path` the command runs
-//! directly (agents).
+//! (`caption_export_format` in the UI state) is offered the next time. A sequence with more than one
+//! caption track also gets a Caption Track menu (the track given by the command's `track`, else the
+//! first), so the file is the track chosen and not always the top one (#4060). With a `path` the
+//! command runs directly (agents).
 //!
 //! Automation ids: `captionExport.format`, `captionExport.format.option.<ext>` (`srt`, `vtt`, `scc`,
-//! `mcc`, `stl`, `ttml`, `dfxp`), `captionExport.ok`, `captionExport.cancel`.
+//! `mcc`, `stl`, `ttml`, `dfxp`), `captionExport.track`, `captionExport.track.option.<n>` (the
+//! track's 1-based position, as in `C<n>`), `captionExport.ok`, `captionExport.cancel`.
 
 use crate::widgets::CenteredDialog as _;
 use filmcraft_captions::Format;
@@ -50,14 +53,41 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ui.set_min_width(340.0);
         egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("File Format"));
-            let r = craft_ui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
                 for f in Format::ALL {
                     let o = ui.selectable_value(&mut d.format, f, f.name());
                     elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
                 }
             });
-            elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
+            let r = crate::widgets::accessible_name(r.response, tl!("File Format"));
+            elems.push(("captionExport.format".into(), r.rect, d.format.name().into()));
             ui.end_row();
+            let tracks: Vec<(u64, String)> =
+                app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
+            if tracks.len() > 1 {
+                let params = Value::Object(d.params.clone());
+                let requested = filmcraft_engine::captions::track_param(&app.session, &params);
+                let chosen = requested.map_or(0, |id| tracks.iter().position(|t| t.0 == id.0).unwrap_or(0));
+                // a track that does not exist (`C9`, a deleted id) shows the first one, so OK exports that one
+                if requested.is_none() {
+                    d.params.insert("track".into(), json!(tracks[0].0));
+                }
+                let label = |i: usize| format!("C{} · {}", i + 1, tracks[i].1);
+                let mut pick = chosen;
+                ui.label(tl!("Caption Track"));
+                let r = crate::legacy_dropdown::Dropdown::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
+                    for i in 0..tracks.len() {
+                        let o = ui.selectable_value(&mut pick, i, label(i));
+                        elems.push((format!("captionExport.track.option.{}", i + 1), o.rect, label(i)));
+                    }
+                });
+                let r = crate::widgets::accessible_name(r.response, tl!("Caption Track"));
+                elems.push(("captionExport.track".into(), r.rect, label(pick)));
+                if pick != chosen {
+                    d.params.insert("track".into(), json!(tracks[pick].0));
+                }
+                ui.end_row();
+            }
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -160,8 +190,8 @@ mod tests {
             ("subs.srt", "subs.srt", Format::Srt),
             ("Subs.SCC", "Subs.SCC", Format::Scc),
             ("subs.final", "subs.final.vtt", Format::WebVtt),
-            ("/home/a.b/subs", "/home/a.b/subs.vtt", Format::WebVtt),
-            ("/home/a.b/Main Edit.ttml", "/home/a.b/Main Edit.ttml", Format::Ttml),
+            ("/path/to/local/subs", "/path/to/local/subs.vtt", Format::WebVtt),
+            ("/path/to/local/Main Edit.ttml", "/path/to/local/Main Edit.ttml", Format::Ttml),
         ] {
             assert_eq!(destination(typed, Format::WebVtt), (saved.to_string(), format), "{typed}");
         }

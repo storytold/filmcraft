@@ -1,6 +1,10 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (AVI import #650, E-AC-3 decode #647 and Russian menus #610 no longer counted as missing; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-11-15 · **Last updated:** 2026-11-15 · **Change:** minor (FilmCraft v0.20.0 and v0.20.1 (Flatpak updater fix); ProRes decode and encode, MP3 decode and encode, VP8 and MJPEG decode, Ogg audio, containers, exact time formats and EDL reading and writing now come from craft-libs; export names the encoder that ran and when hardware encoding fell back to software (#3952), APV 4:4:4 exports carry full-resolution chroma (#4656) and resampled audio no longer depends on where a read starts (#4710); narration ships natural voices in official packages (#2318, #3773); the scrub playhead no longer waits for the audio device (#2633); graphics start tries each mode in a child process and falls back to the integrated GPU when the chosen adapter cannot draw to the window (#2553, #2581, #2634); Project panel Reveal in Project scrolls to the source clip and restores a sideways-scrolled list (#4760); update prompts open release notes through the desktop host and the updater reports installing, ready, installed and failed; project files are capped at 256 MiB on every read; interchange, still and animated decode, audio buffers, mixer graphs, AV1/HEVC/MPEG-2 decoding, pin chains and CFB storages take bounded work; screenshots, session logs and voice-over takes use private temp folders; CI runs a nightly release dry run, clippy and tests for Windows-only crates, and Harden-Runner on every job; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (AVI import #650, E-AC-3 decode #647 and Russian menus #610 no longer counted as missing; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -54,7 +58,7 @@ issues now document. That is new evidence, not drift: see [Calibration](#calibra
   effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3. `cargo xtask
   parity --area effects|transitions` measures the shipped catalogue against a reference list too
   (presence and folder placement, [G7](gaps.md#g7-no-measured-parity-tool-in-ci)).
-- **The installed app (file names and listings only, per [AGENTS.md](../AGENTS.md) §2; nothing
+- **The installed app (file names and listings only, per [clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md); nothing
   inside the bundle was opened or read).** `Contents/Resources/*.lproj`: de, en, es, fr, it, ja,
   ko, pt, ru, zh_CN (10 UI languages). `Contents/MediaIO/systempresets/` folder names are
   four-character exporter / codec codes: JPEG, QuickTime, MP3, PNG, Windows Media, AIFF, AVI,
@@ -112,7 +116,7 @@ agent-hours to close the area to Premiere, sequential.
 | Media import and codecs | 12% | ~75% | ~60% | 150–250 | Own bit-exact decoders for H.264, HEVC, VP9, AV1, ProRes, DNx, APV, MPEG-2, AAC, AC-3, Opus. But H.264 only 8-bit 4:2:0 and HEVC no 4:2:2 in software (most 10-bit cameras, #626); no camera RAW (R3D, ARRIRAW, BRAW, Sony RAW, Canon RAW, ProRes RAW, #345, #383); E-AC-3 plays its 5.1 core only (#647), no WMV, DV, XAVC / P2 metadata; Sony start timecode (#460) | [codec-parity.md](codec-parity.md), [file-format-parity.md](file-format-parity.md) |
 | Audio | 10% | ~88% | ~65% | 50–90 | Mixer graph, automation, all 53 effects, Essential Sound, 5.1, voice-over, Remix, multi-stream container audio (#361). Device and playback reports: crackle / cut-outs (#336, #410, #602, #605, #617); Enhance Speech is DSP, not a model; ALSA fallback fixed (#254) | |
 | Panels and UI fidelity | 10% | ~88% | ~60% | 120–200 | All main panels. Missing: on-screen transform handles in the Program monitor (#639), Effect Controls keyframe zoom / divider / row lines (#640–#645), docking rearrangement (#493), multi-monitor windows (#466), filmstrip thumbnails (#614), marquee in Project panel (#578) | [ui-parity.md](ui-parity.md) |
-| Colour | 8% | ~90% | ~70% | 40–70 | Lumetri complete incl. scopes, LUTs, colour management, HDR export. Lumetri on the GPU covers basic, creative and vignette only; HDR-aware Lumetri maths, macOS EDR display, D-Log M; a Lumetri report (#628) | |
+| Colour | 8% | ~90% | ~70% | 40–70 | Color Grading complete incl. scopes, LUTs, colour management, HDR export. Color Grading on the GPU covers basic, creative and vignette only; HDR-aware Color Grading maths, macOS EDR display, D-Log M; a Color Grading report (#628) | |
 | Graphics, titles, captions | 8% | ~85% | ~65% | 50–90 | Text engine with shaping and bidi, shapes, gradients (#514), our `.fcgt` templates (`.mogrt` refused by design), rolls / crawls, all caption formats. Arabic titles reported broken (#395); no 608/708 embedding in the video stream; speech-to-text off in release builds | |
 | Export and delivery | 8% | ~80% | ~65% | 60–110 | H.264 (own encoder), HEVC through hardware only, ProRes, DNxHR, APV, MXF OP1a / OP-Atom, image sequences, GIF, WAV / AIFF, presets, queue, GPU export rendering (#421). Missing: AV1, MPEG-2 / DVD / Blu-ray, DCP, JPEG 2000 / XS MXF, AS-10 / AS-11, XDCAM HD, EXR / DPX / Targa sequences, MP3, AAC-only audio, ProRes 4444 in the UI (#342), interlaced, smart render; bitrate target missed (#371) | [file-format-parity.md](file-format-parity.md) |
 | Project files and interchange | 8% | ~70% | ~45% | 90–160 | `.fcproj` with migrations, auto-save, recovery; FCP7 XML, FCPXML, AAF, OMF, EDL, OTIO, ALE. **Premiere's own `.prproj` cannot be opened** (the main beta blocker); AAF / OMF never validated in Media Composer / Pro Tools; XML import of a Premiere sequence took 97 s (#461) | [file-format-parity.md](file-format-parity.md) |
@@ -212,8 +216,8 @@ full-area depth (e.g. the ~20 common effects rather than all 93 and their approx
 |---|---|---|---|
 | Editing and trimming | 28% | 80% | Insert / overwrite, ripple / roll / slip / slide, razor, J/K/L, markers, multicam all work; gap deletion (#648, #668) and deselect (#683) are friction |
 | Importing everyday footage | 14% | 65% | Phone and 8-bit camera H.264 / HEVC, ProRes, DNx, MXF open; 10-bit / 4:2:2 H.264 (Sony XAVC S-I, Canon) does not (#626); WMV and DV missing |
-| Common effects and transitions | 9% | 75% | Lumetri, Transform, Crop, blurs, Cross Dissolve, keys exist; Warp Stabilizer is 2-D, Object Mask missing |
-| Colour (Lumetri, scopes, LUTs) | 9% | 80% | Complete, parity-tested CPU / GPU; curves / wheels on CPU |
+| Common effects and transitions | 9% | 75% | Color Grading, Transform, Crop, blurs, Cross Dissolve, keys exist; Warp Stabilizer is 2-D, Object Mask missing |
+| Colour (Color Grading, scopes, LUTs) | 9% | 80% | Complete, parity-tested CPU / GPU; curves / wheels on CPU |
 | Audio (levels, Essential Sound, loudness, ducking) | 11% | 75% | Complete; audio-device reports off macOS |
 | Titles and captions | 7% | 75% | Text, shapes, templates, SRT / SCC / VTT; `.mogrt` not read by design |
 | Export with presets | 9% | 75% | H.264, HEVC (hardware), ProRes, DNxHR, presets, queue; bitrate miss (#371) |

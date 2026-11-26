@@ -6,7 +6,10 @@ use filmcraft_ui_egui::FilmcraftApp;
 
 fn harness() -> Harness<'static, FilmcraftApp> {
     let app = FilmcraftApp::new(Session::default());
-    let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).with_max_steps(10_000).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     for _ in 0..3 {
         harness.step();
     }

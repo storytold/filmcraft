@@ -172,11 +172,28 @@ impl<'a> Styles<'a> {
         list.extend(runs.iter().map(|r| &r.style));
         let prim = list.iter().map(|s| fonts::resolve(&s.family, &s.style)).collect();
         let per_byte = (!runs.is_empty()).then(|| {
-            let mut v = vec![0u16; text.len() + 1];
-            for (i, r) in runs.iter().enumerate() {
-                let (a, b) = (r.range.start.min(text.len()), r.range.end.min(text.len()));
-                for x in v.iter_mut().take(b).skip(a) {
-                    *x = (i + 1).min(u16::MAX as usize) as u16;
+            // The last run covering a byte wins. Walking the runs backwards and painting each byte
+            // once (`next` jumps over painted bytes) keeps overlapping runs from rewriting bytes.
+            let n = text.len();
+            let mut v = vec![0u16; n + 1];
+            let mut next: Vec<usize> = (0..=n + 1).collect();
+            let find = |next: &mut Vec<usize>, mut x: usize| {
+                let mut root = x;
+                while next[root] != root {
+                    root = next[root];
+                }
+                while next[x] != root {
+                    x = std::mem::replace(&mut next[x], root);
+                }
+                root
+            };
+            for (i, r) in runs.iter().enumerate().rev() {
+                let (a, b) = (r.range.start.min(n), r.range.end.min(n));
+                let mut x = find(&mut next, a);
+                while x < b {
+                    v[x] = (i + 1).min(u16::MAX as usize) as u16;
+                    next[x] = x + 1;
+                    x = find(&mut next, x + 1);
                 }
             }
             v
@@ -309,6 +326,8 @@ struct Item {
     range: Range<usize>,
     rtl: bool,
     glyphs: Vec<ShapedGlyph>,
+    /// Indices of `glyphs` ordered by cluster, so the glyphs of a byte range are found by search.
+    by_cluster: Vec<u32>,
     /// Style index ([`Styles`]).
     style: usize,
 }
@@ -490,7 +509,9 @@ fn shape_items(text: &str, chars: &[CharInfo], sty: &Styles, para: &ParagraphSty
             }
         }
         let end = if j < chars.len() { chars[j].byte } else { text.len() };
-        items.push(Item { range: chars[i].byte..end, rtl, glyphs, style: si });
+        let mut by_cluster: Vec<u32> = (0..glyphs.len() as u32).collect();
+        by_cluster.sort_by_key(|&k| glyphs[k as usize].cluster);
+        items.push(Item { range: chars[i].byte..end, rtl, glyphs, by_cluster, style: si });
         i = j;
     }
     items
@@ -569,14 +590,23 @@ impl Para<'_> {
         let mut extents: Extents = HashMap::new();
         for run in runs {
             let rtl = levels[run.start].is_rtl();
-            let mut idx: Vec<usize> = (0..items.len()).filter(|&k| items[k].range.start < run.end && items[k].range.end > run.start).collect();
+            // items are consecutive and ascending, so those meeting the run are a contiguous stretch
+            let first = items.partition_point(|it| it.range.end <= run.start);
+            let last = first + items[first..].partition_point(|it| it.range.start < run.end);
+            let mut idx: Vec<usize> = (first..last).collect();
             if rtl {
                 idx.reverse();
             }
             for k in idx {
                 let si = items[k].style;
                 let (st, pr) = (sty.list[si], sty.prim[si]);
-                for g in items[k].glyphs.iter().filter(|g| run.contains(&g.cluster)) {
+                let it = &items[k];
+                let by = &it.by_cluster;
+                let lo = by.partition_point(|&g| it.glyphs[g as usize].cluster < run.start);
+                let hi = by.partition_point(|&g| it.glyphs[g as usize].cluster < run.end);
+                let mut inside: Vec<u32> = by[lo..hi].to_vec();
+                inside.sort_unstable(); // back to the shaped (visual) order
+                for g in inside.into_iter().map(|g| &it.glyphs[g as usize]) {
                     let x0 = pen;
                     glyphs.push(Glyph {
                         face: g.face,
@@ -1057,5 +1087,38 @@ mod trailing_space_tests {
         }
         let empty = aligned("", Align::Center, Some(400.0));
         assert!(empty.iter().all(|l| l.width == 0.0));
+    }
+}
+
+#[cfg(test)]
+mod hostile_layout_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn overlapping_runs_style_each_byte_by_the_last_run() {
+        let text = "abcdefghij";
+        let base = TextStyle::default();
+        let runs: Vec<StyleRun> = [(0, 10), (2, 6), (4, 8), (5, 5), (9, 40), (3, 4)]
+            .iter()
+            .map(|&(a, b)| StyleRun { range: a..b, style: TextStyle { size: 20.0 + a as f32, ..base.clone() } })
+            .collect();
+        let sty = Styles::new(text, &base, &runs);
+        for byte in 0..=text.len() {
+            let want = runs.iter().rposition(|r| r.range.start.min(10) <= byte && byte < r.range.end.min(10)).map_or(0, |i| i + 1);
+            assert_eq!(sty.at(byte), want, "byte {byte}");
+        }
+    }
+
+    #[test]
+    fn many_overlapping_runs_and_many_bidi_runs_stay_fast() {
+        let t = Instant::now();
+        let text = "x".repeat(20_000);
+        let runs: Vec<StyleRun> = (0..5_000).map(|_| StyleRun { range: 0..text.len(), style: TextStyle::default() }).collect();
+        let _ = layout_rich_uncached(&text, &TextStyle::default(), &runs, &ParagraphStyle::default());
+        // alternating directions: one visual run per word, one shaping item per run
+        let mixed = "a \u{5d0} ".repeat(4_000);
+        let _ = layout_uncached(&mixed, &TextStyle::default(), &ParagraphStyle { width: Some(300.0), ..Default::default() });
+        assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
     }
 }

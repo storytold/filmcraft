@@ -2,83 +2,24 @@
 //! tool (drag a music clip's Out edge), driven by automation id through the control channel.
 
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, builder, driver, pointer_drag};
 use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
 const SR: u32 = 48_000;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
+        Self::open(session, builder())
     }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
     /// Press at `from`, move to `to` over several frames (as a mouse does), release. Use steps of a
     /// few pixels: the drag starts where the pointer has moved past egui's drag threshold, and edge
     /// hits are 7 px wide.
     fn drag(&mut self, from: egui::Pos2, to: egui::Pos2, steps: usize) {
-        let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
-        push(self, egui::Event::PointerMoved(from));
-        self.frames(1);
-        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
-        self.frames(1);
-        for i in 1..=steps {
-            push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
-            self.frames(1);
-        }
-        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
-        self.frames(2);
+        pointer_drag(self, from, to, steps);
     }
 
     fn duration(&mut self, clip: u64) -> f64 {

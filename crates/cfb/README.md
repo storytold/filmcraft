@@ -1,9 +1,14 @@
 # filmcraft-cfb
 
-A clean-room reader and writer for the Compound File Binary format (Microsoft "structured
-storage"), the low-level container of AAF files. Layer L0: no dependencies beyond `std`, no
-`unsafe`, builds for `wasm32-unknown-unknown`. No third-party implementation (the AAF SDK's
-structured storage code, libgsf, olefile, POI…) was consulted.
+Compatibility facade for [craft-cfb](https://github.com/storytold/craft-libs/tree/7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93/crates/cfb),
+the shared Compound File Binary reader/writer used for AAF. All format implementation now lives
+in craft-libs; this crate retains the `filmcraft_cfb` import path for consumers. AAF object mapping
+remains in `filmcraft-interchange`. The public round-trip/hostile-input and writer-scale tests
+remain here and now exercise the shared implementation. The private sector-span arithmetic test
+is upstream with the implementation.
+
+The shared reader additionally defaults to a 1 GiB per-stream and 1,048,576 directory-entry limit;
+FilmCraft does not disable those safeguards. The shared crate is std-only and forbids unsafe code.
 
 ## Specification
 

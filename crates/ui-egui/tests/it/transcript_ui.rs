@@ -4,12 +4,7 @@
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write
 //! `transcript-*.png` there; without it no GPU is needed.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_snapshot, with_snapshots};
 use serde_json::{Value, json};
 
 /// Reproducible redraw cost for a long sequence transcript, with and without many search hits.
@@ -54,67 +49,14 @@ fn long_transcript_redraw_benchmark() {
     }
 }
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(demo_session(), with_snapshots(builder()))
     }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(2);
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                img.save(dir.join(format!("transcript-{name}.png"))).unwrap();
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
+        save_snapshot(self, 2, &format!("transcript-{name}.png"));
     }
 }
 
@@ -128,8 +70,7 @@ fn transcript_tab_selects_and_extracts_words() {
     assert_eq!(d.ids("text.transcript.generate"), vec!["text.transcript.generate".to_string()], "empty state offers Transcribe");
 
     // bring a transcript for the first A1 clip's media (as an agent without a speech model would)
-    let mut probe = Session::default();
-    probe.execute("file.openDemoProject", json!({})).unwrap();
+    let probe = demo_session();
     let a = probe.active_sequence().unwrap().audio_tracks[0].items[0].clone();
     let tk = |s: f64| a.source_in.0 + (s * filmcraft_time::TICKS_PER_SECOND as f64) as i64;
     let words: Vec<Value> = ["Hello", "um", "there", "friend."]

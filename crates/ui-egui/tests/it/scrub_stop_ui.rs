@@ -9,13 +9,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, driver, egui_rect, start};
 use filmcraft_engine::Session;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::{AudioOut, FilmcraftApp};
-use serde_json::{Value, json};
+use serde_json::json;
 
 type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
 
@@ -39,10 +38,11 @@ impl AudioOut for Out {
     }
 }
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    stops: Arc<AtomicUsize>,
+driver! {
+    /// The app with the stop-counting output.
+    Driver {
+        stops: Arc<AtomicUsize>,
+    }
 }
 
 impl Driver {
@@ -56,43 +56,16 @@ impl Driver {
         let mut app = FilmcraftApp::new(session).with_control(rx);
         let stops = Arc::new(AtomicUsize::new(0));
         app.audio = Some(Box::new(Out { stops: stops.clone() }));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Self { harness, tx, stops };
-        d.frames(4);
+        let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+        let d = start(Self { harness, tx, stops });
         // The first frame applies Settings ▸ Audio Hardware, which closes the output once: these
         // tests count the stops a press causes, not that one.
         d.stops.store(0, Ordering::Relaxed);
         d
     }
 
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
     fn rect(&mut self, id: &str) -> egui::Rect {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+        egui_rect(self.expect_rect(id))
     }
 
     fn send(&mut self, e: egui::Event) {
@@ -104,10 +77,34 @@ impl Driver {
     /// playhead where the pointer is, and starts no grain.
     fn click_ruler(&mut self) {
         let r = self.rect("timeline.ruler");
+        self.press_ruler(r);
+        self.release_ruler(r);
+    }
+
+    /// Press the Timeline ruler and hold it, with the move and the press in the same frame.
+    ///
+    /// A frame with the button up between them would let the scrub stream's 0.25 s linger expire
+    /// on a slow (coverage) runner, closing the output: an extra stop the press did not cause.
+    fn press_ruler(&mut self, r: egui::Rect) {
         let pos = egui::pos2(r.min.x + 40.0, r.center().y);
-        self.send(egui::Event::PointerMoved(pos));
-        self.send(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
-        self.send(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        self.frames(1);
+    }
+
+    fn release_ruler(&mut self, r: egui::Rect) {
+        let pos = egui::pos2(r.min.x + 40.0, r.center().y);
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
         self.frames(2);
     }
 
@@ -158,10 +155,13 @@ fn a_press_on_the_ruler_while_stopped_does_not_close_the_audio_output() {
     assert!(d.harness.state().scrub.is_open(), "the stream lingers after the release");
     let stops = d.stops();
     let before = d.harness.state().session.playhead();
-    d.click_ruler();
+    // The ruler's rect is already known: the press is the first frame after the capture, so the
+    // stream's linger cannot expire in a control round trip before the press reaches the app.
+    d.press_ruler(r);
     assert_ne!(d.harness.state().session.playhead(), before, "the press moved the playhead");
     assert_eq!(d.stops(), stops, "nothing was playing, so the press had nothing to stop");
     assert!(d.harness.state().scrub.is_open(), "the open stream survived the press");
+    d.release_ruler(r);
 }
 
 /// The press still stops a running transport: that is what `stop()` is for.
