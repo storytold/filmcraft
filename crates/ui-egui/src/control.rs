@@ -516,6 +516,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
         }
         "perf.stats" => ok(crate::perf::stats(app)),
+        "program.render" => render_program(app, p),
         "ui.elements" => {
             if app.timeline_still < 2 {
                 // rects of timeline elements are still moving (e.g. the fit after opening a sequence)
@@ -731,6 +732,47 @@ pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, cr
         },
         Err(e) => json!({"ok": false, "error": e}),
     }
+}
+
+/// `program.render {path?, time?|seconds?, maxSide=960 (0: full size)}`: the active sequence's frame rendered
+/// off-screen, as headless mode renders it (the Program preview's media, proxies included, over
+/// black), written to `path` as PNG (in the reply as `pngBase64` on the web). A query, not an
+/// edit: it doesn't move the playhead, isn't journaled and doesn't settle a pending trim, and it
+/// needs no UI pass, so it works while the window is hidden.
+fn render_program(app: &mut FilmcraftApp, p: &Value) -> Outcome {
+    let time = match (p.get("time"), p.get("seconds")) {
+        (Some(t), _) => match t.as_i64() {
+            Some(t) if t >= 0 => filmcraft_time::Tick(t),
+            _ => return err("`time` must be a non-negative number of ticks"),
+        },
+        (None, Some(s)) => match s.as_f64() {
+            Some(s) if s.is_finite() && s >= 0.0 => filmcraft_time::Tick::from_seconds_f64(s),
+            _ => return err("`seconds` must be a finite, non-negative number"),
+        },
+        (None, None) => app.session.playhead(),
+    };
+    // 0 means no limit, as for the bridge's other images
+    let max = p.get("maxSide").and_then(Value::as_u64).unwrap_or(960);
+    let Some((w, h)) = app.session.active_sequence().map(|q| (q.settings.width, q.settings.height)) else { return err("no sequence is open") };
+    let scale = if max == 0 { 1.0 } else { (max as f32 / w.max(h).max(1) as f32).min(1.0) };
+    let img = match app.session.try_render_program_at(scale, time) {
+        Ok(img) => img,
+        Err(e) => return err(e),
+    };
+    let png = match encode_png(&img.over_black_rgba8(), img.w as u32, img.h as u32) {
+        Ok(png) => png,
+        Err(e) => return err(e),
+    };
+    let mut reply = json!({"width": img.w, "height": img.h, "time": time.0});
+    // no filesystem on the web: the PNG comes back in the reply, as without `path`
+    match p.get("path").and_then(Value::as_str).filter(|_| !cfg!(target_arch = "wasm32")) {
+        Some(path) => match std::fs::write(path, png) {
+            Ok(()) => reply["path"] = json!(path),
+            Err(e) => return err(format!("can't write {path}: {e}")),
+        },
+        None => reply["pngBase64"] = json!(base64(&png)),
+    }
+    ok(reply)
 }
 
 /// Standard base64 (RFC 4648, with padding).
