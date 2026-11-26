@@ -381,13 +381,21 @@ fn source_target<'a, 'i>(
     Ok(Some(node))
 }
 
+/// `ActualMediaFilePath` when present and non-blank (after trim); otherwise `FilePath`. Blank
+/// `ActualMediaFilePath` must not block a usable `FilePath` (`Some("")` would short-circuit `or_else`).
+fn stored_media_path<'a>(n: Node<'a, '_>) -> Option<&'a str> {
+    child_text(n, "ActualMediaFilePath")
+        .filter(|p| !p.is_empty())
+        .or_else(|| child_text(n, "FilePath").filter(|p| !p.is_empty()))
+}
+
 /// The stored absolute path, or the project-relative `RelativePath` when the absolute path was
 /// saved on another system (a macOS project opened on Windows, or the reverse).
 fn media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
     if synthetic_code(n).is_some() {
         return None;
     }
-    let stored = child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).filter(|p| !p.is_empty())?;
+    let stored = stored_media_path(n)?;
     if let (Some(base), Some(relative)) = (base_dir, relative_media_path(n, base_dir))
         && foreign_absolute(stored, base)
     {
@@ -398,8 +406,8 @@ fn media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
 
 /// The four-character code generated media stores as its decimal "file path", if it has one.
 fn synthetic_code(n: Node<'_, '_>) -> Option<String> {
-    let stored = child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath"))?.trim();
-    if stored.is_empty() || !stored.bytes().all(|b| b.is_ascii_digit()) {
+    let stored = stored_media_path(n)?;
+    if !stored.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let code = stored.parse::<u32>().ok()?.to_be_bytes();
@@ -641,7 +649,7 @@ impl<'a, 'i> Objects<'a, 'i> {
     /// A `Media` object's title and path, and the project-relative fallback for its path.
     fn add_media(&mut self, n: Node<'a, 'i>, base_dir: Option<&str>) -> Result<()> {
         if child_text(n, "Title").is_some_and(|s| s.len() > 4096)
-            || child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).is_some_and(|s| s.len() > 16384)
+            || stored_media_path(n).is_some_and(|s| s.len() > 16384)
             || child_text(n, "RelativePath").is_some_and(|s| s.len() > 16384)
         {
             return Err(error("media title or path is too long"));
@@ -1946,6 +1954,23 @@ mod tests {
         let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
         assert!(tree.sequences[0].tracks[0].items[0].media_path.is_none());
         assert!(report.mentions("ambiguous"));
+    }
+
+    #[test]
+    fn blank_actual_media_file_path_falls_back_to_file_path() {
+        // Some("") from a blank ActualMediaFilePath must not block FilePath via or_else.
+        for blank in ["", "   "] {
+            let xml = fixture().replace(
+                "<ActualMediaFilePath>/missing/camera.mov</ActualMediaFilePath>",
+                &format!("<ActualMediaFilePath>{blank}</ActualMediaFilePath><FilePath>/from-file-path/camera.mov</FilePath>"),
+            );
+            let (_, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+            assert_eq!(
+                tree.sequences[0].tracks[0].items[0].media_path.as_deref(),
+                Some("/from-file-path/camera.mov"),
+                "blank ActualMediaFilePath {blank:?}"
+            );
+        }
     }
     // Hand-written XML: many pointers share one small caption item and one large payload.
     fn repeated_caption_block(pointers: usize) -> String {
