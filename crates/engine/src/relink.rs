@@ -835,7 +835,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Offline All",
             menu: &[],
             shortcut: None,
-            params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
+            params: r#"{"items":[id]? (Link Media dialog pool; omit for every missing file)}"#,
             enabled: always,
             run: offline_all,
             journal: true,
@@ -844,10 +844,20 @@ pub fn commands() -> Vec<CommandSpec> {
     ]
 }
 
-/// `media.offlineAll`: mark every missing item offline on purpose, so the project remembers the
+/// `media.offlineAll {items?}`: mark missing items offline on purpose, so the project remembers the
 /// choice and reopening it does not ask again (as in Premiere). Relinking clears the mark.
-fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
-    let ids: Vec<ItemId> = s.offline.missing.iter().copied().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline)).collect();
+/// With `items`, only those ids (still missing and not already offline) are marked; the Link Media
+/// dialog passes its active pool so Offline All cannot touch rows outside the dialog.
+fn offline_all(s: &mut Session, p: &Value) -> Result<Value> {
+    let scoped: Option<Vec<ItemId>> = p.get("items").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(ItemId).collect());
+    let ids: Vec<ItemId> = s
+        .offline
+        .missing
+        .iter()
+        .copied()
+        .filter(|i| scoped.as_ref().is_none_or(|want| want.contains(i)))
+        .filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline))
+        .collect();
     if !ids.is_empty() {
         s.edit("Offline All", |proj, _| {
             for i in &ids {
@@ -858,8 +868,10 @@ fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
             Ok(())
         })?;
     }
+    // Dialog closes; missing items outside `items` stay missing (not remembered offline) for a later open.
     s.offline.prompt = false;
-    Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
+    refresh(s);
+    Ok(json!({"offline": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// After a project opens: find missing files and ask for them.

@@ -492,6 +492,22 @@ fn new_offline_file_keeps_only_the_file_name() {
     }
 }
 
+/// Offline All with `items` only marks that pool; siblings outside it stay missing (not Offline).
+#[test]
+fn offline_all_respects_items_scope() {
+    let root = tmp_dir("relink-offline-all-scope");
+    let (path, items) = saved_project(&root);
+    std::fs::remove_dir_all(root.join("Media")).unwrap();
+    let mut s = open(&path);
+    assert_eq!(s.offline.missing.len(), 2);
+    let r = s.execute("media.offlineAll", json!({"items": [items[0].0]})).unwrap();
+    assert_eq!(r["offline"], json!([items[0].0]), "{r}");
+    assert!(s.project.item(items[0]).unwrap().as_media().unwrap().offline);
+    assert!(!s.project.item(items[1]).unwrap().as_media().unwrap().offline, "sibling outside the dialog pool must stay missing");
+    assert!(!s.offline.prompt);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // Offline All must be saved with the project: reopening it should not ask for the files again
 // (Premiere behaves this way). It used to only close the dialog, so every open asked again.
 #[test]

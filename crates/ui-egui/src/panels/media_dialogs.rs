@@ -397,7 +397,9 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             d.candidate = None;
         }
         Some("offlineAll") => {
-            let _ = app.session.execute("media.offlineAll", json!({}));
+            // Scope to the dialog pool (minus skipped); empty pool means the whole missing list.
+            let params = if d.pool.is_empty() { json!({}) } else { json!({"items": others_scope(d)}) };
+            let _ = app.session.execute("media.offlineAll", params);
             keep = false;
         }
         // Cancel leaves the files missing for this session only; the next open asks again.
