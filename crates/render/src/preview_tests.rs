@@ -207,6 +207,11 @@ fn need_classification_none_yellow_red() {
     let ocean_matches = p.item(ocean).unwrap().as_media().unwrap().info.video.as_ref().is_some_and(|v| v.width == 1920 && v.height == 1080);
     let want = if ocean_matches && p.item(ocean).unwrap().frame_rate() == FrameRate::FPS_24 { Need::None } else { Need::Realtime };
     assert_eq!(s[0].need, want);
+    // a matching VP8 (WebM) clip decodes in software only: yellow, so Render Effects In to Out renders it
+    let (mut p, matte, _o, seq) = setup();
+    p.item_mut(matte).unwrap().as_media_mut().unwrap().info.video.as_mut().unwrap().codec = "VP8".into();
+    place(&mut p, seq, 0, matte, 0, 24);
+    assert_eq!(video_segments(&p, seq)[0].need, Need::Realtime);
 }
 
 #[test]

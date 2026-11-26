@@ -23,8 +23,10 @@
 //! # Cost estimate (yellow vs red)
 //! [`Segment::cost_ms`] estimates the milliseconds one frame takes on the playback path, at full
 //! sequence resolution, as the sum over visible layers of:
-//! * **decode**: per source codec at 1080p — H.264 3 ms, HEVC 6 ms, ProRes 2.5 ms, MJPEG 4 ms,
-//!   other files 4 ms, stills/generators 1 ms — scaled by source pixels / 1080p pixels;
+//! * **decode**: per source codec at 1080p — H.264 3 ms, HEVC 6 ms, ProRes 2.5 ms, VP9 6 ms where
+//!   it is decoded in hardware (Apple silicon, Windows) and 30 ms elsewhere, AV1 6 ms in hardware
+//!   (Apple silicon from the M3 on, Windows) and 20 ms elsewhere, VP8 10 ms, MJPEG 4 ms, other files 4 ms, stills/generators
+//!   1 ms — scaled by source pixels / 1080p pixels;
 //! * **CPU layer path**: a layer with standard effects or a non-Normal blend mode leaves the GPU
 //!   fast path and pays 10 ms (1080p) for linear conversion, transform and compositing;
 //! * **effects**: per enabled standard effect, a measured tier cost at 1080p (6 / 20 / 50 ms, see
@@ -36,12 +38,14 @@
 //! A segment is **red** when the estimate exceeds [`REALTIME_BUDGET`] × the frame duration,
 //! **yellow** when it plays in real time but is not "native", and has **no bar** when it is a single
 //! clip with no standard effects, untouched Motion/Opacity, normal speed, and a source whose frame
-//! size and rate match the sequence. Green (a valid preview exists) is decided by the preview
+//! size and rate match the sequence and whose codec is decoded in hardware or fast in software
+//! (not VP8, nor VP9 / AV1 where they are software-only). Green (a valid preview exists) is decided by the preview
 //! store, which knows which hashes have files.
 
 use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, TrackItem, TrackKind, Transition};
 use filmcraft_time::{FrameRate, Tick};
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Bump when the hash layout or the preview format changes (invalidates every preview).
 pub const HASH_VERSION: &str = "filmcraft-preview-v1";
@@ -60,6 +64,24 @@ pub const HASH_VERSION: &str = "filmcraft-preview-v1";
 pub const REALTIME_BUDGET: f64 = 1.5;
 
 const HD_PIXELS: f64 = 1920.0 * 1080.0;
+
+/// Whether this build's platform decodes VP9 / AV1 in hardware (VideoToolbox on Apple silicon,
+/// Media Foundation on Windows).
+const VP9_HW: bool = cfg!(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "windows"));
+// AV1 depends on the machine, not the build: Windows, and on a Mac only the media engine of the M3
+// and later. `filmcraft_platform::register` asks VideoToolbox and records the answer here; until
+// then (or with no platform registered) a Mac counts as decoding AV1 in software.
+static AV1_HW: AtomicBool = AtomicBool::new(cfg!(target_os = "windows"));
+
+/// Record whether this machine decodes AV1 in hardware, for the preview estimate: an M1 / M2 has no
+/// AV1 decoder, so the stream plays in software and needs the software estimate.
+pub fn set_av1_hardware(available: bool) {
+    AV1_HW.store(available, Ordering::Relaxed);
+}
+
+fn av1_hw() -> bool {
+    AV1_HW.load(Ordering::Relaxed)
+}
 
 /// How a segment plays without a preview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -458,6 +480,13 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
                 6.0
             } else if c.contains("prores") {
                 2.5
+            } else if c.contains("vp9") {
+                // the software decoder has no frame threading yet
+                if VP9_HW { 6.0 } else { 30.0 }
+            } else if c.contains("av1") {
+                if av1_hw() { 6.0 } else { 20.0 }
+            } else if c.contains("vp8") {
+                10.0
             } else {
                 // MJPEG and anything else
                 4.0
@@ -521,16 +550,22 @@ fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer]) -> f64 {
     total
 }
 
+/// WebM codecs this platform decodes in software only: too slow to count as native.
+fn slow_codec(codec: &str) -> bool {
+    let c = codec.to_ascii_lowercase();
+    c.contains("vp8") || (c.contains("vp9") && !VP9_HW) || (c.contains("av1") && !av1_hw())
+}
+
 /// A single clip that plays natively: no standard effects, untouched fixed effects, normal speed,
-/// source frame size and rate equal to the sequence's.
+/// source frame size and rate equal to the sequence's, and a codec with fast decoding.
 fn native(project: &Project, seq: &Sequence, it: &TrackItem) -> bool {
     if it.has_standard_effects() || it.has_modified_intrinsics() || (it.speed - 1.0).abs() > 1e-9 || it.reverse || it.frame_hold.is_some() {
         return false;
     }
     match project.item(it.item).map(|p| &p.kind) {
-        Some(ItemKind::Media(m)) => {
-            m.info.video.as_ref().is_some_and(|v| v.width == seq.settings.width && v.height == seq.settings.height && m.frame_rate() == seq.settings.frame_rate)
-        }
+        Some(ItemKind::Media(m)) => m.info.video.as_ref().is_some_and(|v| {
+            v.width == seq.settings.width && v.height == seq.settings.height && m.frame_rate() == seq.settings.frame_rate && !slow_codec(&v.codec)
+        }),
         _ => false,
     }
 }
@@ -566,5 +601,19 @@ impl std::io::Write for Fnv128 {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod av1_tests {
+    #[test]
+    fn av1_counts_as_native_only_where_the_machine_decodes_it_in_hardware() {
+        // an M1 / M2 Mac: software AV1, slow and costed as software
+        super::set_av1_hardware(false);
+        assert!(super::slow_codec("AV1"));
+        // an M3 or later: the hardware decoder
+        super::set_av1_hardware(true);
+        assert!(!super::slow_codec("AV1"));
+        super::set_av1_hardware(cfg!(target_os = "windows"));
     }
 }
