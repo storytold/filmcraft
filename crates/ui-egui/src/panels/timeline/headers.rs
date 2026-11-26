@@ -174,17 +174,11 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         if hrect.height() >= 40.0 {
             p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
-        // track height is zoomed by the side sliders' end circles now: the old header-edge drag
-        // (whose zone for the top video track reached over the A/V divider) kept firing by
-        // accident and broke the sliders
-        let resp = ui.interact(
-            Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
-            egui::Id::unique(("hdr", r.track.0)),
-            Sense::click(),
+        draw_header_resize_controls(
+            app,
+            ui,
+            HeaderResizeInput { seq, row: r, visible, header_rect: hrect, clip_rect, video_clip: vclip, audio_clip: aclip, label: &label },
         );
-        if resp.double_clicked() {
-            toggle_track_height(app, r.kind);
-        }
     }
     // column separator
     ui.painter().line_segment([pos2(rect.min.x + hw - 0.5, vclip.min.y), pos2(rect.min.x + hw - 0.5, aclip.max.y + MASTER_H)], Stroke::new(1.0, t.separator));
@@ -196,6 +190,96 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
     run_track_menu(app, ui, header_menu);
     if let Some(a) = vo_action {
         crate::panels::voiceover::run(app, &ui.ctx().clone(), a);
+    }
+}
+
+struct HeaderResizeInput<'a> {
+    seq: &'a Sequence,
+    row: &'a Row,
+    visible: Rect,
+    header_rect: Rect,
+    clip_rect: Rect,
+    video_clip: Rect,
+    audio_clip: Rect,
+    label: &'a str,
+}
+
+fn draw_header_resize_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, input: HeaderResizeInput<'_>) {
+    let HeaderResizeInput { seq, row: r, visible, header_rect: hrect, clip_rect, video_clip: vclip, audio_clip: aclip, label } = input;
+    // Preserve all three original resize hit zones: each row's bottom, the top of the highest
+    // video row, and the outer bottom of the final audio row. Keep them clipped to their
+    // respective track pane so none can capture input from the A/V divider or the other pane.
+    let header_column = Rect::from_min_max(pos2(hrect.min.x, clip_rect.min.y), pos2(hrect.max.x, clip_rect.max.y));
+    let last_audio = r.kind == TrackKind::Audio && r.index + 1 == seq.audio_tracks.len();
+    let bottom = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 4.0), pos2(hrect.max.x, hrect.max.y + 2.0));
+    let top = (r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len())
+        .then(|| ("resizeTop", Rect::from_min_max(pos2(hrect.min.x, hrect.min.y - 2.0), pos2(hrect.max.x, hrect.min.y + 3.0)).intersect(header_column)));
+    for (name, edge) in std::iter::once(("resize", bottom.intersect(if last_audio { header_column } else { visible }))).chain(top) {
+        if edge.height() <= 0.0 {
+            continue;
+        }
+        let resize = ui.interact(edge, egui::Id::unique(("header-resize", name, r.track.0)), Sense::click_and_drag());
+        app.auto.add(&format!("timeline.track.{label}.{name}"), edge, "Track height");
+        let (height_now, window, slots, height, scroll) = if r.kind == TrackKind::Video {
+            (
+                app.ui.timeline.video_track_h,
+                vclip.height(),
+                seq.video_tracks.len() as f32 + 1.0 / 3.0,
+                &mut app.ui.timeline.video_track_h,
+                &mut app.ui.timeline.v_scroll,
+            )
+        } else {
+            (
+                app.ui.timeline.audio_track_h,
+                aclip.height(),
+                seq.audio_tracks.len() as f32 + 1.0 / 3.0,
+                &mut app.ui.timeline.audio_track_h,
+                &mut app.ui.timeline.a_scroll,
+            )
+        };
+        let min_height = super::scrollbars::track_min_height(window, slots);
+        if resize.ctx.has_accesskit_node(resize.id) {
+            resize.ctx.accesskit_node_builder(resize.id, |node| {
+                node.set_role(egui::accesskit::Role::Slider);
+                node.set_label(tl!("Track height"));
+                node.set_numeric_value(f64::from(height_now));
+                node.set_min_numeric_value(f64::from(min_height));
+                node.set_max_numeric_value(f64::from(220.0f32.max(min_height * 2.0)));
+            });
+        }
+        if resize.hovered() || resize.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resize.clicked() || resize.drag_started() {
+            resize.request_focus();
+        }
+        let keyboard_delta = if resize.has_focus() {
+            ui.input(|input| {
+                if input.key_pressed(egui::Key::ArrowUp) {
+                    -1.0
+                } else if input.key_pressed(egui::Key::ArrowDown) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+        } else {
+            0.0
+        };
+        if resize.dragged() || keyboard_delta != 0.0 {
+            let delta = if resize.dragged() { resize.drag_delta().y } else { keyboard_delta };
+            let dy = if r.kind == TrackKind::Audio { -delta } else { delta };
+            super::scrollbars::resize_tracks_from_timeline(height, scroll, window, slots, (window - 8.0).max(1.0), dy);
+            app.tl.track_anim = None;
+        }
+    }
+    let resp = ui.interact(
+        Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
+        egui::Id::unique(("hdr", r.track.0)),
+        Sense::click(),
+    );
+    if resp.double_clicked() {
+        toggle_track_height(app, r.kind);
     }
 }
 

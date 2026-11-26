@@ -204,6 +204,8 @@ pub fn before_ui(ctx: &Context, frame: &eframe::Frame) {
 /// Last in `logic`: the root window's close path. Quitting with unsaved changes asks to save them first, and the
 /// window stays open while the question shows.
 pub fn close_path(ctx: &Context, app: &mut FilmcraftApp) {
+    crate::panels::timeline::flush_pending_zoombar_view_change(app, ctx);
+    app.sync_timeline_view();
     embed::logic(ctx, || if crate::panels::clip_dialogs::intercept_quit(app) { CloseDecision::Hold } else { CloseDecision::Close });
 }
 

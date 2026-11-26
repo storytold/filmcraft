@@ -375,7 +375,7 @@ impl FilmcraftApp {
     /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
     /// egui `Modal` shown last frame, the Save Project prompt of Quit, Close Project or Open
     /// Project, or a native file dialog. egui's `Modal` blocks input only in the main window, so
-    /// the panels in native windows are disabled meanwhile.
+    /// the dock area blocks its native windows meanwhile.
     pub(crate) fn modal_open(&self, ctx: &egui::Context) -> bool {
         matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
             || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject" | "file.open"))
@@ -466,10 +466,22 @@ impl FilmcraftApp {
             area = area.focus(panel);
         }
         let output = area.show(&mut child);
+        let forwarded_events = if ctx.text_edit_focused() {
+            Vec::new()
+        } else {
+            output
+                .windows
+                .iter()
+                .find_map(|(_, viewport)| ctx.input_for(*viewport, |input| (input.viewport().focused == Some(true)).then(|| input.events.clone())))
+                .unwrap_or_default()
+        };
         let FilmPanels { seq_actions, mut menu, seq_menu_viewport, bodies, pressed, .. } = panels;
         self.dock_specs = specs;
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         self.dock_windows = output.windows;
+        if !forwarded_events.is_empty() {
+            self.handle_forwarded_keys(&ctx, forwarded_events);
+        }
         self.register_dock_sources(&ctx, &output.sources);
         if output.float_space.is_some() {
             self.dock_float_space = output.float_space;
@@ -704,6 +716,18 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
             }
         }
         panels::show(self.app, &mut child, *panel, rect);
+        if let Some(outline_rect) =
+            alternate_slider_outline_rect(*panel, viewport, self.app.session.state.timeline_ui.alternate_slider_position, cx.rect, ui.ctx().viewport_rect())
+        {
+            // The side sliders move to the other edge in Alternate Slider Position. Mark the
+            // Timeline group when docked and its native viewport when floated, so the setting
+            // remains apparent in either layout without outlining the full application window.
+            let painter = ui
+                .ctx()
+                .layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.scope_id().with("timeline-alternate-slider-window-outline")))
+                .with_clip_rect(outline_rect);
+            painter.rect_stroke(outline_rect.shrink(1.0), 0.0, Stroke::new(2.0, t.focus), StrokeKind::Inside);
+        }
         // The end-of-pass IME check of the Program monitor's text editor in its own OS window.
         if *panel == PanelKind::Program && viewport != egui::ViewportId::ROOT {
             self.app.finish_ime_window(ui.ctx());
@@ -761,6 +785,10 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
     }
 }
 
+fn alternate_slider_outline_rect(panel: PanelKind, viewport: egui::ViewportId, enabled: bool, dock_group: Rect, viewport_rect: Rect) -> Option<Rect> {
+    (panel == PanelKind::Timeline && enabled).then_some(if viewport == egui::ViewportId::ROOT { dock_group } else { viewport_rect })
+}
+
 /// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
 /// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
 fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
@@ -785,7 +813,7 @@ mod tests {
     use craft_behavior::dock::{Action, DockEdge, Node, SplitSize, Target};
     use craft_behavior::flow::Axis;
 
-    use super::tab_group;
+    use super::{alternate_slider_outline_rect, tab_group};
     use crate::dock::{Layout, PanelKind};
 
     /// The Timeline beside a dock column holding Properties and Program, that group minimized or
@@ -815,5 +843,17 @@ mod tests {
             {"panel": "Properties", "open": false, "height": null}, {"panel": "Program", "open": false, "height": null}]}}, "floating": []}))
         .unwrap();
         assert_eq!(tab_group(&accordion, PanelKind::Program), None, "an accordion");
+    }
+
+    #[test]
+    fn alternate_slider_outline_follows_the_timeline_group_or_floating_window() {
+        let group = egui::Rect::from_min_max(egui::pos2(20.0, 30.0), egui::pos2(620.0, 430.0));
+        let viewport = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(640.0, 480.0));
+        let floating = egui::ViewportId::from_hash_of("timeline-window");
+
+        assert_eq!(alternate_slider_outline_rect(PanelKind::Timeline, floating, true, group, viewport), Some(viewport));
+        assert_eq!(alternate_slider_outline_rect(PanelKind::Timeline, egui::ViewportId::ROOT, true, group, viewport), Some(group));
+        assert_eq!(alternate_slider_outline_rect(PanelKind::Timeline, floating, false, group, viewport), None);
+        assert_eq!(alternate_slider_outline_rect(PanelKind::Program, floating, true, group, viewport), None);
     }
 }
