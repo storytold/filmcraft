@@ -9,13 +9,24 @@ use crate::Session;
 use crate::media_test_util::{frame_rgba, make_movie, psnr, session_with, tmp_dir};
 
 fn project(root: &std::path::Path) -> (Session, Vec<ItemId>, String) {
+    project_named(root, "a.mov", "b.mov")
+}
+
+fn project_named(root: &std::path::Path, a_name: &str, b_name: &str) -> (Session, Vec<ItemId>, String) {
     let media = root.join("Media");
     std::fs::create_dir_all(&media).unwrap();
     let (a, b, unused) = (media.join("a.mov"), media.join("b.mov"), media.join("unused.mov"));
     make_movie(&a, DemoScene::Aurora, 160, 90, 48);
     make_movie(&b, DemoScene::Dunes, 160, 90, 24);
     make_movie(&unused, DemoScene::Plasma, 160, 90, 12);
-    let (mut s, items, _) = session_with(&[&a, &b]);
+    let (named_a, named_b) = (media.join(a_name), media.join(b_name));
+    if named_a != a {
+        std::fs::rename(&a, &named_a).unwrap();
+    }
+    if named_b != b {
+        std::fs::rename(&b, &named_b).unwrap();
+    }
+    let (mut s, items, _) = session_with(&[&named_a, &named_b]);
     s.execute("file.import", json!({"paths": [unused.to_string_lossy()]})).unwrap();
     // use only frames 20..32 of a (V1 + A1)
     let seq = s.state.active_sequence.unwrap();
@@ -74,11 +85,34 @@ fn collect_files_copies_used_media_and_opens() {
 
 #[test]
 fn consolidate_trims_to_used_ranges_with_handles() {
+    check_consolidation("a.mov", "b.mov", None);
+}
+
+#[cfg(unix)]
+#[test]
+fn consolidate_generated_names_accept_unix_inputs_and_keep_collision_numbering() {
+    check_consolidation("take?:.mov", "take*|.mov", Some("take__"));
+}
+
+#[cfg(unix)]
+#[test]
+fn consolidate_generated_names_preserve_unicode_and_collision_numbering() {
+    check_consolidation("cafe\u{301}-हिन्दी%🎬?.mov", "cafe\u{301}-हिन्दी%🎬*.mov", Some("cafe\u{301}-हिन्दी%🎬_"));
+}
+
+fn check_consolidation(a_name: &str, b_name: &str, generated_stem: Option<&str>) {
     let root = tmp_dir("pm-consolidate");
-    let (mut s, items, _) = project(&root);
+    let (mut s, items, _) = project_named(&root, a_name, b_name);
+    let sources = [root.join("Media").join(a_name), root.join("Media").join(b_name)];
+    let original = sources.each_ref().map(|p| std::fs::read(p).unwrap());
     let frames = [0i64, 5, 11, 12, 20, 35];
     let before: Vec<Vec<u8>> = frames.iter().map(|f| frame_rgba(&mut s, *f, 1.0).2).collect();
     let dest = root.join("Consolidated");
+    let existing = dest.join(format!("{}.mov", generated_stem.unwrap_or("existing")));
+    if generated_stem.is_some() {
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(&existing, b"existing output must survive").unwrap();
+    }
     let r = s
         .execute(
             "file.projectManager",
@@ -92,6 +126,19 @@ fn consolidate_trims_to_used_ranges_with_handles() {
     assert!(r["resultBytes"].as_u64().unwrap() > 0);
     let jobs = s.execute("jobs.list", json!({})).unwrap();
     assert!(jobs[0]["result"].get("error").is_none(), "{jobs}");
+    if let Some(stem) = generated_stem {
+        let outputs: std::collections::BTreeSet<_> = r["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| std::path::Path::new(f["to"].as_str().unwrap()).file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(outputs, [format!("{stem} 2.mov"), format!("{stem} 3.mov")].into());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"existing output must survive");
+    }
+    for (path, bytes) in sources.iter().zip(&original) {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes, "source changed: {}", path.display());
+    }
     let mut t = opened(r["project"].as_str().unwrap());
     let a = t.project.item(items[0]).unwrap().as_media().unwrap().clone();
     assert_eq!(a.info.duration, rate.tick_of(20), "a.mov now holds only the used range");
