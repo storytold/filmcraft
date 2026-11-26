@@ -478,6 +478,8 @@ fn from_media(m: &shared::MediaClip, ext: &shared::Ext) -> Result<film::MediaCli
                 channels: a.channels,
                 codec: String::new(),
                 bits_per_sample: a.bits_per_sample,
+                // the shared timeline model has no such flag: as in project files without it
+                decodable: true,
             });
             out.sample_rate = a.sample_rate;
             out.channels = a.channels;

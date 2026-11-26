@@ -51,6 +51,7 @@ impl WavSource {
                 channels: u32::from(wav.channels),
                 codec: if wav.float { "PCM float".into() } else { "PCM".into() },
                 bits_per_sample: Some(u32::from(wav.bits)),
+                decodable: true,
             }],
             container: if wav.time_reference.is_some() { "Broadcast WAV".into() } else { "WAV".into() },
             start_timecode: None,
@@ -69,6 +70,22 @@ impl WavSource {
     pub fn time_reference(&self) -> Option<u64> {
         self.wav.time_reference
     }
+}
+
+/// Sample `ch` of frame `frame` of `block` (whole frames from `WavRange::read_frames`).
+/// craft-audio opens 64-bit integer PCM but has no conversion for it (it reads as silence), and
+/// the stream is listed as decodable, so that one format is converted here (#2758).
+fn sample(wav: &craft_audio::wav_range::WavRange<Reader>, block: &[u8], frame: usize, ch: usize) -> f32 {
+    if wav.bits != 64 || wav.float {
+        return wav.sample(block, frame, ch);
+    }
+    let channels = usize::from(wav.channels);
+    if ch >= channels {
+        return 0.0;
+    }
+    let bytes = frame.checked_mul(channels).and_then(|v| v.checked_add(ch)).and_then(|v| v.checked_mul(8)).and_then(|o| block.get(o..o.checked_add(8)?));
+    let Some(Ok(bytes)) = bytes.map(<[u8; 8]>::try_from) else { return 0.0 };
+    (i64::from_le_bytes(bytes) as f64 / 9_223_372_036_854_775_808.0) as f32
 }
 
 fn wav_error(name: &str, error: craft_audio::AudioError) -> MediaError {
@@ -128,8 +145,8 @@ impl MediaSource for WavSource {
                 };
                 let (k0, k1) = ((i0 - base) as usize, (i1 - base) as usize);
                 for c in 0..usize::from(self.wav.channels) {
-                    let a = self.wav.sample(&buf, k0, c);
-                    let b = self.wav.sample(&buf, k1, c);
+                    let a = sample(&self.wav, &buf, k0, c);
+                    let b = sample(&self.wav, &buf, k1, c);
                     if let Some(s) = out.channels.get_mut(c).and_then(|ch| ch.get_mut(slot)) {
                         *s = a + (b - a) * fr;
                     }
@@ -167,6 +184,32 @@ mod tests {
         assert_eq!(src.info().duration, Tick::from_units(100, 48000));
         assert_eq!(src.time_reference(), None);
         assert_eq!(src.info().start_timecode, None);
+    }
+
+    #[test]
+    fn integer_pcm_64_plays_instead_of_silence() {
+        let samples = [0.5f64, -0.25, 0.0, 1.0 - 1e-9];
+        let mut v = Vec::new();
+        let data: Vec<u8> = samples.iter().flat_map(|x| ((x * 9_223_372_036_854_775_808.0) as i64).to_le_bytes()).collect();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes()); // integer PCM
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&48_000u32.to_le_bytes());
+        v.extend_from_slice(&(48_000u32 * 8).to_le_bytes());
+        v.extend_from_slice(&8u16.to_le_bytes());
+        v.extend_from_slice(&64u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(&data);
+        let src = WavSource::parse("int64.wav", v.into()).unwrap();
+        assert!(src.info().audio().unwrap().can_decode());
+        let a = src.audio(0, 4, 48_000).unwrap();
+        for (got, want) in a.channels[0].iter().zip(samples) {
+            assert!((f64::from(*got) - want).abs() < 1e-6, "{got} vs {want}");
+        }
     }
 
     #[test]
