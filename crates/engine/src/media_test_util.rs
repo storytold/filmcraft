@@ -22,7 +22,12 @@ pub fn tmp_dir(name: &str) -> PathBuf {
 /// Write a `frames`-frame `w`×`h` 24 fps movie of a demo scene (with its audio) to `path`.
 /// `.mov` = ProRes 422 HQ + PCM, `.mp4` = H.264 + AAC.
 pub fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
-    let rate = FrameRate::FPS_24;
+    make_movie_at(path, scene, w, h, FrameRate::FPS_24, frames, 0);
+}
+
+/// [`make_movie`] at `rate`, whose first frame is at timecode `start_tc` (frames at `rate`). Only
+/// `.mxf` (OP1a, ProRes + PCM) records it: MOV and MP4 exports write no timecode track.
+pub fn make_movie_at(path: &Path, scene: DemoScene, w: u32, h: u32, rate: FrameRate, frames: i64, start_tc: i64) {
     let dur = rate.tick_of(frames);
     let src = GeneratorSource::new(Generator::Demo(scene), w, h, rate, dur);
     let info = src.info().clone();
@@ -49,8 +54,19 @@ pub fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
     let q = p.sequence_mut(seq).unwrap();
     q.video_tracks[0].items.push(v);
     q.audio_tracks[0].items.push(a);
-    let fmt = if path.extension().is_some_and(|e| e == "mp4") { filmcraft_export::Format::H264 } else { filmcraft_export::Format::ProRes };
-    let settings = filmcraft_export::ExportSettings { format: fmt, path: path.to_string_lossy().into_owned(), bitrate_kbps: 4000, ..Default::default() };
+    q.start_timecode = start_tc;
+    let fmt = match path.extension().and_then(|e| e.to_str()) {
+        Some("mp4") => filmcraft_export::Format::H264,
+        Some("mxf") => filmcraft_export::Format::MxfOp1a,
+        _ => filmcraft_export::Format::ProRes,
+    };
+    let settings = filmcraft_export::ExportSettings {
+        format: fmt,
+        path: path.to_string_lossy().into_owned(),
+        bitrate_kbps: 4000,
+        mxf_video_codec: filmcraft_export::MxfVideoCodec::ProRes,
+        ..Default::default()
+    };
     let shared: filmcraft_media::SharedSource = Arc::new(src);
     let provider = move |id: ItemId| (id == item).then(|| shared.clone());
     filmcraft_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();

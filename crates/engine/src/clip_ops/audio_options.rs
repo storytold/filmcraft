@@ -32,6 +32,9 @@ pub(super) fn breakout_to_mono(s: &mut Session, p: &Value) -> Result<Value> {
                 mm.markers.clear();
                 mm.proxy = None;
                 let id = pr.add_item(&format!("{} {suffix}", it.name), it.label, ItemKind::Media(Box::new(mm)), bin);
+                if let Some(copy) = pr.item_mut(id) {
+                    copy.custom_label_color = it.custom_label_color;
+                }
                 made.push(id);
             }
         }

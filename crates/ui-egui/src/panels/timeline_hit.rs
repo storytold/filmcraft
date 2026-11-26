@@ -79,6 +79,10 @@ pub fn marker_rect(layout: &Layout, start: Tick) -> Rect {
     Rect::from_center_size(pos2(layout.x_of(start), layout.ruler.min.y + 8.0), vec2(10.0, 13.0))
 }
 
+pub fn marker_end_rect(layout: &Layout, marker: &filmcraft_project::Marker) -> Option<Rect> {
+    (marker.duration > Tick::ZERO).then(|| marker_rect(layout, marker.start + marker.duration))
+}
+
 /// The visible duration band, shared by painting and hit testing (#1143).
 pub fn marker_range_rect(layout: &Layout, marker: &filmcraft_project::Marker) -> Option<Rect> {
     (marker.duration > Tick::ZERO).then(|| {
@@ -93,7 +97,11 @@ pub fn marker_under_pointer<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -
     if !layout.ruler.contains(pos) {
         return None;
     }
-    seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(pos) || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos)))
+    seq.markers.iter().rev().find(|m| {
+        marker_rect(layout, m.start).contains(pos)
+            || marker_end_rect(layout, m).is_some_and(|r| r.contains(pos))
+            || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos))
+    })
 }
 
 /// A press on a marker puts the playhead on its start for Clear Selected Marker (#695).
@@ -131,7 +139,18 @@ pub fn transition_top(row: Rect) -> f32 {
     if row.height() < 50.0 { row.min.y + 1.0 } else { row.min.y + 17.0 }
 }
 
+/// Primary hit testing includes the outer edge margins used to grab a trim handle.
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
+    hit_with_outer_edges(seq, layout, pos, true)
+}
+
+/// Context menus target the visible gap rather than a neighbouring clip's outer trim margin.
+/// Exact edges and points inside clips still select their edit points.
+pub fn hit_secondary(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
+    hit_with_outer_edges(seq, layout, pos, false)
+}
+
+fn hit_with_outer_edges(seq: &Sequence, layout: &Layout, pos: Pos2, allow_outer: bool) -> Hit {
     if layout.ruler.contains(pos) {
         if let Some(edge) = work_area_at(seq, layout, pos) {
             return Hit::WorkArea { edge };
@@ -159,7 +178,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
             return Hit::Transition { track: row.track, id: trn.id, edge };
         }
     }
-    if let Some((clip, edge)) = edge_at(tr, layout, pos.x) {
+    if let Some((clip, edge)) = edge_at(tr, layout, pos.x, allow_outer) {
         return Hit::Clip { track: row.track, clip, edge: Some(edge) };
     }
     match tr.item_at(layout.tick_at(pos.x)) {
@@ -203,14 +222,15 @@ fn zone(w: f32) -> Option<f32> {
 }
 
 /// The clip edge on `tr` a pointer at `x` grabs (#259), whatever the order of `tr.items`.
-fn edge_at(tr: &Track, layout: &Layout, x: f32) -> Option<(ClipId, Edge)> {
+fn edge_at(tr: &Track, layout: &Layout, x: f32, allow_outer: bool) -> Option<(ClipId, Edge)> {
     let mut best: Option<Reach> = None;
     for it in &tr.items {
         let (x0, x1) = (layout.x_of(it.start), layout.x_of(it.end()));
         let Some(e) = zone(x1 - x0) else { continue };
         // the pointer's distance into the clip from each of its edges
         for (edge, d) in [(Edge::In, x - x0), (Edge::Out, x1 - x)] {
-            if !(-e..=e).contains(&d) {
+            let min_d = if allow_outer { -e } else { 0.0 };
+            if !(min_d..=e).contains(&d) {
                 continue;
             }
             let r = Reach { clip: it.id, edge, inside: d >= 0.0, dist: d.abs() };
@@ -329,7 +349,7 @@ fn roll(seq: &Sequence, track: TrackId, clip: ClipId, edge: Edge) -> EdgeKind {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use egui::{Rect, pos2};
     use filmcraft_project::{ItemId, Label, Project, SequenceSettings, TrackItem, TrackKind};
@@ -341,8 +361,9 @@ mod tests {
     const TOP: f32 = 100.0;
 
     /// A clip on screen from `x0` to `x1` px (the layout is 100 px per second).
-    fn clip(id: u64, x0: f64, x1: f64) -> TrackItem {
+    pub(crate) fn clip(id: u64, x0: f64, x1: f64) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: format!("c{id}"),
@@ -363,6 +384,7 @@ mod tests {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
@@ -477,6 +499,9 @@ mod tests {
         let (mut seq, l, _) = fixture(clips());
         let off = Tick::from_seconds_f64(3.017);
         seq.markers.push(filmcraft_project::Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: filmcraft_project::MarkerId(9),
             start: off,
             duration: Tick::ZERO,
@@ -497,6 +522,9 @@ mod tests {
         let (mut seq, layout, _) = fixture(clips());
         for id in [9, 10] {
             seq.markers.push(filmcraft_project::Marker {
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
                 id: filmcraft_project::MarkerId(id),
                 start: Tick::from_seconds_f64(3.0),
                 duration: Tick::from_seconds_f64(2.0),
@@ -510,10 +538,15 @@ mod tests {
         let at = band.center();
         assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 10);
         assert_eq!(marker_at(&seq, &layout, at), Some(seq.markers[1].start));
+        let end = marker_end_rect(&layout, &seq.markers[1]).unwrap();
+        let cap = pos2(end.center().x + 3.0, end.bottom() - 2.0);
+        assert!(!band.contains(cap));
+        assert_eq!(marker_under_pointer(&seq, &layout, cap).unwrap().id.0, 10, "the end flag outside the range band belongs to the same marker");
         assert!(marker_under_pointer(&seq, &layout, at + vec2(0.0, 20.0)).is_none());
         assert!(marker_under_pointer(&seq, &layout, pos2(f32::NAN, at.y)).is_none());
         seq.markers[1].duration = Tick(-1);
         assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
+        assert!(marker_end_rect(&layout, &seq.markers[1]).is_none());
         assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
     }
 
@@ -604,5 +637,20 @@ mod tests {
         let (seq, l, tr) = fixture(clips());
         assert_eq!(grab(&seq, &l, Tool::Selection, 303.0, Modifiers::NONE, false).hit(), edge_hit(tr, 2, Edge::In));
         assert_eq!(grab(&seq, &l, Tool::Razor, 303.0, Modifiers::NONE, false).hit(), edge_hit(tr, 2, Edge::In));
+    }
+
+    #[test]
+    fn secondary_hit_keeps_narrow_gaps_outside_trim_handles() {
+        let (seq, l, tr) = fixture(clips());
+        assert_eq!(hit(&seq, &l, at(501.0)), edge_hit(tr, 2, Edge::Out));
+        assert_eq!(hit(&seq, &l, at(503.0)), edge_hit(tr, 3, Edge::In));
+        for x in [501.0, 502.0, 503.0, 99.0, 810.0] {
+            assert_eq!(hit_secondary(&seq, &l, at(x)), Hit::Empty { track: tr }, "x = {x}");
+        }
+        for (x, clip, edge) in [(297.0, 1, Edge::Out), (300.0, 2, Edge::In), (303.0, 2, Edge::In), (500.0, 2, Edge::Out), (504.0, 3, Edge::In)] {
+            assert_eq!(hit_secondary(&seq, &l, at(x)), edge_hit(tr, clip, edge), "x = {x}");
+        }
+        assert_eq!(hit_secondary(&seq, &l, pos2(300.0, 30.0)), Hit::Ruler);
+        assert_eq!(hit_secondary(&seq, &l, pos2(f32::NAN, TOP + 10.0)), Hit::None);
     }
 }

@@ -15,7 +15,7 @@ use filmcraft_project::{
     AudioChannels, ClipId, Interpolation, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, MediaRef, Param, ParamValue, Project, Sequence,
     Track, TrackItem, TrackKind, Transition, TransitionAlign, TransitionId, find_effect,
 };
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
+use filmcraft_time::{FrameRate, Tick};
 
 use crate::common::{Builder, MediaSpec, base_item, db_to_gain, file_name, file_stem, gain_to_db, param, set_param, settings_for, transition_effect};
 use crate::essence::{EssenceData, EssenceKey, MediaOptions};
@@ -81,16 +81,6 @@ pub(crate) enum CItem {
     Filler(Tick),
     Clip(CClip),
     Transition(CTransition),
-}
-
-impl CItem {
-    pub fn len(&self) -> Tick {
-        match self {
-            CItem::Filler(l) => *l,
-            CItem::Clip(c) => c.len,
-            CItem::Transition(t) => t.len,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -287,12 +277,12 @@ impl Exporter<'_> {
                 for c in 0..ch {
                     n += 1;
                     let items = self.track(t, TrackKind::Audio, Some(c));
-                    comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: 1, items });
+                    comp.tracks.push(CTrack { kind: CKind::Sound, name: audio_track_name(&t.name, n, ch, Some(c)), number: n, channels: 1, items });
                 }
             } else {
                 n += 1;
                 let items = self.track(t, TrackKind::Audio, None);
-                comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: ch, items });
+                comp.tracks.push(CTrack { kind: CKind::Sound, name: audio_track_name(&t.name, n, ch, None), number: n, channels: ch, items });
             }
         }
         self.seq_rate = outer_rate;
@@ -653,6 +643,9 @@ fn marker_out(m: &Marker) -> CMarker {
 
 fn marker_in(b: &mut Builder, m: &CMarker) -> Marker {
     Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: MarkerId(b.alloc()),
         start: m.start,
         duration: m.duration,
@@ -758,7 +751,7 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
             extracted.push(ExtractedMedia {
                 item: id,
                 path: resolved.clone(),
-                wav: crate::wav::wav_file(data, s.file_channels.max(1) as u16, s.sample_rate, s.bits),
+                wav: crate::wav::wav_file(data, u16::try_from(s.file_channels.max(1)).unwrap_or(u16::MAX), s.sample_rate, s.bits),
             });
         }
         for &i in members {
@@ -813,6 +806,14 @@ fn build_sequence(
         let kind = if t.kind == CKind::Picture { TrackKind::Video } else { TrackKind::Audio };
         let idx = seq.tracks(kind).len();
         let mut track = b.track(kind, idx);
+        // A name of its own (not the numbered `A1` / `V1` a writer gives an unnamed track) is
+        // kept: a sound editor's tracks are named after what they hold.
+        let name = t.name.trim();
+        let mut chars = name.chars();
+        let numbered = matches!(chars.next(), Some('A' | 'V')) && !chars.as_str().is_empty() && chars.all(|c| c.is_ascii_digit());
+        if !name.is_empty() && !numbered {
+            track.name = name.to_string();
+        }
         if kind == TrackKind::Audio {
             track.channels = match t.channels {
                 1 => AudioChannels::Mono,
@@ -990,29 +991,19 @@ fn link_clips(b: &mut Builder, seq: &mut Sequence) {
 /// The largest time read from a document (about 3.3 days).
 pub(crate) const MAX_TIME: Tick = Tick(1 << 56);
 
-/// Ticks of `n` edit units at rate `num/den` (rounded to the nearest tick).
-pub(crate) fn units_to_ticks(n: i64, num: i64, den: i64) -> Tick {
-    if num <= 0 || den <= 0 {
-        return Tick::ZERO;
-    }
-    let t = n as i128 * den as i128 * TICKS_PER_SECOND as i128;
-    let q = t.div_euclid(num as i128);
-    let r = t.rem_euclid(num as i128);
-    // documents are untrusted: keep every time far from overflow (±3 days)
-    Tick((q + if r * 2 >= num as i128 { 1 } else { 0 }).clamp(-MAX_TIME.0 as i128, MAX_TIME.0 as i128) as i64)
-}
-
-/// Edit units at rate `num/den` nearest to `t`; the flag is false when `t` is not on a unit.
-pub(crate) fn ticks_to_units(t: Tick, num: i64, den: i64) -> (i64, bool) {
-    if num <= 0 || den <= 0 {
-        return (0, false);
-    }
-    let x = t.0 as i128 * num as i128;
-    let d = den as i128 * TICKS_PER_SECOND as i128;
-    let q = x.div_euclid(d);
-    let r = x.rem_euclid(d);
-    let n = q + if r * 2 >= d { 1 } else { 0 };
-    (n.clamp(i64::MIN as i128, i64::MAX as i128) as i64, r == 0)
+/// The name an exported audio track gets: the track's own name (what an editor called it, e.g.
+/// a role such as `Dialogue.Dialogue-1`, which is what a sound editor's DAW shows), else `A<n>`;
+/// a track broken out to mono gets its channel after it (`L` / `R`, the 5.1 names, or a number).
+fn audio_track_name(name: &str, n: u32, channels: u32, channel: Option<u32>) -> String {
+    let base = if name.trim().is_empty() { format!("A{n}") } else { name.trim().to_string() };
+    let Some(c) = channel.filter(|_| channels > 1 && !name.trim().is_empty()) else { return base };
+    let label = match (channels, c) {
+        (2, 0) => "L".to_string(),
+        (2, 1) => "R".to_string(),
+        (6, k) => ["L", "R", "C", "LFE", "Ls", "Rs"].get(k as usize).map_or_else(|| (k + 1).to_string(), |s| (*s).to_string()),
+        (_, k) => (k + 1).to_string(),
+    };
+    format!("{base} {label}")
 }
 
 #[cfg(test)]

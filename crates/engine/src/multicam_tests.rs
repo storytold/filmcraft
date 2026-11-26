@@ -219,6 +219,9 @@ fn timecode_marker_and_in_point_sync_within_one_frame() {
     for (it, t) in [(items[0], rate.tick_of(event_frame_a)), (items[1], rate.snap(at_b))] {
         let m = p.item_mut(it).unwrap().as_media_mut().unwrap();
         m.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(900 + it.0),
             start: t,
             duration: Tick::ZERO,
@@ -458,7 +461,14 @@ fn multicam_clip_structure_and_render() {
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let edit_id = s.state.active_sequence.unwrap();
     let t10 = FrameRate::FPS_24.tick_of(10);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, edit_id, t10, filmcraft_render::RenderOptions::default(), &provider);
+    let plan = filmcraft_render::plan::plan_frame(
+        &s.project,
+        edit_id,
+        t10,
+        filmcraft_render::RenderOptions::default(),
+        filmcraft_render::plan::DeviceCaps::ALL,
+        &provider,
+    );
     match &plan {
         filmcraft_render::plan::FramePlan::Layers { layers, .. } => {
             assert_eq!(layers.len(), 1);

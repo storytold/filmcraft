@@ -1,9 +1,9 @@
 //! Geometry and reachability checks against the production monitor renderer.
 
+use crate::support::demo_session;
 use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::{
     FilmcraftApp,
     panels::monitor::{self, Which},
@@ -16,8 +16,7 @@ fn harness(width: f32, kind: ThemeKind, which: Which) -> Harness<'static, Filmcr
 }
 
 fn harness_at_scale(width: f32, kind: ThemeKind, which: Which, scale: f32) -> Harness<'static, FilmcraftApp> {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut session = demo_session();
     session.execute("source.open", json!({"item":5})).unwrap();
     let mut h = Harness::builder().with_size(vec2(width, 340.0)).with_pixels_per_point(scale).build_ui_state(
         move |ui, app: &mut FilmcraftApp| {

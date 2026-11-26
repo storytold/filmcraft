@@ -1,58 +1,15 @@
 //! Headless UI tests of the Edit Marker dialog (#3023): double-clicking a marker on the Timeline
 //! ruler opens it, OK applies the fields in one undo step, Cancel changes nothing.
 
-use std::sync::mpsc::{Sender, channel};
+use crate::support::{Drive, Launch, builder, demo_session, driver};
+use serde_json::json;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
+        Self::open(demo_session(), builder().with_step_dt(1.0 / 60.0))
     }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
     fn has_element(&mut self, id: &str) -> bool {
         self.ok("ui.elements", json!({"prefix": id})).as_array().is_some_and(|v| v.iter().any(|e| e["id"] == id))
     }
@@ -86,15 +43,15 @@ fn double_clicking_a_marker_opens_the_dialog_and_ok_applies_the_fields() {
     let mut d = Driver::demo();
     let id = d.setup();
     let undo_before = d.harness.state().session.history.undo.len();
-    assert!(!d.has_element("timeline.markerDialog.ok"), "no dialog before the double-click");
+    assert!(!d.has_element("markerProperties.apply"), "no dialog before the double-click");
     d.click(&format!("timeline.marker.{id}"), 1);
-    assert!(!d.has_element("timeline.markerDialog.ok"), "one click only moves the playhead");
+    assert!(!d.has_element("markerProperties.apply"), "one click only moves the playhead");
     d.click(&format!("timeline.marker.{id}"), 2);
-    assert!(d.has_element("timeline.markerDialog.ok"), "a double-click opens Edit Marker");
-    d.type_into("timeline.markerDialog.name", "Renamed");
-    d.type_into("timeline.markerDialog.comment", "A note");
-    d.click("timeline.markerDialog.ok", 1);
-    assert!(!d.has_element("timeline.markerDialog.ok"), "OK closes the dialog");
+    assert!(d.has_element("markerProperties.apply"), "a double-click opens Edit Marker");
+    d.type_into("markerProperties.name", "Renamed");
+    d.type_into("markerProperties.comment", "A note");
+    d.click("markerProperties.apply", 1);
+    assert!(!d.has_element("markerProperties.apply"), "OK closes the dialog");
     let m = d.marker(id);
     assert_eq!((m.name.as_str(), m.comment.as_str()), ("Renamed", "A note"));
     assert_eq!(d.harness.state().session.history.undo.len(), undo_before + 1, "one OK is one undo step");
@@ -106,9 +63,9 @@ fn cancel_leaves_the_marker_alone() {
     let id = d.setup();
     let before = d.marker(id);
     d.click(&format!("timeline.marker.{id}"), 2);
-    d.type_into("timeline.markerDialog.name", "Nope");
-    d.click("timeline.markerDialog.cancel", 1);
-    assert!(!d.has_element("timeline.markerDialog.cancel"));
+    d.type_into("markerProperties.name", "Nope");
+    d.click("markerProperties.cancel", 1);
+    assert!(!d.has_element("markerProperties.cancel"));
     assert_eq!(d.marker(id), before);
 }
 
@@ -130,8 +87,8 @@ fn ok_keeps_a_duration_that_was_not_edited() {
             })
             .expect("set the duration");
         d.click(&format!("timeline.marker.{id}"), 2);
-        d.type_into("timeline.markerDialog.name", "Renamed");
-        d.click("timeline.markerDialog.ok", 1);
+        d.type_into("markerProperties.name", "Renamed");
+        d.click("markerProperties.apply", 1);
         let m = d.marker(id);
         assert_eq!((m.name.as_str(), m.duration), ("Renamed", want), "only the name changed");
     }

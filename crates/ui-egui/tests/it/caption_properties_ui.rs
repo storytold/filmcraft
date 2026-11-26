@@ -1,44 +1,12 @@
 //! The Properties panel edits the selected caption (#1846): an imported SRT caption picked in the
 //! timeline shows its text and in/out times there, and editing the text changes the caption.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).expect("control channel");
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
     fn ids(&mut self, prefix: &str) -> Vec<String> {
         self.frames(2);
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
@@ -57,13 +25,7 @@ fn properties_panel_edits_the_selected_caption() {
     let srt = dir.join("two.srt");
     std::fs::write(&srt, "1\n00:00:01,000 --> 00:00:02,500\nFirst line\n\n2\n00:00:03,000 --> 00:00:04,000\nSecond line\n").expect("write srt");
 
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).expect("demo project");
-    let (tx, rx) = channel();
-    let app = FilmcraftApp::new(session).with_control(rx);
-    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-    let mut d = Driver { harness, tx };
-    d.frames(4);
+    let mut d = Driver::open(demo_session(), builder());
     d.exec("captions.import", json!({"path": srt.to_string_lossy()}));
     let caps = d.captions();
     assert_eq!(caps.len(), 2, "{caps:?}");

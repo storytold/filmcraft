@@ -442,6 +442,14 @@ pub struct KeyframeRef {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
+    pub markers_panel: crate::panels::markers_panel::State,
+    #[serde(skip)]
+    pub palette_manager: Option<crate::panels::palette_manager::Draft>,
+    #[serde(skip)]
+    pub marker_properties: Option<crate::panels::marker_properties::Draft>,
+    #[serde(skip)]
+    pub custom_label_color: Option<crate::panels::custom_colors::Draft>,
+    #[serde(default)]
     pub language: crate::i18n::Language,
     pub tool: Tool,
     pub mode: Mode,
@@ -463,7 +471,7 @@ pub struct UiState {
     pub expanded_bins: Vec<u64>,
     /// Expanded folders in the Effects panel.
     pub expanded_fx: Vec<String>,
-    /// Effects panel: the Lumetri Presets folder shown as a thumbnail grid (wide panel).
+    /// Effects panel: the Color Grading Presets folder shown as a thumbnail grid (wide panel).
     #[serde(default)]
     pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
@@ -480,8 +488,18 @@ pub struct UiState {
     #[serde(default = "shown")]
     pub show_status_bar: bool,
     pub dark: bool,
-    /// Lumetri scopes visible in the Program monitor area.
+    /// Color Grading scopes visible in the Program monitor area.
     pub show_scopes: bool,
+    /// Cinema mode: the Program monitor fills the whole window and the cursor is hidden. Only
+    /// `view.fullScreenProgram` turns it on, so it is not part of the saved state.
+    #[serde(skip)]
+    pub fullscreen_program: bool,
+    /// The window was already fullscreen before cinema mode started.
+    #[serde(skip)]
+    pub cinema_was_fullscreen: bool,
+    /// The panel that had focus before cinema mode started.
+    #[serde(skip)]
+    pub cinema_prev_focus: Option<PanelKind>,
     /// Transient status line shown in the footer.
     pub status: String,
     /// A link the web browser couldn't open, shown with its address until closed
@@ -593,9 +611,6 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
-    /// Open Edit Marker dialog (double-click a marker, or Edit Marker… in its menu).
-    #[serde(default)]
-    pub marker_dialog: Option<MarkerDraft>,
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
@@ -614,7 +629,7 @@ pub struct UiState {
     /// `panels::graphics_templates`.
     #[serde(default)]
     pub gfx_templates: crate::panels::graphics_templates::GfxTemplatesState,
-    /// Lumetri Scopes, Timecode, Events, Progress and Reference Monitor settings. See
+    /// Video Scopes, Timecode, Events, Progress and Reference Monitor settings. See
     /// `panels::panel_state`.
     #[serde(default)]
     pub panels: crate::panels::panel_state::PanelsState,
@@ -821,25 +836,6 @@ pub enum ColorDialog {
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
 
-/// The Edit Marker dialog (#2416): the marker it edits and its fields as typed. `duration` is a
-/// timecode, `color` a label name, `kind` a `markers.edit` kind. `sequence` and `generation` (the
-/// session's `document_epoch`) tie it to where it was opened: in another project, or the same
-/// file opened again, the same marker id is another marker. `duration0` is the duration as the dialog opened, so OK leaves a duration it
-/// cannot show exactly (part of a frame) alone unless it was edited.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct MarkerDraft {
-    pub sequence: u64,
-    pub generation: u64,
-    pub duration0: String,
-    pub marker: u64,
-    pub name: String,
-    pub comment: String,
-    pub duration: String,
-    pub color: String,
-    pub kind: String,
-}
-
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -899,6 +895,8 @@ pub struct SequenceSettingsDraft {
     /// File ▸ New ▸ Sequence…: the dialog makes a new sequence (`file.newSequence`) with these
     /// settings and `video_tracks` / `audio_tracks` tracks, instead of changing the active one.
     pub new_sequence: bool,
+    /// New Sequence: the bin the Project panel was showing, which the new sequence lands in.
+    pub bin: Option<u64>,
     pub video_tracks: u32,
     pub audio_tracks: u32,
     pub fps_num: i64,
@@ -907,6 +905,8 @@ pub struct SequenceSettingsDraft {
     pub height: u32,
     pub scale_motion: bool,
     pub drop_frame: bool,
+    /// Video Display Format: Timecode, Feet + Frames 35mm / 16mm or Frames.
+    pub display: filmcraft_time::TimeDisplay,
     pub mix: String,
     pub sample_rate: u32,
     pub max_render_quality: bool,
@@ -921,6 +921,7 @@ impl Default for SequenceSettingsDraft {
             tab: "general".into(),
             name: String::new(),
             new_sequence: false,
+            bin: None,
             video_tracks: 3,
             audio_tracks: 3,
             fps_num: 24_000,
@@ -929,6 +930,7 @@ impl Default for SequenceSettingsDraft {
             height: 1080,
             scale_motion: true,
             drop_frame: false,
+            display: filmcraft_time::TimeDisplay::Timecode,
             mix: "Stereo".into(),
             sample_rate: 48_000,
             max_render_quality: false,
@@ -1005,6 +1007,10 @@ fn yes() -> bool {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            marker_properties: None,
+            markers_panel: Default::default(),
+            palette_manager: None,
+            custom_label_color: None,
             language: crate::i18n::Language::default(),
             tool: Tool::Selection,
             mode: Mode::Edit,
@@ -1063,7 +1069,6 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
-            marker_dialog: None,
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
@@ -1073,6 +1078,9 @@ impl Default for UiState {
             keys: Default::default(),
             project_panel: Default::default(),
             media_browser: Default::default(),
+            fullscreen_program: false,
+            cinema_was_fullscreen: false,
+            cinema_prev_focus: None,
         }
     }
 }

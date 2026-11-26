@@ -9,95 +9,29 @@
 
 #![allow(dead_code)]
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, build, builder, demo_footage, demo_session, driver, f32x4, snapshot_dir, with_snapshots};
 use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_engine::project_panel::{FREEFORM_POS, FREEFORM_STACK, ViewMode};
 use filmcraft_project::{BinEntry, ItemId};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn with(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(session, with_snapshots(builder()))
     }
-
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         Self::with(session)
     }
 
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        self.ids(id).iter().any(|i| i == id)
-    }
-
     fn rect(&mut self, id: &str) -> [f32; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r = &e["rect"];
-        [r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32]
+        f32x4(self.expect_rect(id))
     }
 
     fn label(&mut self, id: &str) -> String {
@@ -105,46 +39,18 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered, for at most two minutes of wall-clock time.
-    fn wait_for(&mut self, id: &str) {
-        let t0 = std::time::Instant::now();
-        while t0.elapsed().as_secs() < 120 {
-            if self.has(id) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            self.frames(1);
-        }
-        panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap()));
-    }
-
     fn key(&mut self, key: &str) {
         self.ok("ui.key", json!({"key": key}));
         self.frames(2);
     }
 
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     /// The demo's Footage bin and its media items.
     fn footage(&mut self) -> (u64, Vec<u64>) {
-        let p = &self.app().session.project;
-        let bin = p
-            .root
-            .children
-            .iter()
-            .find_map(|e| match e {
-                BinEntry::Bin(b) if b.name == "Footage" => Some(b.clone()),
-                _ => None,
-            })
-            .expect("Footage bin");
-        let items = bin.children.iter().filter_map(|e| if let BinEntry::Item(i) = e { Some(i.0) } else { None }).collect();
-        (bin.id.0, items)
+        demo_footage(self.app())
     }
 
     fn snapshot(&mut self, name: &str, prefix: Option<&str>) {
-        let Some(dir) = self.snapshots.clone() else { return };
+        let Some(dir) = snapshot_dir() else { return };
         let crop = prefix.map(|p| self.rect(p));
         self.frames(2);
         let img = match self.harness.render() {
@@ -546,7 +452,18 @@ fn metadata_display_dialog_and_view_presets() {
     assert_eq!(cols[1], "Label", "{cols:?}");
     assert!(cols.contains(&"Video Usage".to_string()) && !cols.contains(&"Tape Name".to_string()));
     d.frames(2);
-    assert!(d.has("project.list.header.Label") && d.has("project.list.header.Video Usage"));
+    // Label shows beside Name; Video Usage, added last, is far to the right: next's dock gives the
+    // Project panel a narrower body than the old dock did, so the list scrolls sideways to it.
+    assert!(d.has("project.list.header.Label"));
+    let panel = d.rect("panel.Project");
+    for _ in 0..40 {
+        if d.has("project.list.header.Video Usage") {
+            break;
+        }
+        d.ok("ui.scroll", json!({"x": panel[0] + panel[2] / 2.0, "y": panel[1] + panel[3] / 2.0, "dx": -80.0}));
+        d.frames(2);
+    }
+    assert!(d.has("project.list.header.Video Usage"));
 
     // Save As New View Preset (named), change the view, restore it from Manage
     d.click("panel.menu.Project");
@@ -955,6 +872,11 @@ fn media_browser_navigation_import_and_columns() {
     d.key("Shift+O");
     assert!(d.app().session.state.source_item.is_some());
     assert_eq!(d.app().session.project.items.len(), 2);
+    // opening a clip in Source shows Source, so the Media Browser is no longer maximized (#3669)
+    assert_ne!(d.app().ui.keys.maximized, Some(filmcraft_ui_egui::dock::PanelKind::MediaBrowser));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(2);
     // Edit Columns…
     d.click("panel.menu.MediaBrowser");
     d.click("mediaBrowser.menu.editColumns");
@@ -1050,8 +972,7 @@ fn media_browser_list_clamps_a_hand_edited_column_width() {
 #[test]
 fn media_browser_drag_imports_into_the_project_panel() {
     let dir = media_dir("drag");
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut d = Driver::with(session);
     // the Editing workspace has Project and Media Browser in one group: put the browser beside it
     d.ok("ui.set", json!({"workspace": "Editing"}));
@@ -1079,8 +1000,7 @@ fn media_browser_drag_imports_into_the_project_panel() {
 #[test]
 fn media_browser_drag_places_every_selected_file() {
     let dir = media_dir("drag-many");
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut d = Driver::with(session);
     d.ok("ui.set", json!({"workspace": "Editing"}));
     d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
@@ -1166,8 +1086,8 @@ fn double_click_empty_area_imports_with_a_project_loaded() {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Vec::new()
         }));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots: None };
+        let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+        let mut d = Driver { harness, tx };
         d.frames(10);
         (d, picks)
     }
@@ -1235,8 +1155,8 @@ fn double_click_imports_with_audio_in_the_timeline() {
         seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Vec::new()
     }));
-    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-    let mut d = Driver { harness, tx, snapshots: None };
+    let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+    let mut d = Driver { harness, tx };
     d.frames(10);
     let double_click = |d: &mut Driver, at: egui::Pos2| {
         let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
@@ -1318,8 +1238,7 @@ fn marquee_selects_cards_in_icon_view() {
     assert!(selection(&mut d).is_empty());
 }
 
-#[test]
-fn escape_cancels_a_marquee_and_keeps_the_selection() {
+fn marquee_escape_restores_selection(window_consumed_escape: bool) {
     let mut d = project_driver();
     let cards = footage_in(&mut d, "icon");
     let [(i0, a), (i1, b), (i2, c)] = [cards[0], cards[1], cards[2]];
@@ -1335,12 +1254,30 @@ fn escape_cancels_a_marquee_and_keeps_the_selection() {
         send(&mut d, egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
     }
     assert_eq!(selection(&mut d), sorted(vec![i0, i1]), "the selection follows the rectangle");
-    send(&mut d, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+    if window_consumed_escape {
+        // A framework press capture takes Escape out of the input before the panel sees it.
+        // Only the app's raw marker survives to cancel the marquee.
+        filmcraft_ui_egui::framework::note_escape(&d.harness.ctx, &[escape]);
+        d.frames(1);
+    } else {
+        send(&mut d, escape);
+    }
     let end = egui::pos2(centre(c).0, centre(c).1);
     send(&mut d, egui::Event::PointerMoved(end));
     send(&mut d, egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
     d.frames(2);
     assert_eq!(selection(&mut d), vec![i2], "Escape restored the selection the drag began with");
+}
+
+#[test]
+fn escape_cancels_a_marquee_and_keeps_the_selection() {
+    marquee_escape_restores_selection(false);
+}
+
+#[test]
+fn escape_captured_by_the_window_still_cancels_the_project_marquee() {
+    marquee_escape_restores_selection(true);
 }
 
 #[test]
@@ -1411,8 +1348,7 @@ fn a_bin_in_the_selection_does_not_stop_the_items_being_placed() {
 #[test]
 fn escape_takes_back_a_media_browser_drag() {
     let dir = media_dir("drag-escape");
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut d = Driver::with(session);
     d.ok("ui.set", json!({"workspace": "Editing"}));
     d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
@@ -1598,4 +1534,216 @@ fn a_dragged_media_browser_thumbnail_size_is_written_to_preferences() {
     assert_eq!(saved_prefs(&path).media_browser.thumbnail_size, s1, "preferences.json");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #3774: the footer's Zoom sizes List view's thumbnails and scales the Freeform canvas, not
+/// only Icon view's cards. A List without thumbnails has nothing for it to size, so its rows stay.
+#[test]
+fn zoom_sizes_list_thumbnails_and_the_freeform_canvas() {
+    let mut d = project_driver();
+    let items: Vec<u64> = footage_in(&mut d, "list").iter().map(|(i, _)| *i).collect();
+    let row = |d: &mut Driver| {
+        d.frames(3);
+        d.rect(&format!("project.item.{}", items[0]))[3]
+    };
+    // List without thumbnails: the rows do not change
+    let plain = row(&mut d);
+    d.exec("project.view.set", json!({"iconSize": 300.0}));
+    assert_eq!(row(&mut d), plain, "no thumbnails, nothing to size");
+    // List with thumbnails: the row follows the thumbnail size
+    d.exec("project.view.set", json!({"thumbnails": true, "iconSize": 110.0}));
+    let small = row(&mut d);
+    d.exec("project.view.set", json!({"iconSize": 300.0}));
+    let big = row(&mut d);
+    assert!(small > plain && (big - 120.0).abs() < 1.0, "rows {plain} / {small} / {big}");
+    // the bigger thumbnail does not cover the name or the next column: the Name column widens
+    let name = d.rect("project.list.header.Name");
+    let next = d.rect("project.list.header.Frame Rate");
+    let thumb_w = (big - 6.0) * 16.0 / 9.0;
+    assert!(name[2] >= thumb_w + 120.0 && next[0] >= name[0] + name[2] - 1.0, "Name {name:?}, Frame Rate {next:?}");
+    let saved = d.app().session.prefs.project_panel.view.columns.first().map(|c| c.width);
+    assert!(saved.is_some_and(|w| w < name[2]), "the saved width is unchanged: {saved:?}");
+
+    // Freeform: twice the size draws every card twice as big and twice as far from the origin
+    d.exec("project.view.set", json!({"iconSize": 110.0}));
+    d.exec("project.freeform.move", json!({"items": [items[0]], "x": 40, "y": 40}));
+    d.exec("project.freeform.move", json!({"items": [items[1]], "x": 240, "y": 40}));
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    let card = |d: &mut Driver, i: u64| {
+        d.frames(3);
+        let (r, c) = (d.rect(&format!("project.item.{i}")), d.rect("project.freeform"));
+        (r[0] - c[0], r[2])
+    };
+    let ((x0, w0), (x1, _)) = (card(&mut d, items[0]), card(&mut d, items[1]));
+    d.exec("project.view.set", json!({"iconSize": 220.0}));
+    let ((x0z, w0z), (x1z, _)) = (card(&mut d, items[0]), card(&mut d, items[1]));
+    assert!((w0z - 2.0 * w0).abs() < 1.0, "card width {w0} → {w0z}");
+    assert!(((x1z - x0z) - 2.0 * (x1 - x0)).abs() < 1.0, "spacing {} → {}", x1 - x0, x1z - x0z);
+    // a drag at that zoom moves the card by its on-canvas distance: 100 points on screen are 50
+    let r = d.rect(&format!("project.item.{}", items[0]));
+    let from = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + 100.0, "y": from.1}, "steps": 16}));
+    d.frames(4);
+    let pos = d.app().session.project.item(ItemId(items[0])).unwrap().metadata.get(FREEFORM_POS).cloned().expect("card placed");
+    let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
+    assert!((x - 90.0).abs() < 3.0 && (y - 40.0).abs() < 3.0, "moved to {x},{y}");
+}
+
+/// #3774 review: zoomed in, the Freeform commands get the width the cards are drawn at, so
+/// Align to Grid keeps the cards in the rows shown instead of an 800-point layout's.
+#[test]
+fn a_zoomed_freeform_canvas_aligns_the_cards_it_shows() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    d.exec("project.view.set", json!({"view": "freeform", "iconSize": 396.0}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.wait_for(&format!("project.item.{}", items[0]));
+    d.frames(3);
+    let canvas = d.rect("project.freeform");
+    let z = 396.0 / 110.0;
+    // where each card is drawn, on the unscaled canvas
+    let shown: Vec<(f32, f32)> = items
+        .iter()
+        .map(|i| {
+            let r = d.rect(&format!("project.item.{i}"));
+            ((r[0] - canvas[0]) / z, (r[1] - canvas[1]) / z)
+        })
+        .collect();
+    assert!(shown.iter().any(|s| s.1 > shown[0].1 + 1.0), "the zoomed canvas wraps the cards into rows: {shown:?}");
+    // the canvas menu, on empty canvas to the right of the cards
+    let panel = d.rect("panel.Project");
+    d.ok("ui.click", json!({"x": panel[0] + panel[2] - 30.0, "y": canvas[1] + 20.0, "button": "right"}));
+    d.frames(2);
+    d.click("project.canvasMenu.alignToGrid");
+    d.frames(2);
+    for (i, (sx, sy)) in items.iter().zip(&shown) {
+        let pos = d.app().session.project.item(ItemId(*i)).unwrap().metadata.get(FREEFORM_POS).cloned().expect("aligned");
+        let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
+        assert!((x - sx).abs() <= 20.0 && (y - sy).abs() <= 20.0, "item {i}: aligned to {x},{y}, shown at {sx},{sy}");
+    }
+}
+
+/// #3774 review: a card's menu acts on the selected cards of its own bin. A selection that also
+/// holds an item of another bin stacks only this bin's cards (laid out at this canvas's width).
+#[test]
+fn a_card_menu_stacks_only_the_selected_cards_of_its_bin() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    let project = d.app().session.project.clone();
+    let other =
+        project.items.values().map(|i| i.id).find(|i| project.root.parent_of(*i).map(|b| b.0) != Some(bin)).map(|i| i.0).expect("an item outside Footage");
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    let card = format!("project.item.{}", items[0]);
+    d.wait_for(&card);
+    d.exec("project.select", json!({"items": [other, items[0], items[1]]}));
+    d.ok("ui.click", json!({"id": card, "button": "right"}));
+    d.frames(2);
+    d.click("project.cardMenu.stack");
+    let stack = |d: &mut Driver, i: u64| d.app().session.project.item(ItemId(i)).unwrap().metadata.get(FREEFORM_STACK).cloned();
+    assert!(stack(&mut d, items[0]).is_some() && stack(&mut d, items[1]).is_some(), "this bin's cards are stacked");
+    assert_eq!(stack(&mut d, other), None, "the other bin's item is left alone");
+}
+
+/// #3774 review: Save Arrangement takes the bin of the canvas it was opened on; an unknown bin
+/// is refused instead of saving to the root bin.
+#[test]
+fn save_arrangement_refuses_an_unknown_bin() {
+    let mut d = project_driver();
+    let (bin, _) = d.footage();
+    for bad in [json!(987_654), json!(-1), json!("footage"), json!(1.5)] {
+        let r = d.call("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bad, "width": 400.0}}));
+        assert_eq!(r["ok"], json!(false), "bin {bad}: {r}");
+        assert!(d.app().ui.project_panel.dialog.is_none(), "no dialog for bin {bad}");
+    }
+    let root = d.app().session.project.root.id.0;
+    let saved = d.exec("project.freeform.arrangements", json!({"bin": root}));
+    assert_eq!(saved["arrangements"].as_array().map(Vec::len), Some(0), "nothing saved to the root: {saved}");
+    // a bin that exists opens the dialog
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
+    assert!(d.app().ui.project_panel.dialog.is_some());
+}
+
+#[test]
+fn new_items_land_in_the_bin_the_panel_shows() {
+    // #4093: New Item, File > New and the New Sequence and Color Matte dialogs make their item in
+    // the open bin, not the project root
+    let mut d = project_driver();
+    let (bin, _) = d.footage();
+    let root = d.app().session.project.root.id;
+    let parent = |d: &mut Driver, id: u64| d.app().session.project.root.parent_of(filmcraft_project::ItemId(id));
+    let newest = |d: &mut Driver| d.app().session.project.items.keys().map(|i| i.0).max().unwrap();
+    let in_root = |d: &mut Driver| d.app().session.project.root.children.len();
+    // at the root: still the root
+    d.ok("ui.menu.invoke", json!({"id": "file.newBarsAndTone"}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(root), "no bin open");
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.frames(3);
+    let root_children = in_root(&mut d);
+    // the footer's New Item menu
+    d.click("project.button.new-item");
+    d.wait_for("project.newItem.file.newBlackVideo");
+    d.click("project.newItem.file.newBlackVideo");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "New Item > Black Video");
+    // File > New
+    d.ok("ui.menu.invoke", json!({"id": "file.newAdjustmentLayer"}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "File > New > Adjustment Layer");
+    // the Color Matte dialog
+    d.ok("ui.menu.invoke", json!({"id": "file.newColorMatte"}));
+    d.click("colorMatte.ok");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "Color Matte dialog");
+    // the New Sequence dialog
+    d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
+    d.frames(10);
+    d.click("sequenceSettings.ok");
+    let id = d.app().session.state.active_sequence.unwrap().0;
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "New Sequence dialog");
+    assert_eq!(in_root(&mut d), root_children, "nothing new in the root");
+}
+
+#[test]
+fn new_items_land_in_the_bin_of_the_panel_they_were_made_in() {
+    // #4093: a floating bin panel makes its items in its own bin while the Project panel shows
+    // another one; an explicit `bin: null` is the root, not the shown bin
+    let mut d = project_driver();
+    let (footage, _) = d.footage();
+    let other = d.exec("file.newBin", json!({"name": "Other"}))["bin"].as_u64().unwrap();
+    let root = d.app().session.project.root.id;
+    let parent = |d: &mut Driver, id: u64| d.app().session.project.root.parent_of(filmcraft_project::ItemId(id));
+    let newest = |d: &mut Driver| d.app().session.project.items.keys().map(|i| i.0).max().unwrap();
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": footage, "how": "newWindow"}}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": other, "how": "inPlace"}}));
+    d.frames(3);
+    assert!(d.app().ui.project_panel.tabs.first().is_some_and(|t| t.floating && t.bin == footage));
+    // the floating panel's New Item menu: a generator, then the Color Matte dialog
+    d.click("projectBin.0.button.new-item");
+    d.wait_for("projectBin.0.newItem.file.newBlackVideo");
+    d.click("projectBin.0.newItem.file.newBlackVideo");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(footage)), "floating panel > New Item > Black Video");
+    d.click("projectBin.0.button.new-item");
+    d.wait_for("projectBin.0.newItem.file.newColorMatte");
+    d.click("projectBin.0.newItem.file.newColorMatte");
+    d.click("colorMatte.ok");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(footage)), "floating panel > New Item > Color Matte");
+    // the New Sequence dialog keeps the bin of the panel it was opened from
+    d.click("projectBin.0.button.new-item");
+    d.wait_for("projectBin.0.newItem.file.newSequence");
+    d.click("projectBin.0.newItem.file.newSequence");
+    d.frames(10);
+    d.click("sequenceSettings.ok");
+    let id = d.app().session.state.active_sequence.unwrap().0;
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(footage)), "floating panel > New Item > Sequence");
+    // an explicit null is the root even though the main panel shows a bin
+    d.ok("ui.menu.invoke", json!({"id": "file.newBarsAndTone", "params": {"bin": null}}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(root), "explicit null bin");
+    d.ok("ui.menu.invoke", json!({"id": "file.newBarsAndTone"}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(other)), "no bin: the shown one");
 }

@@ -94,6 +94,20 @@ fn project_is_named_after_its_file() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A bounded read refuses an oversize file before its bytes are read (audit: FilmCraft F1).
+#[test]
+fn bounded_read_refuses_a_file_over_the_limit() {
+    let d = temp_dir("bounded-read");
+    let path = d.join("p.fcproj");
+    std::fs::write(&path, b"12345").unwrap();
+    let path = path.to_string_lossy().to_string();
+    assert_eq!(FsServices.read_file_bounded(&path, 5).unwrap(), b"12345");
+    let e = FsServices.read_file_bounded(&path, 4).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    assert!(e.to_string().contains("over the 4 byte limit"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// #1545: `file.newProject` answers with the project it made (name and revision, as
 /// `project_inspect` reports them) instead of `null`.
 #[test]

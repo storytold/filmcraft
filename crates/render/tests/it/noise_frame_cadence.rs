@@ -13,6 +13,7 @@ fn render_noise(effect_id: &str, rate: FrameRate, frame: i64, amount: f64) -> Ve
     let context = FxCtx {
         t: tick,
         px_scale: 1.0,
+        mask_scale: 1.0,
         seconds: tick.seconds(),
         timecode: "00:00:00:00",
         clip_name: "generated matte",

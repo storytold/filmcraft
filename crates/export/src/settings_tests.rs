@@ -263,6 +263,14 @@ fn jpeg_targa_and_dpx_sequences() {
         }
         // the top-left pixel is the top row (Targa is stored bottom-up), and all of it is blue
         assert!(out.stdout.as_chunks::<4>().0.iter().all(|p| p[2] > 100 && p[0] < 20), "{first}");
+        // FilmCraft's own import (craft-dpx, and the Targa reader) reads the frame as ffmpeg does
+        if matches!(fmt, Format::TgaSequence | Format::DpxSequence) {
+            let ours = filmcraft_media::still::decode_raster(&first, &bytes).unwrap();
+            assert_eq!((ours.width, ours.height), (64, 36), "{first}");
+            assert_eq!(ours.rgba.len(), out.stdout.len(), "{first}: import and ffmpeg frame sizes differ");
+            let worst = ours.rgba.iter().zip(&out.stdout).map(|(&a, &b)| a.abs_diff(b)).max().unwrap_or(0);
+            assert!(worst <= 1, "{first}: import differs from ffmpeg by {worst}");
+        }
     }
     assert!(jpeg_sizes[0] > jpeg_sizes[1], "quality 95 must be larger than quality 20: {jpeg_sizes:?}");
 }
@@ -562,6 +570,29 @@ fn png_stills_keep_their_alpha_channel() {
     assert_eq!(frame[25], 6, "Export Frame PNG colour type");
 }
 
+/// The shared 8-bit writer must produce the same RGB/RGBA still bytes as the prior encoder.
+#[test]
+fn png_still_refactor_preserves_legacy_bytes_and_samples() {
+    let (w, h) = (127, 91);
+    let mut state = 1u32;
+    let rgba: Vec<u8> = (0..w * h * 4)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let rgb: Vec<_> = rgba.as_chunks::<4>().0.iter().flat_map(|pixel| pixel[..3].iter().copied()).collect();
+    for (alpha, samples, color) in [(false, &rgb, image::ExtendedColorType::Rgb8), (true, &rgba, image::ExtendedColorType::Rgba8)] {
+        let mut previous = Vec::new();
+        image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut previous), samples, w, h, color).unwrap();
+        let encoded = encode_still(Format::PngSequence, rgba.clone(), w, h, alpha).unwrap();
+        assert_eq!(encoded, previous, "byte parity for {color:?}");
+        let decoded = image::load_from_memory_with_format(&encoded, image::ImageFormat::Png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (w, h));
+        assert_eq!(decoded.as_bytes(), samples.as_slice());
+    }
+}
+
 #[test]
 fn wav_and_aiff_audio_only() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
@@ -636,7 +667,7 @@ fn write_and_check_m4a_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, p
     let filmcraft_isobmff::CodecConfig::Aac(cfg) = &t.entries[0].codec else { panic!("not AAC: {:?}", t.entries[0].codec) };
     assert_eq!((cfg.object_type, cfg.sample_rate, cfg.channel_config), (2, 48_000, 2));
     assert!(t.samples.len() >= 48_000 / 1024, "{} access units", t.samples.len());
-    let mut dec = filmcraft_aac::Decoder::new(&cfg.asc).unwrap();
+    let mut dec = craft_audio::aac::Decoder::new(&cfg.asc).unwrap();
     let mut pcm: Vec<Vec<f32>> = Vec::new();
     for i in 0..t.samples.len() {
         let out = dec.decode(&file.read_sample(&bytes, 0, i).unwrap()).unwrap();
@@ -662,7 +693,7 @@ fn write_and_check_adts_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, 
     export(p, seq, &settings, sources, &Progress::default()).unwrap();
     let b = std::fs::read(path).unwrap();
     // AAC-LC 44.1 kHz (index 4) mono: 00010 0100 0001 000
-    let mut dec = filmcraft_aac::Decoder::new(&[0x12, 0x08]).unwrap();
+    let mut dec = craft_audio::aac::Decoder::new(&[0x12, 0x08]).unwrap();
     let (mut pos, mut units, mut pcm) = (0usize, 0usize, vec![Vec::new()]);
     while pos < b.len() {
         let h = &b[pos..pos + 7];
@@ -699,6 +730,92 @@ fn aac_audio_settings_and_names() {
     assert_eq!(sum.estimated_bytes, 400_000, "320 kbps for 10 s, no picture");
     let preset = presets::find_builtin("AAC Audio 48 kHz 320 kbps").unwrap();
     assert_eq!(preset.settings.format, Format::Aac);
+}
+
+/// Decode the first second of an MP3 export with the media pool's decoder: (sample rate, planar
+/// samples).
+fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
+    let bytes: Arc<[u8]> = std::fs::read(path).unwrap().into();
+    let src = filmcraft_codecs::AudioFileSource::decode(path, bytes).unwrap();
+    let info = src.info().audio_streams[0].clone();
+    // the exported second, past the encoder delay
+    let buf = src.audio(i64::from(craft_audio::mp3::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
+    assert_eq!(buf.channels.len(), info.channels as usize);
+    (info.sample_rate, buf.channels)
+}
+
+#[test]
+fn mp3_export_writes_layer_iii_frames() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("mp3-audio");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)));
+    let path = dir.path("a.mp3");
+    let s = ExportSettings { format: Format::Mp3, path: path.clone(), range, ..Default::default() };
+    assert!(!s.has_video());
+    assert_eq!((s.audio_codec(), s.extension()), (AudioCodec::Mp3, "mp3"));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, 48_000, "one second of samples");
+    let b = std::fs::read(&path).unwrap();
+    // MPEG-1 Layer III, no CRC, 320 kbit/s (index 14), 48 kHz (index 1), joint stereo
+    assert_eq!((b[0], b[1], b[2] >> 4, (b[2] >> 2) & 3, b[3] >> 6), (0xFF, 0xFB, 14, 1, 1));
+    // whole 960-byte frames covering the second and the encoder delay
+    assert_eq!(b.len(), 960 * (48_000 + craft_audio::mp3::DELAY as usize).div_ceil(1152));
+    let (rate, pcm) = decode_mp3(&path);
+    assert_eq!((rate, pcm.len()), (48_000, 2));
+    // the -6 dBFS tone (RMS about 0.35) survives the round trip
+    assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
+
+    // what MP3 cannot carry maps onto what it can: 96 kHz 5.1 at 1000 kbps becomes 48 kHz stereo
+    // at 320 kbps; mono 22.05 kHz at 64 kbps is MPEG-2
+    let wide = dir.path("wide.mp3");
+    let mut s = ExportSettings { format: Format::Mp3, path: wide.clone(), range, ..Default::default() };
+    s.audio = AudioSettings { sample_rate: Some(96_000), channels: 6, bitrate_kbps: 1000, ..Default::default() };
+    assert_eq!(s.mp3_stream(48_000), (48_000, 2, 320));
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(decode_mp3(&wide).1.len(), 2);
+    let lsf = dir.path("lsf.mp3");
+    let mut s = ExportSettings { format: Format::Mp3, path: lsf.clone(), range, ..Default::default() };
+    s.audio = AudioSettings { sample_rate: Some(22_050), channels: 1, bitrate_kbps: 64, ..Default::default() };
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let b = std::fs::read(&lsf).unwrap();
+    assert_eq!((b[1] >> 3) & 3, 2, "MPEG-2");
+    let (rate, pcm) = decode_mp3(&lsf);
+    assert_eq!((rate, pcm.len()), (22_050, 1));
+    assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &path) {
+        assert_eq!(j["format"]["format_name"], "mp3");
+        let st = &j["streams"][0];
+        assert_eq!((st["codec_name"].as_str(), st["sample_rate"].as_str(), st["channels"].as_u64()), (Some("mp3"), Some("48000"), Some(2)));
+    }
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("MP3 decode") {
+        for f in [&path, &wide, &lsf] {
+            let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i", f, "-f", "null", "-"]).output().unwrap();
+            assert!(out.status.success() && out.stderr.is_empty(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+}
+
+#[test]
+fn mp3_settings_and_names() {
+    assert_eq!(Format::from_name("MP3"), Some(Format::Mp3));
+    assert_eq!(Format::from_name(Format::Mp3.id()), Some(Format::Mp3));
+    assert!(Format::ALL.contains(&Format::Mp3) && Format::Mp3.is_audio_only());
+    let s = ExportSettings { format: Format::Mp3, ..Default::default() };
+    let sum = s.summary(1920, 1080, FrameRate::FPS_24, 44_100, Tick(10 * TICKS_PER_SECOND));
+    assert_eq!(sum.video, "No video");
+    assert_eq!(sum.audio, "MP3, 320 kbps, 44100 Hz, Stereo");
+    assert_eq!(sum.estimated_bytes, 400_000, "320 kbps for 10 s");
+    // the bit rate snaps to a Layer III one, the codec setting cannot leak into other formats
+    let mut s = ExportSettings { format: Format::Mp3, ..Default::default() };
+    s.audio.bitrate_kbps = 300;
+    s.audio.sample_rate = Some(16_000);
+    assert_eq!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio, "MP3, 160 kbps, 16000 Hz, Stereo");
+    let mut mov = ExportSettings { format: Format::ProRes, ..Default::default() };
+    mov.audio.codec = AudioCodec::Mp3;
+    assert_eq!(mov.audio_codec(), AudioCodec::Pcm);
+    let preset = presets::find_builtin("MP3 48 kHz 320 kbps").unwrap();
+    assert_eq!((preset.settings.format, preset.settings.audio.bitrate_kbps), (Format::Mp3, 320));
+    assert_eq!(serde_json::to_value(Format::Mp3).unwrap(), "mp3");
 }
 
 #[test]
@@ -1081,6 +1198,54 @@ fn h264_profile_level_and_keyframes() {
     }
 }
 
+/// H.264 High 10 (#1221): MP4 and MOV carry a 10-bit stream ffmpeg decodes without a message;
+/// All Intra makes High 10 Intra with every frame a keyframe; the grey matte keeps its 10-bit code.
+#[test]
+fn h264_high10_and_all_intra_export() {
+    let (p, seq, m) = matte([0.5, 0.5, 0.5, 1.0], 320, 180, None);
+    let dir = Scratch::new("high10");
+    for (ext, intra) in [("mp4", false), ("mov", false), ("mp4", true)] {
+        let path = dir.path(&format!("high10_{intra}.{ext}"));
+        let mut s = ExportSettings {
+            format: Format::H264,
+            path: path.clone(),
+            h264_profile: H264Profile::High10,
+            h264_intra_only: intra,
+            bitrate_mode: BitrateMode::Crf,
+            crf: 18.0,
+            include_audio: false,
+            ..Default::default()
+        };
+        if ext == "mov" {
+            s.multiplexer = Multiplexer::Mov;
+        }
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert_eq!(summary.contains("every frame a keyframe"), intra, "{summary}");
+        assert!(summary.contains(if intra { "High 10 Intra (10-bit)" } else { "High 10 (10-bit)" }), "{summary}");
+        let high = ExportSettings { h264_profile: H264Profile::High, ..s.clone() }.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert!(high.contains("High (8-bit)") || high.contains("High Intra (8-bit)"), "{high}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { return };
+        let st = &j["streams"][0];
+        assert_eq!(st["profile"], if intra { "High 10 Intra" } else { "High 10" }, "{path}");
+        assert_eq!(st["pix_fmt"], "yuv420p10le", "{path}");
+        if let Some(j) = ffprobe_json(&["-show_frames", "-select_streams", "v:0", "-show_entries", "frame=key_frame"], &path) {
+            let keys = j["frames"].as_array().unwrap().iter().filter(|f| f["key_frame"] == 1).count();
+            assert_eq!(keys == 12, intra, "{path}: {keys} keyframes of 12");
+        }
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high10") else { return };
+        let out = std::process::Command::new(ffmpeg)
+            .args(["-v", "warning", "-i", &path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        // 50 % grey renders as RGBA 127 or 128: Y = 64 + 876 * 127/255 = 500 .. 64 + 876 * 128/255 = 504
+        let y0 = u16::from_le_bytes([out.stdout[2 * (90 * 320 + 160)], out.stdout[2 * (90 * 320 + 160) + 1]]);
+        assert!((499..=505).contains(&y0), "{path}: Y {y0}");
+    }
+}
+
 #[test]
 fn video_limiter_clamps_luma() {
     let (p, seq, m) = matte([1.0, 1.0, 1.0, 1.0], 64, 36, None);
@@ -1190,6 +1355,27 @@ fn builtin_presets_are_valid_and_unique() {
     assert_eq!(back.settings.adaptive_bitrate, Some(0.2));
 }
 
+/// The short-form presets: 9:16 1080×1920 H.264 filling the frame at the sequence's rate, with
+/// loudness normalization on at the platforms' level, and the sharing site's own bitrate.
+#[test]
+fn short_form_presets_are_vertical_and_loudness_normalized() {
+    for (name, kbps, max_kbps) in
+        [("TikTok 1080×1920", 10_000, 12_000), ("Instagram Reels 1080×1920", 8_000, 10_000), ("YouTube Shorts 1080×1920", 12_000, 16_000)]
+    {
+        let p = presets::find_builtin(name).unwrap_or_else(|| panic!("{name} is a built-in preset"));
+        let s = &p.settings;
+        assert_eq!((p.category.as_str(), s.format, s.frame_size, s.frame_rate), ("Web & Social", Format::H264, Some((1080, 1920)), None), "{name}");
+        assert_eq!(s.scaling, Scaling::ScaleToFill, "{name}");
+        assert_eq!((s.bitrate_kbps, s.max_bitrate_kbps, s.bitrate_mode), (kbps, Some(max_kbps), BitrateMode::Vbr1Pass), "{name}");
+        assert_eq!((s.audio.codec, s.audio.sample_rate), (AudioCodec::Aac, Some(48_000)), "{name}");
+        let l = &s.effects.loudness;
+        assert!(l.enabled, "{name}");
+        assert_eq!((l.target_lufs, l.true_peak_dbtp), (presets::SHORT_FORM_LUFS, presets::SHORT_FORM_PEAK_DBTP), "{name}");
+        // found whatever the case, as `--preset` and the preset browser look names up
+        assert_eq!(presets::find_builtin(&name.to_lowercase()).map(|p| p.name), Some(name.to_string()));
+    }
+}
+
 /// #108: the default 320 kbps is more than AAC can carry in stereo at 22.05 kHz (6 bits per sample
 /// and channel). The export failed with "bitrate out of range"; it is now capped to the limit.
 #[test]
@@ -1261,7 +1447,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 21);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1444,6 +1630,219 @@ fn loudness_normalization_corrects_limiter_loss_and_bounds_impossible_targets() 
     assert_eq!(reads_at_cancel.get(), Some(reads.load(Ordering::Relaxed)));
 }
 
+/// A 4 s sequence whose audio clip (Studio Reverb on it) reads through [`CrestSource`], which
+/// counts the source `audio()` reads.
+fn store_fixture() -> (Arc<Project>, ItemId, SourceMap, Arc<std::sync::atomic::AtomicUsize>) {
+    let mut p = Project::new("store");
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let dur = Tick(4 * TICKS_PER_SECOND);
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let g = GeneratorSource::new(Generator::Tone { hz: 440.0, db: -6.0 }, 64, 36, r, dur);
+    let info = g.info().clone();
+    let item = p.add_item(
+        "tone",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let mut sources = SourceMap::default();
+    sources.0.insert(item, Arc::new(CrestSource(Arc::new(g), reads.clone())) as Arc<dyn MediaSource>);
+    let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 36, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let mut clip = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(96)), r).unwrap();
+    clip.effects.extend(filmcraft_project::find_effect("studio_reverb").map(|d| d.instance()));
+    p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(clip);
+    (Arc::new(p), seq, sources, reads)
+}
+
+/// The export range of the store tests: 3.5 s, so four measuring chunks (the last one short).
+fn store_range() -> TimeRange {
+    TimeRange::new(Tick::ZERO, Tick(7 * TICKS_PER_SECOND / 2))
+}
+
+/// Loudness Normalization on (-14 LUFS, -2 dBTP) with `channels` output channels.
+fn loudness_settings(channels: u32) -> ExportSettings {
+    let mut settings = ExportSettings::default();
+    settings.audio.channels = channels;
+    settings.effects.loudness = LoudnessNormalization { enabled: true, target_lufs: -14.0, true_peak_dbtp: -2.0 };
+    settings
+}
+
+/// The bit patterns of planar samples, so comparisons are exact (NaN and -0.0 included).
+fn planar_bits(planar: &[Vec<f32>]) -> Vec<Vec<u32>> {
+    planar.iter().map(|c| c.iter().map(|v| v.to_bits()).collect()).collect()
+}
+
+/// `measure`, then the output in one `rest` (or `pull`s of `chunk` samples).
+fn export_audio(
+    f: &(Arc<Project>, ItemId, SourceMap, Arc<std::sync::atomic::AtomicUsize>),
+    settings: &ExportSettings,
+    chunk: Option<usize>,
+    configure: impl FnOnce(&mut audio_out::AudioOut),
+    between: impl FnOnce(),
+) -> Vec<Vec<f32>> {
+    let (p, seq, sources, _) = f;
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, settings, store_range()).unwrap();
+    configure(&mut audio);
+    audio.measure(settings, sources, &|| false).unwrap();
+    between();
+    let Some(chunk) = chunk else {
+        return audio.rest(sources).unwrap();
+    };
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    while audio.remaining() > 0 {
+        let until = audio.out + chunk as i64;
+        if let Some(buf) = audio.pull(until, sources) {
+            out.resize(buf.len(), Vec::new());
+            for (o, b) in out.iter_mut().zip(buf) {
+                o.extend(b);
+            }
+        }
+    }
+    out
+}
+
+/// The files in `dir`.
+fn files_of(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect()
+}
+
+#[test]
+fn loudness_normalization_mixes_the_range_once() {
+    let f = store_fixture();
+    let (p, seq, sources, reads) = &f;
+    // the baseline: one plain pass over the range in the same 1 s chunks the measuring pass uses
+    let mut plain = audio_out::AudioOut::new(p.clone(), *seq, &ExportSettings::default(), store_range()).unwrap();
+    while plain.remaining() > 0 {
+        let until = plain.out + plain.sr as i64;
+        plain.pull(until, sources);
+    }
+    let one_pass = reads.swap(0, Ordering::Relaxed);
+    assert!(one_pass > 0);
+
+    let settings = loudness_settings(2);
+    export_audio(&f, &settings, None, |_| {}, || {});
+    let with_store = reads.swap(0, Ordering::Relaxed);
+    export_audio(&f, &settings, None, audio_out::AudioOut::disable_store, || {});
+    let without_store = reads.swap(0, Ordering::Relaxed);
+    assert!(without_store > with_store, "live passes mix repeatedly: {without_store} vs {with_store}");
+    assert_eq!(with_store, one_pass, "measure + rest must read the sources like one plain pass");
+}
+
+#[test]
+fn loudness_mix_store_output_is_bit_identical_to_live_mixing() {
+    for channels in [1, 2, 6] {
+        let f = store_fixture();
+        let settings = loudness_settings(channels);
+        for chunk in [None, Some(1000)] {
+            let live = export_audio(&f, &settings, chunk, audio_out::AudioOut::disable_store, || {});
+            let stored = export_audio(&f, &settings, chunk, |_| {}, || {});
+            assert_eq!(live.len(), channels as usize);
+            assert_eq!(live[0].len(), 168_000);
+            assert_eq!(planar_bits(&live), planar_bits(&stored), "channels={channels} chunk={chunk:?}");
+        }
+    }
+}
+
+#[test]
+fn loudness_mix_store_falls_back_when_the_file_cannot_be_made() {
+    let f = store_fixture();
+    let settings = loudness_settings(2);
+    let dir = Scratch::new("mixstore-missing");
+    let missing = dir.0.join("not-there");
+    let live = export_audio(&f, &settings, None, audio_out::AudioOut::disable_store, || {});
+    let stored = export_audio(&f, &settings, None, |a| a.set_store_dir(missing.clone()), || {});
+    assert_eq!(planar_bits(&live), planar_bits(&stored));
+    assert!(!missing.exists());
+}
+
+#[test]
+fn loudness_mix_store_falls_back_when_the_file_cannot_be_read() {
+    let f = store_fixture();
+    let settings = loudness_settings(2);
+    let dir = Scratch::new("mixstore-truncated");
+    let live = export_audio(&f, &settings, None, audio_out::AudioOut::disable_store, || {});
+    let stored = export_audio(
+        &f,
+        &settings,
+        None,
+        |a| a.set_store_dir(dir.0.clone()),
+        || {
+            let files = files_of(&dir.0);
+            assert_eq!(files.len(), 1, "{files:?}");
+            std::fs::OpenOptions::new().write(true).open(&files[0]).unwrap().set_len(0).unwrap();
+        },
+    );
+    assert_eq!(planar_bits(&live), planar_bits(&stored));
+}
+
+/// The store holds the user's programme audio: on Unix it is created readable by its owner only.
+#[cfg(unix)]
+#[test]
+fn loudness_mix_store_file_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = store_fixture();
+    let (p, seq, sources, _) = &f;
+    let settings = loudness_settings(2);
+    let dir = Scratch::new("mixstore-private");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    audio.measure(&settings, sources, &|| false).unwrap();
+    let files = files_of(&dir.0);
+    assert_eq!(files.len(), 1, "{files:?}");
+    let mode = std::fs::metadata(&files[0]).unwrap().permissions().mode();
+    assert_eq!(mode & 0o077, 0, "group/other bits set: {mode:o}");
+}
+
+#[test]
+fn loudness_mix_store_file_is_removed_after_delivery_and_after_cancel() {
+    let f = store_fixture();
+    let (p, seq, sources, _) = &f;
+    let settings = loudness_settings(2);
+
+    // delivered: the file exists after measuring and is gone once the range has been pulled
+    let dir = Scratch::new("mixstore-delivered");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    audio.measure(&settings, sources, &|| false).unwrap();
+    assert_eq!(files_of(&dir.0).len(), 1);
+    audio.rest(sources).unwrap();
+    assert!(files_of(&dir.0).is_empty(), "{:?}", files_of(&dir.0));
+
+    // cancelled in the first pass, after a chunk was written
+    let dir = Scratch::new("mixstore-cancelled");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    let polls = std::cell::Cell::new(0);
+    let cancel = || {
+        polls.set(polls.get() + 1);
+        polls.get() > 2
+    };
+    assert!(matches!(audio.measure(&settings, sources, &cancel), Err(ExportError::Cancelled)));
+    assert!(files_of(&dir.0).is_empty(), "{:?}", files_of(&dir.0));
+
+    // cancelled during a refinement pass
+    let dir = Scratch::new("mixstore-cancelled-late");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    let polls = std::cell::Cell::new(0);
+    let cancel = || {
+        polls.set(polls.get() + 1);
+        polls.get() > 6
+    };
+    assert!(matches!(audio.measure(&settings, sources, &cancel), Err(ExportError::Cancelled)));
+    assert!(files_of(&dir.0).is_empty(), "{:?}", files_of(&dir.0));
+}
+
 /// 32-bit integer and float audio in every container that takes them, read back by ffprobe (an
 /// external oracle) and, where FilmCraft imports the format, by FilmCraft's own readers.
 #[test]
@@ -1544,6 +1943,7 @@ fn sample_formats_each_codec_and_container_stores() {
     assert_eq!(supported(Format::Flac, AudioCodec::Auto), [Int16, Int24, Int32]);
     assert_eq!(supported(Format::ProRes, AudioCodec::Flac), [Int16, Int24, Int32]);
     assert!(supported(Format::H264, AudioCodec::Auto).is_empty(), "MP4 is AAC");
+    assert!(supported(Format::Mp3, AudioCodec::Auto).is_empty(), "MP3 has no sample size");
     // `bits` rounds down to a size; `float` only with 32
     let fmt = |bits, float| AudioSettings { bits, float, ..Default::default() }.sample_format();
     assert_eq!(
@@ -1624,11 +2024,12 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         .collect();
     let extremes: Vec<i32> = (0..n).map(|i| if i % 3 == 0 { i32::MAX } else { i32::MIN + 1 }).collect();
     for level in [0u8, 5, 8] {
-        let mut enc = filmcraft_flac::Encoder::new(filmcraft_flac::EncoderConfig { level, ..filmcraft_flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
-        let mut file = enc.header();
+        let mut enc =
+            craft_audio::flac::Encoder::new(craft_audio::flac::EncoderConfig { level, ..craft_audio::flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
+        let mut file = enc.header(&[]);
         file.extend(enc.encode(&[&extremes, &noise]).unwrap());
         file.extend(enc.finish());
-        let at = filmcraft_flac::STREAMINFO_OFFSET as usize;
+        let at = craft_audio::flac::STREAMINFO_OFFSET as usize;
         file[at..at + 34].copy_from_slice(&enc.streaminfo());
         let src = filmcraft_codecs::open_bytes("x.flac", file.into()).unwrap_or_else(|e| panic!("level {level}: {e}"));
         let a = src.audio(0, n, 48_000).unwrap();
@@ -1641,4 +2042,30 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
             }
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error() {
+    let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 32, 18, None);
+    let dir = Scratch::new("gif-reserved");
+    let path = dir.path("out.gif");
+    let file = Arc::new(std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap());
+    let settings = ExportSettings {
+        format: Format::Gif,
+        path: path.clone(),
+        include_audio: false,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+        output_file: Some(file.clone()),
+        ..Default::default()
+    };
+    // the entry still names the reservation: the GIF lands there
+    export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+    assert!(std::fs::read(&path).unwrap().starts_with(b"GIF8"), "the reserved file holds the GIF");
+    // the directory entry is replaced after the reservation: no success for a file nobody can reach,
+    // and the replacement is left alone
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"decoy").unwrap();
+    assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
 }
