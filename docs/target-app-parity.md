@@ -1,5 +1,7 @@
 # Parity with Adobe Premiere Pro
 
+> **Last reviewed:** 2026-11-15 · **Last updated:** 2026-11-15 · **Change:** minor (FilmCraft v0.20.0 and v0.20.1 (Flatpak updater fix); ProRes decode and encode, MP3 decode and encode, VP8 and MJPEG decode, Ogg audio, containers, exact time formats and EDL reading and writing now come from craft-libs; export names the encoder that ran and when hardware encoding fell back to software (#3952), APV 4:4:4 exports carry full-resolution chroma (#4656) and resampled audio no longer depends on where a read starts (#4710); narration ships natural voices in official packages (#2318, #3773); the scrub playhead no longer waits for the audio device (#2633); graphics start tries each mode in a child process and falls back to the integrated GPU when the chosen adapter cannot draw to the window (#2553, #2581, #2634); Project panel Reveal in Project scrolls to the source clip and restores a sideways-scrolled list (#4760); update prompts open release notes through the desktop host and the updater reports installing, ready, installed and failed; project files are capped at 256 MiB on every read; interchange, still and animated decode, audio buffers, mixer graphs, AV1/HEVC/MPEG-2 decoding, pin chains and CFB storages take bounded work; screenshots, session logs and voice-over takes use private temp folders; CI runs a nightly release dry run, clippy and tests for Windows-only crates, and Harden-Runner on every job; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (AVI import #650, E-AC-3 decode #647 and Russian menus #610 no longer counted as missing; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
@@ -56,7 +58,7 @@ issues now document. That is new evidence, not drift: see [Calibration](#calibra
   effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3. `cargo xtask
   parity --area effects|transitions` measures the shipped catalogue against a reference list too
   (presence and folder placement, [G7](gaps.md#g7-no-measured-parity-tool-in-ci)).
-- **The installed app (file names and listings only, per [AGENTS.md](../AGENTS.md) §2; nothing
+- **The installed app (file names and listings only, per [clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md); nothing
   inside the bundle was opened or read).** `Contents/Resources/*.lproj`: de, en, es, fr, it, ja,
   ko, pt, ru, zh_CN (10 UI languages). `Contents/MediaIO/systempresets/` folder names are
   four-character exporter / codec codes: JPEG, QuickTime, MP3, PNG, Windows Media, AIFF, AVI,

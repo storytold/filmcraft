@@ -638,6 +638,11 @@
 	(gap)	(Lücke)
 	Out: {name}	Out: {name}
 	In: {name}	In: {name}
+	Previous: {name}	Vorheriger: {name}
+	Next: {name}	Nächster: {name}
+	Slip: {offset} frame	Slip: {offset} Frame
+	Slip: {offset} frames	Slip: {offset} Frames
+	at the media limit	an der Mediengrenze
 	Play Around Edit (Space loops, Shift+K once)	Um Schnitt herum abspielen (Leertaste in Schleife, Umschalt+K einmal)
 	Trim Backward Many	Weit rückwärts trimmen
 	Trim Backward	Rückwärts trimmen

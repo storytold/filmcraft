@@ -7,7 +7,7 @@
 //! - `web [--dev] [--serve PORT]`: build the web app (`apps/filmcraft-web`) into
 //!   `<target>/web/dist` with `wasm-bindgen` (docs/web.md); `--serve` serves it on localhost.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
-//!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
+//!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (standards/clean-room.md).
 //! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
 //!   crate's ignored `generate_fixtures` test, i.e. the same generators the tests use) and print
 //!   what was made, reused or skipped.
@@ -168,7 +168,7 @@ fn layers() -> Result<(), String> {
     }
 }
 
-/// File extensions that count as assets (AGENTS.md §1).
+/// File extensions that count as assets (standards/clean-room.md).
 const ASSET_EXT: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "icns", "bmp", "tif", "tiff", "heic", "avif", "exr", "ttf", "otf", "ttc", "woff", "woff2", "cube",
     "3dl", "lut", "look", "wav", "mp3", "aac", "flac", "ogg", "opus", "m4a", "aif", "aiff", "mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "psd", "ai",

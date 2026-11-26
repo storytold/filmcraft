@@ -1,9 +1,12 @@
 # .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
 # the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
-# exports VERSION and NFPM_ARCH.
+# exports VERSION, NFPM_ARCH, NFPM_NAME, NFPM_BIN and NFPM_CLI (the last three name the Nightly
+# package's own files). A Nightly stage also has usr/lib/filmcraft-nightly/: the GUI, started by
+# the /usr/bin launcher with the Launcher's private profile. By hand, all five are needed:
 #
-#   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
-name: filmcraft
+#   VERSION=1.2.3 NFPM_ARCH=amd64 NFPM_NAME=filmcraft NFPM_BIN=filmcraft \
+#   NFPM_CLI=filmcraft-cli nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
+name: ${NFPM_NAME}
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${VERSION}
@@ -61,12 +64,15 @@ overrides:
       - xdg-desktop-portal
 
 contents:
-  - src: ${STAGE}/usr/bin/filmcraft
-    dst: /usr/bin/filmcraft
+  - src: ${STAGE}/usr/bin/${NFPM_BIN}
+    dst: /usr/bin/${NFPM_BIN}
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/bin/filmcraft-cli
-    dst: /usr/bin/filmcraft-cli
+  - src: ${STAGE}/usr/bin/${NFPM_CLI}
+    dst: /usr/bin/${NFPM_CLI}
     file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/lib/
+    dst: /usr/lib/
+    type: tree
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree

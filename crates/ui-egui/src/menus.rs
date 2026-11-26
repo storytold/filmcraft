@@ -712,6 +712,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     {
         return app.file_dialog(id, &params);
     }
+    // Stepping a frame or jumping to an edit point parks the playhead: playback stops, then the
+    // step lands on its frame, as in Premiere Pro (#4655). Left running, the playback clock would
+    // carry the playhead on from its anchor on the next pass and overwrite the step. Stopping
+    // first ends an automation pass where playback actually was, not where the step lands.
+    if parks_playhead(id) && app.playback.playing {
+        app.stop();
+    }
     let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
@@ -737,6 +744,22 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Commands that move the playhead a frame or to an edit point: playback stops where they land,
+/// as Premiere Pro's Step and Go to Edit Point keys do (#4655).
+fn parks_playhead(id: &str) -> bool {
+    matches!(
+        id,
+        "playhead.stepBack"
+            | "playhead.stepForward"
+            | "playhead.stepBack5"
+            | "playhead.stepForward5"
+            | "playhead.prevEdit"
+            | "playhead.nextEdit"
+            | "playhead.prevEditAnyTrack"
+            | "playhead.nextEditAnyTrack"
+    )
 }
 
 /// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
@@ -767,11 +790,10 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
     }
     match text {
         TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
-        TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
+        TextCommand::Events(events) => {
             app.synthetic.extend(events);
             ctx.request_repaint();
         }
-        TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
     }
     Ok(Value::Null)
 }
@@ -785,10 +807,10 @@ fn select_all_in_text_field(ctx: &egui::Context) -> bool {
     true
 }
 
-/// The window whose text field has the keyboard: a floating panel's own OS window, or the main
-/// window.
+/// The window whose text field has the keyboard. next's dock tells no floating OS window's text
+/// focus, so only the main window's text fields take the Edit menu's text commands.
 pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
-    craft_ui::docking::typing_window(ctx).or_else(|| ctx.text_edit_focused().then_some(egui::ViewportId::ROOT))
+    ctx.text_edit_focused().then_some(egui::ViewportId::ROOT)
 }
 
 /// Whether a focused text field takes the menu command `id` ([`activate_native`]): the native

@@ -51,7 +51,7 @@ use filmcraft_project::{Project, ProjectView};
 #[cfg(test)]
 use serde_json::Value;
 
-pub use atomic::{atomic_write, atomic_write_new};
+pub use atomic::{atomic_write, atomic_write_new, atomic_write_no_follow};
 
 pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
 
