@@ -1,8 +1,8 @@
-use super::{Dialog, FilmcraftApp, PanelKind, dock, dock_ui, json, menus, panels};
+use super::{Dialog, FilmcraftApp, PanelKind, dock, json, menus, panels};
 
 impl FilmcraftApp {
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
-    /// to a focused text field except dock dividers.
+    /// to a focused text field.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
@@ -13,7 +13,7 @@ impl FilmcraftApp {
             self.bindings_rev = self.session.shortcuts.revision;
         }
         // Esc exits cinema mode unconditionally, even when a dialog or text field has focus.
-        if self.ui.fullscreen_program && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if self.ui.fullscreen_program && crate::framework::take_window_cancel(ctx) {
             self.ui.fullscreen_program = false;
             let restore = self.ui.cinema_was_fullscreen;
             if let Some(prev) = self.ui.cinema_prev_focus.take() {
@@ -22,10 +22,9 @@ impl FilmcraftApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
             return;
         }
-        // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
-        // other key: Space and the other shortcuts keep working (#1482).
-        let divider_focused = self.divider_focused(ctx);
-        if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
+        // The runtime keeps egui's focus on the framework stop or the hosted canvas a press reached,
+        // so egui's own `egui_wants_keyboard_input` would end every shortcut after a click on a panel.
+        if crate::framework::keyboard_taken(ctx) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -37,43 +36,15 @@ impl FilmcraftApp {
         // read before `input_mut`: the plugin lock must not be taken inside the input lock
         let label_selected = ctx.with_plugin(|s: &mut egui::text_selection::LabelSelectionState| s.has_selection()).unwrap_or(false);
         // Esc cancels a dynamic trim in progress
-        if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if self.session.trim_play.dynamic.is_some() && crate::framework::take_window_cancel(ctx) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
+        // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
+        // other key: Space and the other shortcuts keep working (#1482).
+        let divider_focused = crate::dock_ui::divider_focused(ctx);
         let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected));
         self.fire_shortcuts(ctx, fire);
-    }
-
-    /// Key, text and clipboard events that a floating panel in its own OS window left over
-    /// (`DockOutput::forwarded_events`): they run the main window's bindings in the frame they
-    /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
-    /// while that window's text field has focus.
-    pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
-            return;
-        }
-        let mut input = egui::InputState::default();
-        input.modifiers = self.floating_window_modifiers(ctx);
-        input.events = events;
-        if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-            let _ = self.session.execute("trim.cancelDynamic", json!({}));
-        }
-        let fire = self.match_shortcuts(&mut input, false, false, false);
-        self.fire_shortcuts(ctx, fire);
-    }
-
-    /// The modifiers held in the focused native floating window. Copy, Cut and Paste events
-    /// carry none, and egui-winit drops the key press they stand for.
-    fn floating_window_modifiers(&self, ctx: &egui::Context) -> egui::Modifiers {
-        self.ui
-            .dock
-            .floating
-            .iter()
-            .filter(|window| window.native.is_some())
-            .map(|window| craft_ui::docking::DockArea::<PanelKind>::window_viewport(dock_ui::area_id(), window.id))
-            .find_map(|viewport| ctx.input_for(viewport, |i| (i.viewport().focused == Some(true)).then_some(i.modifiers)))
-            .unwrap_or_default()
     }
 
     /// The binding ids the key presses in `i` fire, consuming those presses.
@@ -335,22 +306,6 @@ mod clipboard_key_tests {
         let keys: Vec<Key> = events.iter().filter_map(|e| if let Event::Key { key, .. } = e { Some(*key) } else { None }).collect();
         assert_eq!(keys, vec![Key::V], "only Paste becomes a key press");
         assert!(matches!(events[0], Event::Copy), "the selection still gets the Copy event");
-    }
-}
-
-#[cfg(test)]
-mod forwarded_key_tests {
-    use egui::{Event, Key, Modifiers};
-
-    /// A key a floating native window left over runs the main window's bindings.
-    #[test]
-    fn forwarded_keys_fire_shortcuts() {
-        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
-        app.bindings = super::menus::bindings(&app);
-        app.ui.focused = crate::dock::PanelKind::Timeline;
-        let shift_backtick = Event::Key { key: Key::Backtick, physical_key: Some(Key::Backtick), pressed: true, repeat: false, modifiers: Modifiers::SHIFT };
-        app.handle_forwarded_keys(&egui::Context::default(), vec![Event::Text("~".into()), shift_backtick]);
-        assert_eq!(app.ui.keys.maximized, Some(crate::dock::PanelKind::Timeline), "Shift+` maximizes the focused frame");
     }
 }
 

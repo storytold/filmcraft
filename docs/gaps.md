@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-08 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (G10: uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -203,13 +203,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   AI / EPS, and the rarer DPX layout, run-length encoding (Targa and DPX stills and sequences import
   since #821, packed 10/12-bit and Y'CbCr DPX since #841, deeper than 8 bits kept at 8); transparent
   video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag (#500); MKV multi-audio (#601);
-  EXIF Orientation on uncompressed / PackBits YCbCr TIFF and DNG stills and on the export image
+  EXIF Orientation on DNG stills and on the export image
   overlay (`load_overlay` in `crates/export/src/pipeline.rs`); JPEG, PNG, WebP and other TIFF stills
   apply it since #1583, except a WebP or PNG whose EXIF chunk starts with an `Exif\0\0` prefix
-  (decoded unturned). Projects saved before #1583 keep the stored size of a portrait still: one
-  already placed in a sequence shows upright but scaled up by the photo's aspect ratio (4/3 for a
-  4:3 shot) and off-centre (turned twice if it was rotated by hand); reset the clip's Motion or
-  place it again.
+  (decoded unturned). Projects saved before #1583 kept the stored size of a portrait still, so
+  one already placed in a sequence showed upright but scaled up by the photo's aspect ratio
+  (4/3 for a 4:3 shot) and off-centre; opening such a project now swaps the stored size to the
+  oriented one and turns the placed clips' Motion anchor points with it (#4613). A still that
+  was rotated by hand back then is still turned twice; reset its Motion.
 - **Estimate:** 120–200 h (camera RAW alone 60–100 h, and some SDKs have licences we cannot use:
   clean-room from public specs only where specs exist). Docs: [codec-parity.md](codec-parity.md),
   [file-format-parity.md](file-format-parity.md).
@@ -223,7 +224,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Missing:** VST3 / Audio Units, OpenFX, Premiere / After Effects plug-in APIs, UXP panels
   (#325).
 - **Impact:** many professional editors depend on third-party effects and audio plug-ins.
-- **Needs:** an owner decision (FFI under the `unsafe` rule, AGENTS.md §0.3). **200–400 h.**
+- **Needs:** an owner decision (FFI under the `unsafe` rule, AGENTS.md rule 13, `unsafe`). **200–400 h.**
 
 ## G12. AI features
 
@@ -365,3 +366,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
+| 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |

@@ -11,6 +11,12 @@ workspace = true
 
 [dependencies]
 craft-audio = { workspace = true }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
+craft-exr = { workspace = true }
+craft-png = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
+craft-tga = { workspace = true }
+craft-tiff = { workspace = true, features = ["plain-rgba16"] }
+craft-dpx = { workspace = true }
 craft-video = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-frame = { workspace = true }
@@ -24,7 +30,6 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
-filmcraft-dnx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -34,4 +39,5 @@ web-time = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "tiff", "bmp"] }
 
 [dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 filmcraft-testkit = { workspace = true }

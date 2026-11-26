@@ -75,7 +75,7 @@ impl FilmcraftApp {
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
         panels::file_dialogs::show_overwrite(self, &ctx);
-        updates_ui::show(self, &ctx);
+        updates_ui::show(self, ui);
         if !self.ui.show_status_bar {
             return;
         }
@@ -104,6 +104,9 @@ impl FilmcraftApp {
                     self.ui.status =
                         tl!("The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
                             .into()
+                }
+                crate::ControlNotice::Bind { port, error } => {
+                    self.ui.status = tlf!("The control server can't listen on 127.0.0.1:{port}: {error}", port = port, error = error)
                 }
             }
         }

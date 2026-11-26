@@ -6,85 +6,18 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, driver};
 use filmcraft_engine::project::{ClipId, Label};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::native_dialogs::FileDialog;
 use filmcraft_ui_egui::state::Mode;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
-    fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // the control channel's clicks and keys enter through the input hook
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn menu(&mut self, id: &str) -> Value {
-        let r = self.ok("ui.menu.invoke", json!({"id": id}));
-        self.frames(3);
-        r
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn path(&mut self) -> Option<String> {
         self.app().session.path.clone()
     }
@@ -133,7 +66,7 @@ fn projects(d: &mut Driver, test: &str) -> (PathBuf, String, String) {
 
 #[test]
 fn open_project_save_saves_the_changes_then_opens_the_chosen_project() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, current, other) = projects(&mut d, "save");
     let clip = d.edit();
     d.open_project(&other);
@@ -149,7 +82,7 @@ fn open_project_save_saves_the_changes_then_opens_the_chosen_project() {
 
 #[test]
 fn open_project_failed_save_keeps_the_prompt_and_chosen_project() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, _, other) = projects(&mut d, "failedSave");
     let folder = dir.join("current-folder");
     std::fs::create_dir(&folder).unwrap();
@@ -173,7 +106,7 @@ fn open_project_failed_save_keeps_the_prompt_and_chosen_project() {
 #[test]
 fn close_project_and_quit_failed_save_keep_the_prompt() {
     for (command, prompt) in [("file.closeProject", "closeProject"), ("app.quit", "quit")] {
-        let mut d = Driver::new();
+        let mut d = Driver::demo();
         let (dir, _, _) = projects(&mut d, prompt);
         let folder = dir.join("current-folder");
         std::fs::create_dir(&folder).unwrap();
@@ -204,7 +137,7 @@ fn close_project_and_quit_failed_save_keep_the_prompt() {
 
 #[test]
 fn home_recent_with_unsaved_changes_asks_first() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, current, other) = projects(&mut d, "homeRecent");
     let first = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
     let clip = d.edit();
@@ -233,7 +166,7 @@ fn home_recent_with_unsaved_changes_asks_first() {
 
 #[test]
 fn home_recent_save_on_a_never_saved_project_switches_to_edit_once_it_opens() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, _, other) = projects(&mut d, "homeNeverSaved");
     d.app().session.path = None;
     d.edit();
@@ -252,7 +185,7 @@ fn home_recent_save_on_a_never_saved_project_switches_to_edit_once_it_opens() {
 
 #[test]
 fn open_project_asks_when_the_open_dialog_answers_in_a_later_frame() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, current, other) = projects(&mut d, "runner");
     d.edit();
     // a host that shows file dialogs without blocking (the desktop app on Linux)
@@ -275,7 +208,7 @@ fn open_project_asks_when_the_open_dialog_answers_in_a_later_frame() {
 
 #[test]
 fn open_project_save_waits_for_a_save_dialog_answered_later() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, _, other) = projects(&mut d, "saveLater");
     d.app().session.path = None;
     let clip = d.edit();
@@ -340,7 +273,7 @@ fn open_project_save_waits_for_a_save_dialog_answered_later() {
 
 #[test]
 fn a_save_prompt_closes_when_a_script_replaces_its_project() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (dir, _, other) = projects(&mut d, "replaced");
     // Open Project
     d.edit();

@@ -6,26 +6,20 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the tests also render the UI with wgpu and write PNGs there.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
+use crate::support::{Drive, demo_session, driver, save_settled_shot, start};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_project::{ClipId, ParamValue};
 use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
@@ -34,48 +28,16 @@ impl Driver {
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
+        let harness = b.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
+        let mut d = start(Driver { harness, tx });
         d.ok("ui.set", json!({"workspace": "Effects"}));
         d
     }
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
     fn find(&mut self, id: &str) -> Option<[f64; 4]> {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id)?.clone();
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        Some([r[0], r[1], r[2], r[3]])
+        self.element_rect(id)
     }
     fn rect(&mut self, id: &str) -> [f64; 4] {
         self.find(id).unwrap_or_else(|| panic!("no element {id}"))
@@ -83,10 +45,6 @@ impl Driver {
     fn center(&mut self, id: &str) -> (f64, f64) {
         let r = self.rect(id);
         (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
-    }
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
     }
     fn drag_from(&mut self, (x, y): (f64, f64), dx: f64, dy: f64) {
         self.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + dx, "y": y + dy}, "steps": 6}));
@@ -143,14 +101,7 @@ impl Driver {
         }
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        for _ in 0..40 {
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+        save_settled_shot(self, &format!("{name}.png"));
     }
 }
 
