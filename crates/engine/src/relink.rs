@@ -11,11 +11,12 @@
 //! - **Relink others automatically.** Linking one file derives a folder remap (the old path's
 //!   prefix → the new one) and applies it to every other missing file (and Offline files when
 //!   Include Offline media / `media.relinkOfflineMedia` is on; Premiere's default), checking each.
+//!   The Link Media dialog passes `othersScope` so Relink others stays inside that dialog's pool.
 //! - **Search.** [`search`] walks a folder for files named like the missing ones (same Offline rule).
 //! - **Open prompt.** Offline All is remembered by default (`media.rememberOfflineAll`); made-offline
 //!   clips do not re-prompt on open unless that pref is off.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use filmcraft_media::MediaInfo;
@@ -393,14 +394,23 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
     Ok(rows)
 }
 
+/// Optional id list from `items` or `othersScope` params.
+fn id_list_p(p: &Value, key: &str) -> Option<BTreeSet<ItemId>> {
+    p.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(ItemId).collect())
+}
+
 /// Other missing (and Offline, when opted in) items that the remap or the new file's folder finds, checked.
-fn others(s: &Session, skip: ItemId, old: &str, new: &str, o: &MatchOptions) -> Vec<Plan> {
+/// When `scope` is Some, only those ids are considered (Link Media dialog pool).
+fn others(s: &Session, skip: ItemId, old: &str, new: &str, o: &MatchOptions, scope: Option<&BTreeSet<ItemId>>) -> Vec<Plan> {
     let remap = derive_remap(old, new);
     let new_dir = Path::new(new).parent().map(Path::to_path_buf);
     let mut out = Vec::new();
     for m in scan(&s.project, &s.media, &*s.services) {
         let id = ItemId(m.item);
         if id == skip || !wants_relink(m.status, o.relink_offline) {
+            continue;
+        }
+        if scope.is_some_and(|set| !set.contains(&id)) {
             continue;
         }
         let mut tries = Vec::new();
@@ -433,6 +443,7 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("media.relink", "need `path`"))?.to_string();
     let force = bool_p(p, "force").unwrap_or(false);
     let o = MatchOptions::from_params(p, s.prefs.media.relink_offline_media);
+    let scope = id_list_p(p, "othersScope");
     let old = match s.project.item(item).and_then(|i| i.as_media()).map(|m| m.media.clone()) {
         Some(MediaRef::File { path }) => path,
         _ => return Err(bad("media.relink", format!("item {} is not file media", item.0))),
@@ -452,10 +463,32 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut plans = vec![Plan { item, cand: c }];
     if o.relink_others {
-        plans.extend(others(s, item, &old, &path, &o));
+        plans.extend(others(s, item, &old, &path, &o, scope.as_ref()));
     }
     let rows = apply(s, plans, o.align_timecode, "Link Media")?;
     Ok(json!({"relinked": rows, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
+}
+
+/// `media.linkMedia {items?}`: refresh and return the rows the Link Media dialog should list.
+/// Without `items`, every missing/offline row (File ▸ / open). With `items`, only those ids that
+/// still need linking (Clip / selection).
+pub fn link_media(s: &mut Session, p: &Value) -> Result<Value> {
+    let list = refresh(s);
+    let scoped = id_list_p(p, "items");
+    let missing: Vec<Missing> = list
+        .into_iter()
+        .filter(|m| m.status == "missing" || m.status == "offline")
+        .filter(|m| scoped.as_ref().is_none_or(|set| set.contains(&ItemId(m.item))))
+        .collect();
+    s.offline.prompt = !missing.is_empty();
+    Ok(json!({"missing": missing}))
+}
+
+/// Clip ▸ Link Media… is enabled when the project selection has missing or offline file media.
+fn has_linkable_selection(s: &Session) -> std::result::Result<(), String> {
+    let list = scan(&s.project, &s.media, &*s.services);
+    let ok = s.state.project_selection.iter().any(|id| list.iter().any(|m| m.item == id.0 && (m.status == "missing" || m.status == "offline")));
+    if ok { Ok(()) } else { Err("select missing or offline media".into()) }
 }
 
 /// `media.autoRelink`: `{from, to}` remaps a folder prefix; `{folder}` searches a folder tree.
@@ -695,12 +728,26 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Link Media…",
             menu: &["File"],
             shortcut: None,
-            params: r#"{}  (opens the Link Media dialog; agents use media.relink / media.autoRelink)"#,
+            params: r#"{"items":[id]?}  (opens the Link Media dialog; omit items for the whole project)"#,
             enabled: always,
-            run: |s, _| {
-                let list = refresh(s);
-                s.offline.prompt = !list.is_empty();
-                Ok(json!({"missing": list}))
+            run: link_media,
+            journal: false,
+            named: crate::commands::NamedKeys::NONE,
+        },
+        CommandSpec {
+            id: "media.linkSelectedMedia",
+            label: "Link Media…",
+            menu: &["Clip"],
+            shortcut: None,
+            params: r#"{"items":[id]?}  (selection; defaults to the project selection)"#,
+            enabled: has_linkable_selection,
+            run: |s, p| {
+                let mut q = p.clone();
+                if id_list_p(&q, "items").is_none() {
+                    let ids: Vec<u64> = s.state.project_selection.iter().map(|i| i.0).collect();
+                    q["items"] = json!(ids);
+                }
+                link_media(s, &q)
             },
             journal: false,
             named: crate::commands::NamedKeys::NONE,
@@ -710,7 +757,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Relink Media",
             menu: &[],
             shortcut: None,
-            params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"relinkOffline":bool?,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
+            params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"relinkOffline":bool?,"alignTimecode":bool=false,"othersScope":[id]?,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
             enabled: always,
             run: relink,
             journal: true,

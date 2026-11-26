@@ -317,8 +317,9 @@ have no identity, so relinking them skips the fingerprint check.
 |---|---|
 | `media.findMissing` | `{missing: [{item, name, fileName, path, status: missing\|offline\|proxyMissing, duration, startTimecode}]}` |
 | `media.status {item?}` | per item: `online`, `missing`, `offline`, `unreadable` or `generated`, plus identity and proxy |
-| `media.linkMedia` | File ▸ Link Media… (rescans; the UI opens the dialog) |
-| `media.relink {item, path, force?, relinkOthers?=true, relinkOffline?, alignTimecode?, match?}` | check, link, then the others |
+| `media.linkMedia {items?}` | File ▸ Link Media… (rescans; omit `items` for the whole project; the UI opens the dialog) |
+| `media.linkSelectedMedia {items?}` | Clip ▸ Link Media… / Project item context (defaults to the project selection) |
+| `media.relink {item, path, force?, relinkOthers?=true, relinkOffline?, alignTimecode?, othersScope?, match?}` | check, link, then the others |
 | `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
 | `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
 | `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
@@ -339,7 +340,11 @@ file just linked, by dropping the common trailing path components (`/Volumes/A/s
 files (and **Offline** files when Include Offline media is on; Premiere's default) and checks each
 one. It also looks in the new file's folder. Windows and macOS separators both work.
 `relinkOffline` overrides that for one command; otherwise Settings ▸ Media ▸
-`media.relinkOfflineMedia` is used (and seeds the Link Media checkbox). **Align Timecode** keeps
+`media.relinkOfflineMedia` is used (and seeds the Link Media checkbox). When the GUI Link Media
+dialog runs Relink others, it passes `othersScope` as the dialog's **pool** (File / open: every
+missing and Offline row; Clip / Project selection: only the selected linkable items). Marking a row
+**Offline** in the dialog drops it from that pool so Relink others cannot reconnect it. Omit
+`othersScope` (CLI / agents) to keep project-wide Relink others. **Align Timecode** keeps
 clips on the same timecode when the new file starts at a different timecode: the clips' source
 in-points, keyframes, marks and markers move with it (`Project::shift_media_time`). Media an EDL
 names starts at timecode 00:00:00:00 until its file is linked, because the list's source times are
@@ -348,7 +353,8 @@ media. One relink, together with the files it pulls along, is one undo step.
 
 **Offline All** is remembered with the project by default (`media.rememberOfflineAll`): reopening
 does not ask again for those clips. Turn that pref off to prompt for Offline media on open as well.
-File ▸ Link Media… still lists Offline clips so they can be reconnected.
+File ▸ Link Media… still lists Offline clips so they can be reconnected. Clip ▸ Link Media… and the
+Project panel item context menu open the same dialog scoped to the selection.
 
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,

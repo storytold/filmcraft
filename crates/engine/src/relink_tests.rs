@@ -523,6 +523,63 @@ fn offline_all_is_saved_and_reopening_does_not_ask_again() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Relink others with `othersScope` stays inside that set (Link Media dialog pool).
+#[test]
+fn relink_others_respects_others_scope() {
+    let root = tmp_dir("relink-others-scope");
+    let (path, items) = saved_project(&root);
+    let moved = root.join("Moved").join("Media");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let a = moved.join("a.mov").to_string_lossy().into_owned();
+    let mut s = open(&path);
+    // Scope only the linked item: the sibling stays missing even though Relink others is on.
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "othersScope": [items[0].0]})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["remaining"], json!([items[1].0]), "{r}");
+    assert_eq!(s.execute("media.status", json!({"item": items[1].0})).unwrap()[0]["status"], json!("missing"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Offline-in-dialog then Link: with Include Offline on, `othersScope` without that id keeps it Offline.
+#[test]
+fn offline_then_link_does_not_clear_offline_when_scoped_out() {
+    let root = tmp_dir("relink-offline-then-link-scope");
+    let (path, items) = saved_project(&root);
+    let moved = root.join("Moved").join("Media");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let a = moved.join("a.mov").to_string_lossy().into_owned();
+    let mut s = open(&path);
+    s.execute("media.makeOffline", json!({"items": [items[1].0]})).unwrap();
+    assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline);
+    // Dialog pool after Offline drops items[1]; Relink others still has Include Offline on.
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOffline": true, "othersScope": [items[0].0]})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+    assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline, "scoped-out Offline stays Offline");
+    assert_eq!(s.execute("media.status", json!({"item": items[1].0})).unwrap()[0]["status"], json!("offline"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `media.linkMedia` / `media.linkSelectedMedia` return the dialog pool rows.
+#[test]
+fn link_media_items_scopes_the_missing_list() {
+    let root = tmp_dir("link-media-items-scope");
+    let (path, items) = saved_project(&root);
+    std::fs::rename(root.join("Media"), root.join("Moved")).unwrap();
+    let mut s = open(&path);
+    let all = s.execute("media.linkMedia", json!({})).unwrap();
+    assert_eq!(all["missing"].as_array().unwrap().len(), 2, "{all}");
+    let one = s.execute("media.linkMedia", json!({"items": [items[0].0]})).unwrap();
+    assert_eq!(one["missing"].as_array().unwrap().len(), 1, "{one}");
+    assert_eq!(one["missing"][0]["item"], json!(items[0].0));
+    s.execute("project.select", json!({"items": [items[1].0]})).unwrap();
+    let sel = s.execute("media.linkSelectedMedia", json!({})).unwrap();
+    assert_eq!(sel["missing"].as_array().unwrap().len(), 1, "{sel}");
+    assert_eq!(sel["missing"][0]["item"], json!(items[1].0));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Premiere default: Relink others reconnects Offline media; prefs / `relinkOffline` opt out.
 #[test]
 fn relink_others_includes_offline_by_default_with_prefs_to_opt_out() {

@@ -370,10 +370,23 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
     }
     if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
         ui.separator();
-        for (label, cmd) in [(tl!("Link Media…"), "media.linkMedia"), (tl!("Make Offline…"), "media.makeOffline")] {
-            if ui.button(label).clicked() {
-                actions.push(("project.select".into(), sel()));
-                actions.push((cmd.into(), json!({})));
+        {
+            // Keep the whole selection when the right-clicked item is in it (same rule as Proxy).
+            let targets = menu_targets(&app.session.state.project_selection, id);
+            let target_ids: Vec<u64> = targets.iter().map(|i| i.0).collect();
+            let can_link = targets
+                .iter()
+                .any(|i| app.session.offline.missing.contains(i) || app.session.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| m.offline));
+            let b = ui.add_enabled(can_link, egui::Button::new(tl!("Link Media…")));
+            app.auto.add("project.itemMenu.linkMedia", b.rect, "Link Media…");
+            if b.clicked() {
+                actions.push(("project.select".into(), json!({"items": target_ids.clone()})));
+                actions.push(("media.linkSelectedMedia".into(), json!({})));
+                ui.close();
+            }
+            if ui.button(tl!("Make Offline…")).clicked() {
+                actions.push(("project.select".into(), json!({"items": target_ids})));
+                actions.push(("media.makeOffline".into(), json!({})));
                 ui.close();
             }
         }

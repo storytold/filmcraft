@@ -759,6 +759,8 @@ pub struct LinkMediaDraft {
     pub candidate: Option<usize>,
     /// Rows the user set offline in this session of the dialog (item ids).
     pub skipped: Vec<u64>,
+    /// Item ids this dialog may list and Relink others may touch. Empty = every missing/offline row (legacy / File open before pool is filled).
+    pub pool: Vec<u64>,
     pub message: String,
 }
 
@@ -780,6 +782,7 @@ impl Default for LinkMediaDraft {
             candidates: vec![],
             candidate: None,
             skipped: vec![],
+            pool: vec![],
             message: String::new(),
         }
     }
