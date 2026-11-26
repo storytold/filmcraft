@@ -544,3 +544,34 @@ fn lumetri_index(d: &mut Driver, clip: u64) -> usize {
     let it = items.into_iter().find(|i| i["clip"] == clip).unwrap();
     it["effects"].as_array().unwrap().iter().position(|e| e["effect"] == "lumetri").unwrap()
 }
+
+#[test]
+fn wb_selector_sets_temperature_and_tint_from_the_program_picture() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    let wb = |d: &mut Driver| {
+        let e = lumetri(d, clip);
+        (e["params"]["temperature"]["value"].clone(), e["params"]["tint"]["value"].clone())
+    };
+    let before = wb(&mut d);
+    d.click("lumetri.wbSelector");
+    d.click("program.picture");
+    for _ in 0..50 {
+        if wb(&mut d) != before {
+            break;
+        }
+        d.frames(1);
+    }
+    assert_ne!(wb(&mut d), before, "the WB Selector set the white balance from the Program picture");
+    // it disarms after the pick: another click on the picture changes nothing
+    let after = wb(&mut d);
+    d.click("program.picture");
+    assert_eq!(wb(&mut d), after);
+    // one undo step
+    d.exec("edit.undo", json!({}));
+    assert_eq!(wb(&mut d), before);
+}
