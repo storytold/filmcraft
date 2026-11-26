@@ -52,6 +52,25 @@ impl Drop for Driver {
     }
 }
 
+/// #4411: the Export and Send to Queue buttons are wide enough for their label in every language.
+#[test]
+fn export_buttons_fit_their_labels_in_every_language() {
+    use filmcraft_ui_egui::i18n::{Language, set_current};
+    let mut d = Driver::new("button-labels");
+    d.ok("ui.set", json!({"mode":"export"}));
+    for lang in Language::ALL {
+        d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": lang.code()}));
+        d.frames(3);
+        for (id, label, size) in [("export.sendToQueue", "Send to Queue", 12.5), ("export.button", "Export", 13.0)] {
+            let width = d.element_rect(id).unwrap_or_else(|| panic!("no element {id}"))[2] as f32;
+            let font = egui::FontId::new(size, egui::FontFamily::Name("semibold".into()));
+            let text = d.harness.ctx.fonts_mut(|f| f.layout_no_wrap(lang.tr(label).to_string(), font, egui::Color32::WHITE).size().x);
+            assert!(text <= width, "{label} in {} is {text} px wide in a {width} px button", lang.code());
+        }
+    }
+    set_current(Language::En);
+}
+
 #[test]
 fn single_frame_in_out_warning_updates_with_range_and_marks() {
     let mut d = Driver::new("single-frame-warning");
