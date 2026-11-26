@@ -230,6 +230,26 @@ fn sequence_settings_scales_motion_with_the_frame_size_in_one_undo_step() {
 }
 
 #[test]
+fn sequence_settings_video_display_format() {
+    use filmcraft_time::TimeDisplay;
+    let mut s = demo();
+    assert_eq!(s.active_sequence().unwrap().settings.display, TimeDisplay::Timecode);
+    for (id, want) in [("feet35", TimeDisplay::Feet35), ("feet16", TimeDisplay::Feet16), ("frames", TimeDisplay::Frames), ("timecode", TimeDisplay::Timecode)] {
+        s.execute("sequence.settings", json!({"videoDisplay": id})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().settings.display, want, "{id}");
+    }
+    s.execute("sequence.settings", json!({"videoDisplay": "feet35"})).unwrap();
+    assert!(s.undo().is_some());
+    assert_eq!(s.active_sequence().unwrap().settings.display, TimeDisplay::Timecode, "one undo step");
+    // only the video formats; a refused value changes nothing
+    let before = (*s.project).clone();
+    for bad in ["samples", "seconds", "nope"] {
+        assert!(s.execute("sequence.settings", json!({"videoDisplay": bad})).is_err(), "{bad}");
+        assert_eq!(*s.project, before);
+    }
+}
+
+#[test]
 fn sequence_settings_timecode_render_quality_and_colour() {
     let mut s = demo();
     s.execute("sequence.settings", json!({"fps":29.97,"dropFrame":true,"maxRenderQuality":true})).unwrap();

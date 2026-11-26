@@ -137,9 +137,14 @@ fn main() {
         None => ffmpeg_fixture(secs).or_else(|| generated_fixture(secs)).expect("could not write the source fixture (or pass --source)"),
     };
     let keep = arg(&args, "--keep").map(PathBuf::from);
-    let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let out = keep.clone().unwrap_or_else(|| dir.join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
+    // A fresh private folder, never a predictable name another user could have prepared.
+    let mut b = tempfile::Builder::new();
+    b.prefix("filmcraft-bench-export-");
+    // owner-only (tempfile creates with 0777 before the umask), so another local user cannot plant a symlink for the output
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    let dir = b.tempdir().expect("temp dir");
+    let out = keep.clone().unwrap_or_else(|| dir.path().join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
     let mut s = session(&src);
     let mut times = Vec::new();
     let mut stages = Vec::new();
@@ -166,7 +171,4 @@ fn main() {
     sorted.sort_by(f64::total_cmp);
     println!("export {format}: runs {runs}, median {:.3} s, min {:.3} s", sorted[runs / 2], sorted[0]);
     println!("stages (last run): {}", stages.iter().map(|(n, s)| format!("{n} {s:.3}")).collect::<Vec<_>>().join(", "));
-    if keep.is_none() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

@@ -9,27 +9,25 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::native_dialogs::FileDialog;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// Dialogs the app asked for, with the sender that answers each.
 type Asked = Arc<Mutex<Vec<(FileDialog, Sender<Vec<String>>)>>>;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    asked: Asked,
+driver! {
+    Driver {
+        asked: Asked,
+    };
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
     /// The demo project; `runner`: dialogs go to the stand-in host runner (else synchronous hooks).
     fn new(runner: bool) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(session).with_control(rx);
         let asked: Asked = Arc::default();
@@ -41,47 +39,8 @@ impl Driver {
                 rx
             }));
         }
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, asked };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
+        let harness = build(builder(), app);
+        start(Driver { harness, tx, asked })
     }
 
     /// The one dialog asked for so far (taken), with its answering sender.

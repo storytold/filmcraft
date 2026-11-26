@@ -116,7 +116,7 @@ pub fn show_failed(app: &mut crate::FilmcraftApp, ctx: &egui::Context) {
     for (id, r, label) in elems {
         app.auto.add(id, r, &label);
     }
-    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.pointer.any_down()) {
+    if close || (crate::framework::escape_pressed(ctx) && !ctx.input(|i| i.pointer.any_down())) {
         app.ui.failed_link = None;
     }
 }

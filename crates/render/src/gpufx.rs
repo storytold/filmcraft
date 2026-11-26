@@ -1127,7 +1127,7 @@ impl FxOp {
     }
 }
 
-/// Horizontal scale of the Lumetri vignette's coordinates for a Roundness of `vround`
+/// Horizontal scale of the Color Grading vignette's coordinates for a Roundness of `vround`
 /// (−1 … 1) on a frame `aspect` wide. At 0 the vignette is an ellipse that follows the
 /// frame; positive values move it towards a circle (1 = a true circle), negative values
 /// stretch it into a wider oval. Non-finite or out-of-range input never yields NaN.
@@ -1229,6 +1229,7 @@ mod tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",
@@ -1278,6 +1279,7 @@ mod tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",

@@ -198,9 +198,6 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     })
 }
 
-/// Parse-error replies queued for the writer before the reader waits for it to catch up.
-const MAX_QUEUED_PARSE_ERRORS: usize = 64;
-
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
@@ -223,56 +220,14 @@ impl FilmcraftMcp {
         input: impl tokio::io::AsyncRead + Unpin + Send + 'static,
         output: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
     ) -> Result<(), AutomationError> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        let (mut to_service, service_in) = tokio::io::duplex(1 << 20);
-        let (service_out, from_service) = tokio::io::duplex(1 << 20);
-        let (err_tx, mut err_rx) = tokio::sync::mpsc::channel::<String>(MAX_QUEUED_PARSE_ERRORS);
-        let reader = tokio::spawn(async move {
-            let mut lines = BufReader::new(input).lines();
-            // `err_tx.closed()`: the writer is gone (output failed), so stop forwarding requests whose replies cannot be delivered.
-            loop {
-                let line = tokio::select! {
-                    l = lines.next_line() => match l { Ok(Some(l)) => l, _ => break },
-                    () = err_tx.closed() => break,
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(_) => {
-                        if to_service.write_all(format!("{line}\n").as_bytes()).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        let reply = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}});
-                        // the writer is gone (output failed): stop reading
-                        if err_tx.send(reply.to_string()).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            // EOF: closing the pipe ends the service
-            let _ = to_service.shutdown().await;
-        });
-        let writer = tokio::spawn(async move {
-            let mut output = output;
-            let mut replies = BufReader::new(from_service).lines();
-            loop {
-                let line = tokio::select! {
-                    l = replies.next_line() => match l { Ok(Some(l)) => l, _ => break },
-                    Some(e) = err_rx.recv() => e,
-                };
-                if output.write_all(format!("{line}\n").as_bytes()).await.is_err() || output.flush().await.is_err() {
-                    break;
-                }
-            }
-        });
+        // A full-size 268M-pixel RGBA PNG encoded as base64 can exceed 1 GiB.
+        // Bound both directions without imposing the internal duplex pipe's 1 MiB capacity.
+        const MAX_MCP_LINE: usize = 2 * 1024 * 1024 * 1024;
+        let craft_jsonrpc::async_lines::Adapter { service_in, service_out, tasks } =
+            craft_jsonrpc::async_lines::spawn(input, output, MAX_MCP_LINE, MAX_MCP_LINE);
         let running = self.serve((service_in, service_out)).await.map_err(|e| AutomationError::Other(format!("MCP init: {e}")))?;
         let r = running.waiting().await.map_err(|e| AutomationError::Other(e.to_string()));
-        reader.abort();
-        let _ = writer.await;
+        tasks.finish().await;
         r.map(|_| ())
     }
 

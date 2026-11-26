@@ -335,17 +335,17 @@ fn apply_key_event(
 }
 
 /// One step for the editor, in the order the platform sent its events: an edit from
-/// [`craft_ui::ime::Composer`], or an empty input-method commit with nothing composing, which
+/// [`crate::ime_composer::Composer`], or an empty input-method commit with nothing composing, which
 /// the composer drops but which replaces the selection here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TextStep {
-    Edit(craft_ui::ime::Edit),
+    Edit(crate::ime_composer::Edit),
     EmptyCommit,
 }
 
 /// Run the admitted events through the composer. Returns the steps and whether the composer
 /// ended a composition the platform input method may still hold.
-fn compose(composer: &mut craft_ui::ime::Composer, events: &[egui::Event], time: f64) -> (Vec<TextStep>, bool) {
+fn compose(composer: &mut crate::ime_composer::Composer, events: &[egui::Event], time: f64) -> (Vec<TextStep>, bool) {
     let mut steps = Vec::new();
     let mut interrupted = false;
     let mut start = 0;
@@ -370,7 +370,7 @@ fn compose(composer: &mut craft_ui::ime::Composer, events: &[egui::Event], time:
 /// Whether a step is the input method's (`from_ime`) and ends its composition (`terminal`). An
 /// insert is the input method's when it is one of the batch's committed texts, which it takes.
 fn step_origin(step: &TextStep, commits: &mut Vec<String>) -> (bool, bool) {
-    use craft_ui::ime::Edit;
+    use crate::ime_composer::Edit;
     match step {
         TextStep::EmptyCommit => (true, true),
         TextStep::Edit(Edit::Insert(text)) => match commits.iter().position(|commit| commit == text) {
@@ -396,7 +396,7 @@ fn apply_text_step(
     step: TextStep,
     from_ime: bool,
 ) -> EventFlow {
-    use craft_ui::ime::Edit;
+    use crate::ime_composer::Edit;
     let viewport = ui.ctx().viewport_id();
     let edit = match step {
         TextStep::EmptyCommit => return apply_ime_commit(app, state, target, ""),
@@ -450,7 +450,7 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     fr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Text layer"));
     // while another field has the keyboard (a value typed in Properties) the keys are its own;
     // the text takes the keyboard back once nothing has it (#683)
-    if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
+    if crate::framework::field_focused(ui.ctx(), Some(eid)) {
         ime_off(app, ui);
         return;
     }
@@ -473,7 +473,7 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     let viewport = ui.ctx().viewport_id();
     if app.ime_composer_target != Some(composition_target) {
         app.ime_composer.discard(ui.ctx());
-        app.ime_composer = craft_ui::ime::Composer::new().with_owner(composition_target.owner);
+        app.ime_composer = crate::ime_composer::Composer::new().with_owner(composition_target.owner);
         app.ime_composer_target = Some(composition_target);
     }
     // A command, a control request or a caret move ended the composition: the composer drops
@@ -492,9 +492,25 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     // handled later in this pass (caret placement, another layer, or ending the edit): the
     // composer sees it, so a composition keeps its marked text, and the events after it
     // belong to the new target.
+    //
+    // The runtime gives a pass at most one press, as its last pointer event, and holds what came
+    // after it for the next frame: the held events that lead the frame after a press the editor
+    // saw are that press's suffix, which the editor drops as it did when they shared the press's
+    // batch. Events that arrived in that frame after the press's pass are the user's and stay.
+    let press_frame_id = egui::Id::unique(TEXT_EDIT_ID).with("press_frame");
+    let frame = ui.ctx().cumulative_frame_nr();
+    let saw_press = ui.data(|d| d.get_temp::<u64>(press_frame_id)).is_some_and(|at| frame == at.wrapping_add(1));
+    let mut suffix = if saw_press { crate::framework::held_press_suffix(ui.ctx()) } else { 0 };
     let mut admitted = Vec::new();
     let mut pressed = false;
     for ev in events {
+        if suffix > 0 {
+            if !matches!(ev, egui::Event::PointerButton { pressed: true, .. }) {
+                suffix -= 1;
+                continue;
+            }
+            suffix = 0;
+        }
         if begin_text_event(app, ui, &state, composition_target, &ev).is_none() {
             continue;
         }
@@ -503,6 +519,9 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
         if pressed {
             break;
         }
+    }
+    if pressed {
+        ui.data_mut(|d| d.insert_temp(press_frame_id, frame));
     }
     let mut commits: Vec<String> = admitted
         .iter()

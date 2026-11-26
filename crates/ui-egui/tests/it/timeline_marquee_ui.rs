@@ -1,65 +1,24 @@
 //! Headless UI tests of box (marquee) selection in the Timeline: the selection follows the box
 //! while it is dragged, Shift adds to the selection the drag began with, and Escape cancels.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, builder, demo_session, driver, egui_rect, launch, start};
 use filmcraft_project::ClipId;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    modifiers: egui::Modifiers,
+driver! {
+    Driver {
+        modifiers: egui::Modifiers,
+    }
 }
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, modifiers: egui::Modifiers::NONE };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let (harness, tx) = launch(demo_session(), builder());
+        start(Driver { harness, tx, modifiers: egui::Modifiers::NONE })
     }
 
     fn rect(&mut self, id: &str) -> egui::Rect {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+        egui_rect(self.expect_rect(id))
     }
 
     fn send(&mut self, e: egui::Event) {
@@ -183,6 +142,36 @@ fn escape_cancels_the_box_and_restores_the_selection() {
     d.button(over_a, false);
     d.frames(2);
     assert!(d.selected(a) && !d.selected(b), "Escape put back the selection the drag began with");
+}
+
+/// #1912: the box also selects the captions it touches on the caption tracks above the clips.
+#[test]
+fn the_box_selects_captions_it_touches() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let mut ids = Vec::new();
+    for (i, text) in ["One", "Two", "Three"].iter().enumerate() {
+        let r = d.exec("captions.add", json!({"text": text, "seconds": 1 + 4 * i, "durationSeconds": 2}));
+        ids.push(r["caption"].as_u64().unwrap());
+    }
+    d.exec("edit.deselectAll", json!({}));
+    d.frames(3);
+    let rects: Vec<egui::Rect> = ids.iter().map(|id| d.rect(&format!("timeline.caption.{id}"))).collect();
+    let y = rects[0].center().y;
+    // from empty lane space left of the first caption to the middle of the second
+    let start = egui::pos2(rects[0].min.x - 4.0, y);
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    let end = egui::pos2(rects[1].center().x, y);
+    d.move_to(start, end);
+    let sel = |d: &Driver| d.harness.state().session.state.caption_selection.clone();
+    assert_eq!(sel(&d), vec![ClipId(ids[0]), ClipId(ids[1])], "live while dragging");
+    d.button(end, false);
+    d.frames(2);
+    assert_eq!(sel(&d), vec![ClipId(ids[0]), ClipId(ids[1])], "kept on release");
+    d.exec("graphics.upgradeCaption", json!({}));
+    let left = d.exec("captions.list", json!({}))["tracks"][0]["captions"].as_array().unwrap().len();
+    assert_eq!(left, 1, "both boxed captions became graphics");
 }
 
 /// Only the primary button draws the box: a right-button drag over clips selects none of them.
