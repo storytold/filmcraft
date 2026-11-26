@@ -99,8 +99,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         }
         return false;
     }
-    // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580)
-    if r.should_close() && !ctx.input(|i| i.pointer.any_down()) {
+    // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580).
+    // The runtime takes Escape from egui as the window's cancel, so the modal does not see it.
+    if (r.should_close() || crate::framework::escape_pressed(ctx)) && !ctx.input(|i| i.pointer.any_down()) {
         app.clip_mismatch = None;
         return false;
     }

@@ -5,70 +5,24 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes `view-*.png`.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
+use crate::support::{Drive, builder, demo_session, driver, first_media_item, launch, shots_dir, start, with_shots};
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-    /// Where the pointer was last put by `move_to` or `press`.
-    pointer: egui::Pos2,
+driver! {
+    Driver {
+        /// Where the pointer was last put by `move_to` or `press`.
+        pointer: egui::Pos2,
+    }
 }
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots, pointer: egui::Pos2::ZERO };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let (harness, tx) = launch(demo_session(), with_shots(builder()));
+        start(Driver { harness, tx, pointer: egui::Pos2::ZERO })
     }
     fn menu(&mut self, id: &str) -> Value {
-        let r = self.ok("ui.menu.invoke", json!({"id": id}));
-        self.frames(2);
-        r
+        self.menu_settle(id, 2)
     }
     fn program(&mut self) -> Value {
         self.ok("ui.inspect", json!({}))["ui"]["program"].clone()
@@ -81,10 +35,6 @@ impl Driver {
         let e = v.as_array().unwrap().iter().find(|e| e["id"] == id)?.clone();
         let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
         Some([r[0], r[1], r[2], r[3]])
-    }
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
     }
     /// Move the pointer to `(x, y)` a few points per frame, as a mouse does (a button held stays
     /// held), and let the UI react.
@@ -122,7 +72,7 @@ impl Driver {
         self.harness.output().platform_output.cursor_icon
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
+        let Some(dir) = shots_dir() else { return };
         // give the frame workers time to deliver full-resolution frames
         for _ in 0..8 {
             self.frames(3);
@@ -131,21 +81,6 @@ impl Driver {
         let img = self.harness.render().expect("wgpu render");
         std::fs::create_dir_all(&dir).unwrap();
         img.save(dir.join(format!("view-{name}.png"))).unwrap();
-    }
-}
-
-fn first_media_item(v: &Value) -> Option<u64> {
-    match v {
-        Value::Object(m) => {
-            if let Some(id) = m.get("item").and_then(Value::as_u64)
-                && m.get("type").and_then(Value::as_str).is_some_and(|t| t == "Movie")
-            {
-                return Some(id);
-            }
-            m.values().find_map(first_media_item)
-        }
-        Value::Array(a) => a.iter().find_map(first_media_item),
-        _ => None,
     }
 }
 

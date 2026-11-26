@@ -1,6 +1,22 @@
 use super::*;
 use crate::{FrameRequest, MediaError, MediaKind, open_bytes};
 
+#[test]
+fn animation_candidates_require_complete_supported_signatures() {
+    for (header, format) in
+        [(b"\x89PNG\r\n\x1a\n".as_slice(), Format::Apng), (b"GIF87a", Format::Gif), (b"GIF89a", Format::Gif), (b"RIFF\0\0\0\0WEBP", Format::WebP)]
+    {
+        assert_eq!(Format::sniff(header), Some(format));
+        for len in 0..header.len() {
+            assert_eq!(Format::sniff(&header[..len]), None);
+        }
+    }
+
+    assert_eq!(Format::sniff(b"GIF88a"), None);
+    assert_eq!(Format::sniff(b"RIFF\0\0\0\0WAVE"), None);
+    assert_eq!(Format::sniff(b"\xff\xd8\xff"), None);
+}
+
 const W: u32 = 4;
 const H: u32 = 2;
 

@@ -16,6 +16,7 @@
 
 use craft_dpx::{Error, Layout, Limits};
 use filmcraft_color::{Matrix, Range, normalize_c, normalize_y, ycbcr_to_rgb};
+use image::metadata::Orientation;
 
 use crate::{MediaError, Result, still::Raster};
 
@@ -90,6 +91,14 @@ impl Components {
     }
 }
 
+/// The size [`decode`] reports for this file, from its header alone: the shared crate's
+/// probe reads the header and checks the frame fits within the same limits, without
+/// decoding a pixel.
+pub fn geometry(bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let info = craft_dpx::probe(bytes, &Limits::default()).ok()?;
+    Some((info.width, info.height, Orientation::NoTransforms))
+}
+
 /// Decode the first image element of a DPX file to straight-alpha RGBA8, top row first.
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     if !sniff(bytes) {
@@ -133,7 +142,7 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         }
     }
     let has_alpha = components.has_alpha() && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255);
-    Ok(Raster { width: info.width, height: info.height, rgba, has_alpha })
+    Ok(Raster { width: info.width, height: info.height, rgba, has_alpha, orientation: Orientation::NoTransforms })
 }
 
 #[cfg(test)]
