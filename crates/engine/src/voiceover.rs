@@ -11,7 +11,14 @@
 //! | `audio.voiceover.settings` | get / set the Voice-Over Record Settings (preferences), list input devices |
 //! | `audio.voiceover.start` | arm and start capturing; returns R, C, the punch-out and the countdown cue times |
 //! | `audio.voiceover.sync` | the host's playback actually started at `time`: restart the capture there |
-//! | `audio.voiceover.stop` | stop capturing; write, import and place the recording (one undo step); returns the take's prompter log as `promptLog` |
+//! | `audio.voiceover.stop` | stop capturing; write, import and place the recording (one undo step); returns the take's prompter log as `promptLog` and, with Follow Speech, its `transcript` |
+//! | `audio.voiceover.followSpeech` | turn Follow Speech on or off (`on`, else toggle); disabled with the reason when it cannot run |
+//! | `audio.voiceover.followState` | Follow Speech: off / unavailable (with the reason) / ready / starting / listening / following / lost / failed, the model, the latest words |
+//!
+//! **Follow Speech** ([`crate::follow`], #5266): with the preference on, the input is read while
+//! the take records ([`pump`], once per UI frame and on each `audio.voiceover.followState`), fed to
+//! a speech recogniser, and the prompter follows the narrator. With it off nothing is read before
+//! the take stops, as before.
 //!
 //! Input goes through the [`AudioInput`] trait. The desktop app installs a cpal input; headless
 //! sessions (CLI, MCP, tests) use [`SyntheticInput`], a deterministic generated signal that produces
@@ -149,11 +156,22 @@ pub struct VoiceOverPrefs {
     pub preroll_seconds: f64,
     /// Playback continues this long after the punch-out (Out) point (seconds).
     pub postroll_seconds: f64,
+    /// Follow Speech (#5266): recognise the narration while recording and keep the prompter at the
+    /// narrator's place. Off by default.
+    pub follow_speech: bool,
 }
 
 impl Default for VoiceOverPrefs {
     fn default() -> Self {
-        Self { source: String::new(), input_channel: 0, name: "Voice-over".into(), countdown_sound_cues: true, preroll_seconds: 2.0, postroll_seconds: 2.0 }
+        Self {
+            source: String::new(),
+            input_channel: 0,
+            name: "Voice-over".into(),
+            countdown_sound_cues: true,
+            preroll_seconds: 2.0,
+            postroll_seconds: 2.0,
+            follow_speech: false,
+        }
     }
 }
 
@@ -187,6 +205,16 @@ pub struct VoiceOver {
     captured: Vec<f32>,
     /// A stopped take awaiting a successful save; retries keep its original end point.
     pending_stop: Option<Tick>,
+    /// Follow Speech during the take in progress.
+    pub follow: Option<crate::follow::Live>,
+    /// Why Follow Speech could not start for the take in progress.
+    pub follow_error: Option<String>,
+    /// The recogniser Follow Speech uses, when a host or test installed one (any build).
+    pub recognizer: Option<crate::follow::RecognizerFactory>,
+    /// The speech model loaded for Follow Speech, kept between takes.
+    pub model_cache: crate::follow::ModelCache,
+    /// The transcript of the last take recorded with Follow Speech.
+    pub last_transcript: Option<crate::follow::TakeTranscript>,
 }
 
 impl VoiceOver {
@@ -209,6 +237,41 @@ pub fn post_input_meter(s: &mut Session) {
     if !peaks.is_empty() {
         s.previews.live.post_input_meter(&peaks);
     }
+}
+
+/// Follow Speech: read what the input captured up to the playhead, feed it to the recogniser and
+/// let the prompter follow what it heard. Does nothing unless a take records with Follow Speech on.
+pub fn pump(s: &mut Session) {
+    if s.voiceover.follow.is_none() || s.voiceover.pending_stop.is_some() {
+        return;
+    }
+    let Some(rec) = s.voiceover.rec.clone() else { return };
+    if rec.epoch != s.document_epoch {
+        return;
+    }
+    let sr = i64::from(rec.format.sample_rate.max(1));
+    let due = s.playhead().saturating_sub(rec.capture_start).to_units_floor(sr).max(0) as usize;
+    let have = s.voiceover.captured.len();
+    // the stop command's bound on a take
+    if due > have && due.saturating_mul(usize::from(rec.format.channels).max(1)) <= 268_435_456 {
+        let want = due - have;
+        if s.voiceover.captured.try_reserve(want).is_ok() {
+            let got = s.voiceover.input().read(want);
+            let ch = rec.channel as usize;
+            if let Some(c) = got.get(ch).or(got.first()) {
+                let n = c.len().min(want);
+                s.voiceover.captured.extend_from_slice(&c[..n]);
+            }
+        }
+    }
+    let fed = s.voiceover.follow.as_ref().map_or(0, |f| f.fed);
+    if s.voiceover.captured.len() > fed {
+        let new: Vec<f32> = s.voiceover.captured[fed..].to_vec();
+        if let Some(f) = s.voiceover.follow.as_mut() {
+            f.feed(&new);
+        }
+    }
+    crate::follow::update(s);
 }
 
 /// One countdown beep (1 kHz, 100 ms, −12 dBFS with 5 ms fades) at `sr`.
@@ -314,6 +377,7 @@ fn settings_json(s: &mut Session) -> Value {
         "devices": devices,
         "channels": channels,
         "recording": s.voiceover.rec,
+        "followSpeech": crate::follow::state_json(s),
     })
 }
 
@@ -340,6 +404,14 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(v) = f64_p(p, "postrollSeconds") {
         vo.postroll_seconds = v.clamp(0.0, 60.0);
+    }
+    if let Some(v) = bool_p(p, "followSpeech") {
+        if v && !s.prefs.voice_over.follow_speech
+            && let Err(why) = crate::follow::availability(s)
+        {
+            return Err(bad("audio.voiceover.settings", format!("Follow Speech is not available: {why}")));
+        }
+        vo.follow_speech = v;
     }
     if vo != s.prefs.voice_over {
         let mut prefs = s.prefs.clone();
@@ -375,6 +447,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
     // the prompter starts the take at the playhead, and its log with where the prompt is
     crate::prompter::begin_take(s, record_start, capture_start);
+    crate::follow::begin(s);
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     Ok(json!({
@@ -386,6 +459,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
         "postroll": Tick::from_seconds_f64(vo.postroll_seconds).0,
         "cues": cues,
         "sampleRate": format.sample_rate,
+        "followSpeech": crate::follow::state_json(s)["state"],
     }))
 }
 
@@ -404,8 +478,9 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(rec) = s.voiceover.rec.as_mut() else { return Err(bad("audio.voiceover.sync", "no voice-over is recording")) };
     rec.capture_start = t.clamp(Tick::ZERO, rec.record_start);
     let (record_start, capture_start) = (rec.record_start, rec.capture_start);
-    // the take restarts here, and so does its prompter log
+    // the take restarts here, and so does its prompter log and what Follow Speech heard
     crate::prompter::begin_take(s, record_start, capture_start);
+    crate::follow::restart(s);
     Ok(json!({"captureStart": capture_start.0}))
 }
 
@@ -457,7 +532,8 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
-        return Ok(json!({"recording": false, "placed": false, "promptLog": crate::prompter::finish_take(s)}));
+        let transcript = crate::follow::end(s);
+        return Ok(json!({"recording": false, "placed": false, "promptLog": crate::prompter::finish_take(s), "transcript": transcript}));
     }
     if rec.epoch != s.document_epoch {
         // another project was installed since the take started: its ids name other tracks now
@@ -466,7 +542,12 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
         crate::prompter::finish_take(s);
+        crate::follow::end(s);
         return Err(bad("audio.voiceover.stop", "the project was replaced; the take was not placed"));
+    }
+    if s.voiceover.pending_stop.is_none() {
+        // the words heard so far, before the input stops
+        pump(s);
     }
     let t_stop = s.voiceover.pending_stop.unwrap_or_else(|| time_p(s, p, "").unwrap_or(s.playhead()));
     let sr = rec.format.sample_rate.max(1) as i64;
@@ -500,6 +581,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
         crate::prompter::finish_take(s);
+        crate::follow::end(s);
         return Err(bad("audio.voiceover.stop", format!("input failed: {error}; check Settings > Audio Hardware and select a working input, then retry")));
     }
     s.voiceover.captured.resize(want, 0.0);
@@ -509,7 +591,8 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
-        return Ok(json!({"recording": false, "placed": false, "promptLog": crate::prompter::finish_take(s)}));
+        let transcript = crate::follow::end(s);
+        return Ok(json!({"recording": false, "placed": false, "promptLog": crate::prompter::finish_take(s), "transcript": transcript}));
     }
     let sample_count = samples.len();
     let sequence = s.project.sequence(rec.seq).ok_or(EngineError::NoSequence)?;
@@ -559,11 +642,14 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.pending_stop = None;
     s.voiceover.captured.clear();
     let prompt_log = crate::prompter::finish_take(s);
+    let transcript = crate::follow::end(s);
     Ok(json!({
         "recording": false,
         "placed": true,
         // the prompter's moves during the take (kept in the session, not yet on the clip)
         "promptLog": prompt_log,
+        // Follow Speech: the words heard, times from the record point (null when it was off)
+        "transcript": transcript,
         "path": path,
         "item": item.0,
         "clip": clip.0,
@@ -573,6 +659,25 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         "samples": sample_count,
         "sampleRate": sr,
     }))
+}
+
+/// `audio.voiceover.followSpeech`: can be turned on (or is on, so it can be turned off).
+fn can_follow(s: &Session) -> std::result::Result<(), String> {
+    if s.prefs.voice_over.follow_speech {
+        return Ok(());
+    }
+    crate::follow::availability(s).map(|_| ()).map_err(|why| format!("Follow Speech is not available: {why}"))
+}
+
+fn follow_speech(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = bool_p(p, "on").unwrap_or(!s.prefs.voice_over.follow_speech);
+    settings(s, &json!({"followSpeech": on}))?;
+    Ok(crate::follow::state_json(s))
+}
+
+fn follow_state(s: &mut Session, _: &Value) -> Result<Value> {
+    pump(s);
+    Ok(crate::follow::state_json(s))
 }
 
 fn spec(
@@ -591,7 +696,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "audio.voiceover.settings",
             "Voice-Over Record Settings",
-            r#"{"source":str?,"inputChannel":n?,"name":str?,"countdownSoundCues":bool?,"prerollSeconds":f64?,"postrollSeconds":f64?}"#,
+            r#"{"source":str?,"inputChannel":n?,"name":str?,"countdownSoundCues":bool?,"prerollSeconds":f64?,"postrollSeconds":f64?,"followSpeech":bool?}"#,
             crate::commands::always,
             settings,
             true,
@@ -599,5 +704,17 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("audio.voiceover.start", "Start Voice-over Recording", r#"{"track":"A1"|id?,"time":ticks?,"preroll":seconds?}"#, can_start, start, true),
         spec("audio.voiceover.sync", "Sync Voice-over Capture", r#"{"time":ticks?}"#, is_recording, sync, true),
         spec("audio.voiceover.stop", "Stop Voice-over Recording", r#"{"time":ticks?,"dir":str?,"discard":bool?}"#, is_recording, stop, true),
+        CommandSpec {
+            id: "audio.voiceover.followSpeech",
+            label: "Follow Speech",
+            menu: &["Markers", "Prompter"],
+            shortcut: None,
+            params: r#"{"on":bool?}"#,
+            enabled: can_follow,
+            run: follow_speech,
+            journal: true,
+            named: crate::commands::NamedKeys::NONE,
+        },
+        spec("audio.voiceover.followState", "Follow Speech State", "{}", crate::commands::always, follow_state, false),
     ]
 }

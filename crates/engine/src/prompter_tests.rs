@@ -506,7 +506,7 @@ fn hostile_prompter_positions_never_panic() {
     let sequence = s.state.active_sequence.unwrap();
     for &prompt in &times {
         for (&playhead, rate) in [i64::MIN, 0, i64::MAX].iter().zip([50, 100, 200]) {
-            s.prompter.anchor = Some(Anchor { sequence, epoch: s.document_epoch, prompt: Tick(prompt), playhead: Tick(playhead), rate });
+            s.prompter.anchor = Some(Anchor { sequence, epoch: s.document_epoch, prompt: Tick(prompt), playhead: Tick(playhead), rate, held: false });
             for id in [
                 "prompter.next",
                 "prompter.previous",

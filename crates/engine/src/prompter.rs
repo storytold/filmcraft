@@ -482,6 +482,9 @@ pub struct Anchor {
     /// How fast the prompt time runs relative to the playhead, in percent
     /// ([`MIN_RATE_PERCENT`] to [`MAX_RATE_PERCENT`]).
     pub rate: u32,
+    /// Follow Speech holds the prompter at the narrator's place (#5266): the prompt time stays at
+    /// `prompt` and does not run with the playhead. `rate` is the rate it runs at once released.
+    pub held: bool,
 }
 
 /// `delta` at `percent` of its length, rounded toward zero and saturating.
@@ -493,7 +496,15 @@ pub fn scale(delta: Tick, percent: u32) -> Tick {
 impl Anchor {
     /// The prompt time when the playhead is at `playhead`.
     pub fn at(&self, playhead: Tick) -> Tick {
+        if self.held {
+            return self.prompt;
+        }
         self.prompt.saturating_add(scale(playhead.saturating_sub(self.playhead), self.rate))
+    }
+
+    /// The rate the prompt time runs at now, in percent: 0 while held.
+    pub fn running(&self) -> u32 {
+        if self.held { 0 } else { self.rate }
     }
 }
 
@@ -524,16 +535,32 @@ pub fn prompt_time(s: &Session) -> Tick {
     prompt_time_at(s, s.playhead())
 }
 
-/// The rate the prompt time runs at relative to the playhead, in percent (100 when in step).
+/// The rate the prompt time runs at relative to the playhead, in percent (100 when in step). While
+/// Follow Speech holds the prompter, the rate it runs at once released.
 pub fn rate(s: &Session) -> u32 {
     anchor(s).map_or(NORMAL_RATE_PERCENT, |a| a.rate)
+}
+
+/// The rate the prompt time runs at now: [`rate`], or 0 while Follow Speech holds it.
+pub fn running_rate(s: &Session) -> u32 {
+    anchor(s).map_or(NORMAL_RATE_PERCENT, |a| a.running())
+}
+
+/// Whether Follow Speech holds the prompter at the narrator's place.
+pub fn held(s: &Session) -> bool {
+    anchor(s).is_some_and(|a| a.held)
 }
 
 /// Put the prompter at `prompt` for `playhead` at `rate` percent. At 100% and at the playhead it is
 /// in step, which is no anchor.
 fn set_position(s: &mut Session, prompt: Tick, playhead: Tick, rate: u32) -> Result<()> {
+    set_anchor(s, prompt, playhead, rate, false)
+}
+
+fn set_anchor(s: &mut Session, prompt: Tick, playhead: Tick, rate: u32, held: bool) -> Result<()> {
     let sequence = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    s.prompter.anchor = (prompt != playhead || rate != NORMAL_RATE_PERCENT).then_some(Anchor { sequence, epoch: s.document_epoch, prompt, playhead, rate });
+    s.prompter.anchor =
+        (held || prompt != playhead || rate != NORMAL_RATE_PERCENT).then_some(Anchor { sequence, epoch: s.document_epoch, prompt, playhead, rate, held });
     Ok(())
 }
 
@@ -595,6 +622,25 @@ fn inner_steps(m: &Marker) -> Vec<Tick> {
         .collect()
 }
 
+/// The first sequence time at which section `m`'s script position reaches character `c` (the
+/// inverse of the prompter's linear reading of the script). Follow Speech moves the prompter here.
+pub fn script_time(m: &Marker, c: usize) -> Tick {
+    let chars = parse_notes(&m.comment).script.chars().count();
+    if chars == 0 || c == 0 {
+        return m.start;
+    }
+    let c = c.min(chars);
+    let ideal = (c as i128 * m.duration.0 as i128 + chars as i128 - 1) / chars as i128;
+    let mut e = Tick(i64::try_from(ideal).unwrap_or(i64::MAX));
+    for _ in 0..8 {
+        if script_offset(chars, e, m.duration) >= c {
+            break;
+        }
+        e = e.saturating_add(Tick(1));
+    }
+    m.start.saturating_add(e).min(end_of(m))
+}
+
 /// Times the prompter can be moved to, with the section they belong to (None: a time where the
 /// shown section may change, such as a parent resuming after a nested marker), of the sections
 /// `keep` selects.
@@ -649,6 +695,9 @@ pub enum MoveKind {
     ToPlayhead,
     /// Faster, Slower or Reset Rate (#5263): the position does not change, the rate does.
     Rate,
+    /// Follow Speech (#5266) moved the prompter to the narrator's place, held it there (`rateAfter`
+    /// 0) or released it to run with the playhead again.
+    Follow,
 }
 
 /// One entry of a take's prompter log. Times are ticks, rates are percent. Between two entries the
@@ -762,21 +811,57 @@ fn log(s: &mut Session, c: Change) {
 }
 
 /// Move the prompt time to `to` (in step when that is the playhead and the rate is 100%), keeping
-/// the rate, and log the move on the take in progress.
+/// the rate, and log the move on the take in progress. A manual move releases a Follow Speech hold
+/// and tracking continues from where it puts the prompter.
 fn move_to(s: &mut Session, kind: MoveKind, to: Tick) -> Result<Value> {
-    let (before, playhead, rate) = (prompt_time(s), s.playhead(), rate(s));
+    let (before, playhead, rate, running) = (prompt_time(s), s.playhead(), rate(s), running_rate(s));
     set_position(s, to, playhead, rate)?;
-    log(s, Change { kind, playhead, before, after: to, rates: (rate, rate) });
+    log(s, Change { kind, playhead, before, after: to, rates: (running, rate) });
+    crate::follow::manual(s);
     Ok(status(s))
 }
 
 /// Run at `to` percent from here on: re-anchor at the current prompt time and playhead, so the
 /// position does not jump, and log the change on the take in progress.
 fn set_rate(s: &mut Session, to: u32) -> Result<Value> {
-    let (prompt, playhead, from) = (prompt_time(s), s.playhead(), rate(s));
+    let (prompt, playhead, from) = (prompt_time(s), s.playhead(), running_rate(s));
     set_position(s, prompt, playhead, to)?;
     log(s, Change { kind: MoveKind::Rate, playhead, before: prompt, after: prompt, rates: (from, to) });
+    crate::follow::manual(s);
     Ok(status(s))
+}
+
+/// Follow Speech: hold the prompter at `to` (the narrator's place), logged as a `follow` entry.
+pub(crate) fn follow_hold(s: &mut Session, to: Tick) {
+    let (before, playhead, rate, running) = (prompt_time(s), s.playhead(), rate(s), running_rate(s));
+    if before == to && running == 0 {
+        return;
+    }
+    if set_anchor(s, to, playhead, rate, true).is_ok() {
+        log(s, Change { kind: MoveKind::Follow, playhead, before, after: to, rates: (running, 0) });
+    }
+}
+
+/// Follow Speech: release a hold where the prompter is, so it runs with the playhead again.
+pub(crate) fn follow_release(s: &mut Session) {
+    let (prompt, playhead, rate, running) = (prompt_time(s), s.playhead(), rate(s), running_rate(s));
+    if running != 0 {
+        return;
+    }
+    if set_anchor(s, prompt, playhead, rate, false).is_ok() {
+        log(s, Change { kind: MoveKind::Follow, playhead, before: prompt, after: prompt, rates: (0, rate) });
+    }
+}
+
+/// Follow Speech: move the prompter to `to` (a talking point it heard), running at its rate.
+pub(crate) fn follow_move(s: &mut Session, to: Tick) {
+    let (before, playhead, rate, running) = (prompt_time(s), s.playhead(), rate(s), running_rate(s));
+    if before == to && running == rate {
+        return;
+    }
+    if set_anchor(s, to, playhead, rate, false).is_ok() {
+        log(s, Change { kind: MoveKind::Follow, playhead, before, after: to, rates: (running, rate) });
+    }
 }
 
 /// The prompter's position: prompt time, playhead, the gap and its direction, and what the
@@ -791,6 +876,7 @@ fn status(s: &Session) -> Value {
         "gap": gap,
         "direction": direction(gap),
         "rate": rate(s),
+        "held": held(s),
         "marker": section.as_ref().map(|x| x.marker),
         "point": section.as_ref().and_then(|x| x.current),
         "paragraph": section.as_ref().and_then(|x| x.script.as_ref()).map(|x| x.paragraph),
@@ -890,7 +976,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let mut v = serde_json::to_value(prompt_at(seq, t)).map_err(|e| EngineError::Other(e.to_string()))?;
     if let (Some(o), Value::Object(pos)) = (v.as_object_mut(), status(s)) {
-        for k in ["promptTime", "playhead", "gap", "direction", "rate"] {
+        for k in ["promptTime", "playhead", "gap", "direction", "rate", "held"] {
             if let Some(x) = pos.get(k) {
                 o.insert(k.into(), x.clone());
             }
