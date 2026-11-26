@@ -68,7 +68,6 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
         "file.open" => (tl!("Save Project"), "openProject"),
-        "file.newProject" | "file.openDemoProject" | "file.newProjectFromTemplate" => (tl!("Save Project"), "replaceProject"),
         _ => return None,
     })
 }
@@ -120,11 +119,6 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.open" {
         return params.get("path").and_then(Value::as_str).map(str::to_string).and_then(|path| ask_before_open(app, &path));
     }
-    // Project creation replaces the current document just as Open does. Keep the chosen command
-    // and its parameters in the prompt so Save / Don't Save / Cancel all finish the original action.
-    if matches!(id, "file.newProject" | "file.openDemoProject" | "file.newProjectFromTemplate") {
-        return crate::panels::project_replace::route(app, id, params);
-    }
     let empty = params.as_object().is_none_or(|m| m.is_empty());
     if !empty {
         return None;
@@ -162,7 +156,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// asked first, as for Close Project (#3843), and the project opens once the answer lets it.
 /// None when there is nothing unsaved, so the caller opens it now.
 pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Value, String>> {
-    if !app.session.has_unsaved_changes() {
+    if !app.session.is_dirty() {
         return None;
     }
     app.ui.clip_dialog =
@@ -174,7 +168,7 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
 pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
-    if app.quit_confirmed || !app.session.has_unsaved_changes() {
+    if app.quit_confirmed || !app.session.is_dirty() {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
@@ -670,13 +664,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" | "app.quit" | "file.open" | "file.newProject" | "file.openDemoProject" | "file.newProjectFromTemplate" => {
-                let question = if matches!(d.command.as_str(), "file.closeProject" | "app.quit") {
-                    tlf!("Save changes to “{project_name}” before closing?", project_name)
-                } else {
-                    tlf!("Save changes to “{project_name}” before replacing it?", project_name)
-                };
-                ui.label(question);
+            "file.closeProject" | "app.quit" | "file.open" => {
+                ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let r = ui.button(tl!("Cancel"));
@@ -724,10 +713,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if action.is_none()
         && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down())
-        && !matches!(
-            d.command.as_str(),
-            "file.closeProject" | "app.quit" | "file.open" | "file.newProject" | "file.openDemoProject" | "file.newProjectFromTemplate"
-        )
+        && !matches!(d.command.as_str(), "file.closeProject" | "app.quit" | "file.open")
     {
         action = Some("ok");
     }
@@ -822,7 +808,7 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
     // snapshot, so the next launch doesn't offer them back. Open replaces the project only once
     // the chosen one has loaded (which leaves the session as clean as closing does), so a file
     // that fails to open keeps the current project and its changes.
-    let close = command == "file.closeProject" || (command == "app.quit" && app.session.has_unsaved_changes());
+    let close = command == "file.closeProject" || (command == "app.quit" && app.session.is_dirty());
     if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
         app.ui.status = e.to_string();
     }
@@ -837,19 +823,6 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
         match app.session.execute("file.open", json!({"path": path})) {
             Ok(_) => edit_after_open(app, prompt),
             Err(e) => app.ui.status = e.to_string(),
-        }
-    }
-    if matches!(command, "file.newProject" | "file.openDemoProject" | "file.newProjectFromTemplate") {
-        let mut params = prompt.params.clone();
-        if command == "file.newProjectFromTemplate"
-            && let Some(object) = params.as_object_mut()
-        {
-            // The explicit Don't Save choice is the UI's confirmation for the engine's safety
-            // guard; preserve the engine guard for direct automation commands.
-            object.insert("force".into(), json!(true));
-        }
-        if let Err(e) = app.session.execute(command, params) {
-            app.ui.status = e.to_string();
         }
     }
 }
@@ -941,8 +914,6 @@ pub(crate) mod tests {
 
     #[test]
     fn every_command_with_a_clip_dialog_can_be_bound() {
-        // This command is reached only after the template picker supplies its required `template`
-        // parameter; it cannot open a dialog by itself or be bound directly.
-        assert_dialog_commands_bindable("clip_dialogs::meta", |id| meta(id).is_some(), &["file.newProjectFromTemplate"]);
+        assert_dialog_commands_bindable("clip_dialogs::meta", |id| meta(id).is_some(), &[]);
     }
 }
