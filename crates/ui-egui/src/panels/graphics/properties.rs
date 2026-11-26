@@ -559,6 +559,21 @@ fn property_targets(app: &FilmcraftApp, clip: ClipId, it: &TrackItem, l: usize) 
     ids
 }
 
+/// Time and easing for a keyframed property, shown while no layer is selected.
+fn time_section(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    it: &TrackItem,
+    t: &Tokens,
+    autos: &mut Vec<(String, Rect, String)>,
+    actions: &mut Vec<(String, Value)>,
+) {
+    if section(ui, app, "Responsive Design - Time", t) {
+        crate::panels::graphics_templates::responsive_time(app, ui, clip, it, autos, actions);
+    }
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -595,9 +610,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             crate::panels::graphics_templates::template_controls(app, ui, clip, &it, mt, &mut autos, &mut actions);
         }
         let Some(l) = sel else {
-            if section(ui, app, "Responsive Design - Time", &t) {
-                crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
-            }
+            time_section(app, ui, clip, &it, &t, &mut autos, &mut actions);
             ui.add_space(12.0);
             ui.label(egui::RichText::new(tl!("Select a layer to edit its properties.")).color(t.text_faint));
             return;
@@ -737,6 +750,13 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.auto("vertical", response.rect, "Vertical Text");
             if response.changed() {
                 cx.set("vertical", json!(value));
+            }
+            // 縦中横: half-width digits and short Latin set side by side in one cell (vertical only).
+            let mut tcy = pv(e, "tate_chu_yoko", mt).as_bool().unwrap_or(false);
+            let response = vui.add_enabled(vertical, egui::Checkbox::new(&mut tcy, tl!("Tate-Chu-Yoko")));
+            cx.auto("tate_chu_yoko", response.rect, "Tate-Chu-Yoko");
+            if response.changed() {
+                cx.set("tate_chu_yoko", json!(tcy));
             }
             cx.number(ui, tl!("Text Box Width"), NumberField { id: "box_width", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             cx.number(ui, tl!("Text Box Height"), NumberField { id: "box_height", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });

@@ -62,6 +62,10 @@ pub struct TextStyle {
     pub caps: Caps,
     pub underline: bool,
     pub strikethrough: bool,
+    /// 縦中横 (horizontal in vertical): in vertical text, 2–4 consecutive half-width characters of
+    /// a run set with this are laid side by side across the column in one cell instead of one cell
+    /// each. Ignored in horizontal text.
+    pub tate_chu_yoko: bool,
 }
 
 impl Default for TextStyle {
@@ -79,6 +83,7 @@ impl Default for TextStyle {
             caps: Caps::Normal,
             underline: false,
             strikethrough: false,
+            tate_chu_yoko: false,
         }
     }
 }
@@ -112,7 +117,7 @@ impl Hash for TextStyle {
         hf(h, self.size);
         hf(h, self.tracking);
         hf(h, self.baseline_shift);
-        (self.kerning, self.ligatures, self.faux_bold, self.faux_italic, self.caps, self.underline, self.strikethrough).hash(h);
+        (self.kerning, self.ligatures, self.faux_bold, self.faux_italic, self.caps, self.underline, self.strikethrough, self.tate_chu_yoko).hash(h);
     }
 }
 
@@ -869,6 +874,7 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
 
 /// Vertical layout: each grapheme is its own line (so carets, hit testing and selection work
 /// unchanged), stacked top to bottom and centred on its column; columns run right to left.
+/// 縦中横 groups 2–4 consecutive half-width characters into one of those lines.
 fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, mut lay: Layout) -> Layout {
     let style = sty.list[0];
     let pm = fonts::face(sty.prim[0].face).metrics(style.size);
@@ -888,72 +894,34 @@ fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, 
         for (off, cluster) in p_clean.grapheme_indices(true) {
             cells.extend(paragraph(cluster, base + off, sty, &flat));
         }
-        let h = row * cells.len() as f32;
+        // 縦中横: 2–4 consecutive half-width characters of a `tate_chu_yoko` style share one cell,
+        // so the column is that much shorter and the text after them moves up with it.
+        let mut rows: Vec<(usize, usize)> = Vec::new();
+        let mut ci = 0usize;
+        while ci < cells.len() {
+            let count = tate_chu_yoko_run(&cells, ci, sty, text);
+            rows.push((ci, count));
+            ci += count;
+        }
+        let h = row * rows.len() as f32;
         let y0 = match para.align {
             Align::Center => -h / 2.0,
             Align::Right => -h,
             _ => 0.0,
         };
         let cx = -(c as f32) * col_w;
-        for (k, pl) in cells.into_iter().enumerate() {
-            let baseline = y0 + row * k as f32;
-            let shift = cx - pl.content / 2.0 - pl.left_trim;
-            let g0 = lay.glyphs.len();
-            lay.glyphs.extend(pl.glyphs.into_iter().map(|mut g| {
-                g.x += shift;
-                // The alternate glyph hangs from its vertical origin. A horizontal ascent
-                // is not the top bearing of a vertical punctuation glyph (OpenType VORG/vmtx).
-                let font = fonts::face(g.face);
-                if text.get(g.cluster..).and_then(|s| s.chars().next()).is_some_and(uses_vertical_form)
-                    && let Some(origin) = font.vertical_origin(g.id, g.size)
-                {
-                    g.y += baseline - pl.ascent + origin;
-                } else {
-                    g.y += baseline;
-                }
-                g
-            }));
-            // Underline runs down the column, to the right of the cell (the "below" side of vertical-rl);
-            // strikethrough runs down the middle of the cell.
-            let y_top = baseline - pl.ascent;
-            if rich {
-                for (_x0, x1, si) in &pl.underlines {
-                    let st = sty.list[*si as usize];
-                    let um = fonts::face(sty.prim[*si as usize].face).metrics(st.size);
-                    let x = *x1 + shift - st.baseline_shift + um.underline_pos;
-                    lay.underlines.push([x, y_top, x + um.underline_thickness, y_top + row]);
-                    lay.underline_runs.push(*si);
-                }
-                for (x0, x1, si) in &pl.strikes {
-                    let st = sty.list[*si as usize];
-                    let t = fonts::face(sty.prim[*si as usize].face).metrics(st.size).strikethrough_thickness;
-                    let x = (x0 + x1 - t) / 2.0 + shift - st.baseline_shift;
-                    lay.underlines.push([x, y_top, x + t, y_top + row]);
-                    lay.underline_runs.push(*si);
-                }
-            } else if pl.content > 0.0 {
-                if style.underline {
-                    let x = shift + pl.left_trim + pl.content + pm.underline_pos;
-                    lay.underlines.push([x, y_top, x + pm.underline_thickness, y_top + row]);
-                    lay.underline_runs.push(0);
-                }
-                if style.strikethrough {
-                    let t = pm.strikethrough_thickness;
-                    let x = shift + pl.left_trim + (pl.content - t) / 2.0;
-                    lay.underlines.push([x, y_top, x + t, y_top + row]);
-                    lay.underline_runs.push(0);
-                }
-            }
-            lay.lines.push(Line {
-                range: pl.range,
-                baseline,
-                x: shift + pl.left_trim,
-                width: pl.content,
-                ascent: pl.ascent,
-                descent: pl.descent,
-                glyphs: g0..lay.glyphs.len(),
-                carets: pl.carets.into_iter().map(|(b, x)| (b, x + shift)).collect(),
-            });
+        for (k, (first, count)) in rows.into_iter().enumerate() {
+            // Where the line sits in its column: the column's centre, the row height and the
+            // baseline every glyph of the cell is set on.
+            let geom = CellGeom { cx, baseline: y0 + row * k as f32, row, rich };
+            let line = if count == 1 {
+                let Some(pl) = cells.get_mut(first) else { continue };
+                place_single_cell(&mut lay, pl, sty, geom, text)
+            } else {
+                let group = cells.get_mut(first..first + count).unwrap_or(&mut []);
+                place_group_cell(&mut lay, group, sty, geom, base)
+            };
+            lay.lines.push(line);
         }
         base += p.len() + 1;
     }
@@ -962,8 +930,195 @@ fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, 
         y0 = y0.min(l.baseline - l.ascent);
         y1 = y1.max(l.baseline + l.descent);
     }
-    lay.bounds = [-(ncols.max(1) as f32 - 0.5) * col_w, y0, col_w / 2.0, y1.max(y0)];
+    // The columns set the horizontal extent, but a 縦中横 group wider than its column runs past
+    // it into the neighbouring ones (it is never condensed), so every line widens the bounds too.
+    let (mut bx0, mut bx1) = (-(ncols.max(1) as f32 - 0.5) * col_w, col_w / 2.0);
+    for l in &lay.lines {
+        bx0 = bx0.min(l.x);
+        bx1 = bx1.max(l.x + l.width);
+    }
+    lay.bounds = [bx0, y0, bx1, y1.max(y0)];
     lay
+}
+
+/// How many cells from `first` make one 縦中横 cell: 2–4 consecutive half-width printable ASCII
+/// characters whose style sets `tate_chu_yoko` (1 = no group).
+fn tate_chu_yoko_run(cells: &[ParaLine], first: usize, sty: &Styles, text: &str) -> usize {
+    const MAX: usize = 4;
+    let mut n = 0;
+    for pl in cells.iter().skip(first).take(MAX) {
+        if pl.range.start >= pl.range.end {
+            break;
+        }
+        let Some(cluster) = text.get(pl.range.start..pl.range.end) else { break };
+        let Some(st) = sty.list.get(sty.at(pl.range.start)) else { break };
+        if !st.tate_chu_yoko || !cluster.chars().all(|c| c.is_ascii_graphic()) {
+            break;
+        }
+        n += 1;
+    }
+    if n >= 2 { n } else { 1 }
+}
+
+/// Where one line of a vertical column goes: the column's centre, the line's baseline, the row
+/// (cell) height, and whether the paragraph sets rich text (per-run underlines and strikes) or the
+/// base style's.
+#[derive(Clone, Copy)]
+struct CellGeom {
+    cx: f32,
+    baseline: f32,
+    row: f32,
+    rich: bool,
+}
+
+/// Places one single-character cell of a vertical column: shifts its glyphs into the column and
+/// onto the baseline, adds its underlines and strikethroughs, and returns the line describing it.
+fn place_single_cell(lay: &mut Layout, pl: &mut ParaLine, sty: &Styles<'_>, geom: CellGeom, text: &str) -> Line {
+    let g0 = lay.glyphs.len();
+    let shift = geom.cx - pl.content / 2.0 - pl.left_trim;
+    let cell_ascent = pl.ascent;
+    for mut g in std::mem::take(&mut pl.glyphs) {
+        g.x += shift;
+        place_vertical_glyph(&mut g, geom.baseline, cell_ascent, text);
+        lay.glyphs.push(g);
+    }
+    // Underline runs down the column, to the right of the cell (the "below" side of vertical-rl);
+    // strikethrough runs down the middle of the cell.
+    let y_top = geom.baseline - pl.ascent;
+    if geom.rich {
+        for (_x0, x1, si) in &pl.underlines {
+            let st = sty.list[*si as usize];
+            let um = fonts::face(sty.prim[*si as usize].face).metrics(st.size);
+            let x = *x1 + shift - st.baseline_shift + um.underline_pos;
+            lay.underlines.push([x, y_top, x + um.underline_thickness, y_top + geom.row]);
+            lay.underline_runs.push(*si);
+        }
+        for (x0, x1, si) in &pl.strikes {
+            let st = sty.list[*si as usize];
+            let t = fonts::face(sty.prim[*si as usize].face).metrics(st.size).strikethrough_thickness;
+            let x = (x0 + x1 - t) / 2.0 + shift - st.baseline_shift;
+            lay.underlines.push([x, y_top, x + t, y_top + geom.row]);
+            lay.underline_runs.push(*si);
+        }
+    } else if pl.content > 0.0 {
+        let style = sty.list[0];
+        let pm = fonts::face(sty.prim[0].face).metrics(style.size);
+        if style.underline {
+            let x = shift + pl.left_trim + pl.content + pm.underline_pos;
+            lay.underlines.push([x, y_top, x + pm.underline_thickness, y_top + geom.row]);
+            lay.underline_runs.push(0);
+        }
+        if style.strikethrough {
+            let t = pm.strikethrough_thickness;
+            let x = shift + pl.left_trim + (pl.content - t) / 2.0;
+            lay.underlines.push([x, y_top, x + t, y_top + geom.row]);
+            lay.underline_runs.push(0);
+        }
+    }
+    Line {
+        range: pl.range.clone(),
+        baseline: geom.baseline,
+        x: shift + pl.left_trim,
+        width: pl.content,
+        ascent: pl.ascent,
+        descent: pl.descent,
+        glyphs: g0..lay.glyphs.len(),
+        carets: pl.carets.iter().map(|(b, x)| (*b, x + shift)).collect(),
+    }
+}
+
+/// Moves one glyph of a single-character vertical cell onto the line's baseline. The alternate
+/// glyph hangs from its vertical origin: a horizontal ascent is not the top bearing of a vertical
+/// punctuation glyph (OpenType VORG/vmtx), so the cluster's first character decides.
+fn place_vertical_glyph(g: &mut Glyph, baseline: f32, cell_ascent: f32, text: &str) {
+    let font = fonts::face(g.face);
+    if text.get(g.cluster..).and_then(|s| s.chars().next()).is_some_and(uses_vertical_form)
+        && let Some(origin) = font.vertical_origin(g.id, g.size)
+    {
+        g.y += baseline - cell_ascent + origin;
+    } else {
+        g.y += baseline;
+    }
+}
+
+/// Places one 縦中横 cell of a vertical column: its characters stand side by side across the
+/// column, centred in it, sharing the cell's height. Their carets stay one per character boundary,
+/// so a caret or a click still lands between two of them. Each underlined or struck member keeps
+/// its own rule at its own slot in the cell; `fallback` is the range for an empty group.
+fn place_group_cell(lay: &mut Layout, group: &mut [ParaLine], sty: &Styles<'_>, geom: CellGeom, fallback: usize) -> Line {
+    let g0 = lay.glyphs.len();
+    let total: f32 = group.iter().map(|pl| pl.content).sum();
+    let x0 = geom.cx - total / 2.0;
+    let mut cum = 0.0f32;
+    let mut carets = Vec::new();
+    let mut ascent = 0.0f32;
+    let mut descent = 0.0f32;
+    for pl in group.iter_mut() {
+        let slot = x0 + cum;
+        for mut g in std::mem::take(&mut pl.glyphs) {
+            g.x += slot;
+            g.y += geom.baseline;
+            lay.glyphs.push(g);
+        }
+        carets.extend(pl.carets.iter().map(|(b, x)| (*b, x + slot)));
+        ascent = ascent.max(pl.ascent);
+        descent = descent.max(pl.descent);
+        cum += pl.content;
+    }
+    carets.sort_by_key(|c| c.0);
+    carets.dedup_by_key(|c| c.0);
+    // One underline down the column for each underlined member, at that member's slot in the cell:
+    // the underline runs to the right of the characters it covers, as in a single-character cell.
+    // A strikethrough runs down the middle of the member's own slot, likewise.
+    let y_top = geom.baseline - ascent;
+    if geom.rich {
+        let mut slot = x0;
+        for pl in group.iter() {
+            for (_x0, x1, si) in &pl.underlines {
+                let (Some(st), Some(prim)) = (sty.list.get(*si as usize), sty.prim.get(*si as usize)) else { continue };
+                let um = fonts::face(prim.face).metrics(st.size);
+                let ux = slot + *x1 - st.baseline_shift + um.underline_pos;
+                lay.underlines.push([ux, y_top, ux + um.underline_thickness, y_top + geom.row]);
+                lay.underline_runs.push(*si);
+            }
+            for (sx0, sx1, si) in &pl.strikes {
+                let (Some(st), Some(prim)) = (sty.list.get(*si as usize), sty.prim.get(*si as usize)) else { continue };
+                let t = fonts::face(prim.face).metrics(st.size).strikethrough_thickness;
+                let sx = slot + (sx0 + sx1 - t) / 2.0 - st.baseline_shift;
+                lay.underlines.push([sx, y_top, sx + t, y_top + geom.row]);
+                lay.underline_runs.push(*si);
+            }
+            slot += pl.content;
+        }
+    } else if total > 0.0 {
+        let style = sty.list[0];
+        let pm = fonts::face(sty.prim[0].face).metrics(style.size);
+        if style.underline {
+            let ux = x0 + total + pm.underline_pos;
+            lay.underlines.push([ux, y_top, ux + pm.underline_thickness, y_top + geom.row]);
+            lay.underline_runs.push(0);
+        }
+        if style.strikethrough {
+            let t = pm.strikethrough_thickness;
+            let mut slot = x0;
+            for pl in group.iter() {
+                let sx = slot + (pl.content - t) / 2.0;
+                lay.underlines.push([sx, y_top, sx + t, y_top + geom.row]);
+                lay.underline_runs.push(0);
+                slot += pl.content;
+            }
+        }
+    }
+    Line {
+        range: group.first().map(|pl| pl.range.start).unwrap_or(fallback)..group.last().map(|pl| pl.range.end).unwrap_or(fallback),
+        baseline: geom.baseline,
+        x: x0,
+        width: total,
+        ascent,
+        descent,
+        glyphs: g0..lay.glyphs.len(),
+        carets,
+    }
 }
 
 fn cache() -> &'static Mutex<HashMap<u64, (u64, Arc<Layout>)>> {
