@@ -604,6 +604,7 @@ fn engine_execute_leaves_the_ui_alone_for_every_dialog_command() {
         "lumetri.exportCube",
         "media.createProxies",
         "media.linkMedia",
+        "media.linkSelectedMedia",
         "media.makeOffline",
         // (not `file.exportFrame`: without a dialog it exports, to a file in the working directory)
         "file.newOfflineFile",

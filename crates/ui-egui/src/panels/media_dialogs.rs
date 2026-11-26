@@ -5,7 +5,7 @@
 //!
 //! Automation ids:
 //! - Link Media: `linkMedia.row.<n>`, `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`,
-//!   `linkMedia.alignTimecode`, `linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`,
+//!   `linkMedia.alignTimecode`, `linkMedia.relinkOthers`, `linkMedia.includeOffline`, `linkMedia.folder`, `linkMedia.browse`,
 //!   `linkMedia.exactName`, `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`,
 //!   `linkMedia.link`, `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 //! - Make Offline: `makeOffline.keep`, `makeOffline.delete`, `makeOffline.ok`, `makeOffline.cancel`.
@@ -31,13 +31,24 @@ fn mb(b: u64) -> String {
     if b >= 1 << 30 { format!("{:.2} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{:.1} MB", b as f64 / (1u64 << 20) as f64) }
 }
 
+/// Item ids from a `media.linkMedia` / `media.linkSelectedMedia` result's `missing` array.
+fn pool_from_missing(v: &Value) -> Vec<u64> {
+    v["missing"].as_array().map(|a| a.iter().filter_map(|m| m["item"].as_u64()).collect()).unwrap_or_default()
+}
+
 /// Draw whichever media dialogs are open; open Link Media when a project needs it.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if app.session.offline.prompt && app.ui.link_media.is_none() {
-        // Asked on open: list only the newly missing files, not the ones already made offline.
+        // Asked on open: list only the newly missing files, not the ones already made offline
+        // (unless Settings ▸ Media ▸ Remember Offline All is off, then Offline is prompted too).
         let s = &app.session;
-        let skipped = s.offline.missing.iter().filter(|i| s.project.item(**i).and_then(|it| it.as_media()).is_some_and(|m| m.offline)).map(|i| i.0).collect();
-        app.ui.link_media = Some(LinkMediaDraft { skipped, ..LinkMediaDraft::default() });
+        let mut draft = LinkMediaDraft::from_prefs(&s.prefs);
+        draft.pool = s.offline.missing.iter().map(|i| i.0).collect();
+        if s.prefs.media.remember_offline_all {
+            draft.skipped =
+                s.offline.missing.iter().filter(|i| s.project.item(**i).and_then(|it| it.as_media()).is_some_and(|m| m.offline)).map(|i| i.0).collect();
+        }
+        app.ui.link_media = Some(draft);
     }
     if app.ui.link_media.is_some() {
         link_media(app, ctx);
@@ -61,15 +72,24 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     }
     let enabled = |app: &FilmcraftApp, id: &str| filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session));
     match id {
-        "media.linkMedia" => {
-            let r = app.session.execute("media.linkMedia", json!({})).map_err(|e| e.to_string());
+        "media.linkMedia" | "media.linkSelectedMedia" => {
+            let params = if id == "media.linkSelectedMedia" {
+                json!({"items": app.session.state.project_selection.iter().map(|i| i.0).collect::<Vec<_>>()})
+            } else {
+                json!({})
+            };
+            let r = app.session.execute(id, params).map_err(|e| e.to_string());
             if let Ok(v) = &r
                 && v["missing"].as_array().is_some_and(|a| a.is_empty())
             {
                 app.ui.status = tl!("All media is online.").into();
                 return Some(r);
             }
-            app.ui.link_media = Some(LinkMediaDraft::default());
+            let mut draft = LinkMediaDraft::from_prefs(&app.session.prefs);
+            if let Ok(v) = &r {
+                draft.pool = pool_from_missing(v);
+            }
+            app.ui.link_media = Some(draft);
             Some(r)
         }
         "media.makeOffline" => Some(enabled(app, id).map(|_| {
@@ -123,12 +143,23 @@ fn missing_list(app: &FilmcraftApp) -> Vec<(u64, String, String, String, &'stati
         .collect()
 }
 
+/// Ids Relink others may touch: the dialog pool minus rows marked Offline in this session.
+fn others_scope(d: &LinkMediaDraft) -> Vec<u64> {
+    d.pool.iter().copied().filter(|id| !d.skipped.contains(id)).collect()
+}
+
 fn match_params(d: &LinkMediaDraft) -> Value {
-    json!({
+    let mut p = json!({
         "match": {"fileName": d.file_name, "extension": d.extension, "clipId": d.clip_id, "duration": d.duration, "mediaStart": d.media_start, "metadata": d.metadata},
         "alignTimecode": d.align_timecode,
         "relinkOthers": d.relink_others,
-    })
+        "relinkOffline": d.include_offline,
+    });
+    // Always send the dialog pool so Relink others cannot leave it (CLI without othersScope stays project-wide).
+    if !d.pool.is_empty() {
+        p["othersScope"] = json!(others_scope(d));
+    }
+    p
 }
 
 fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
@@ -148,7 +179,7 @@ fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Optio
 
 fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.link_media.clone() else { return };
-    let rows: Vec<_> = missing_list(app).into_iter().filter(|r| !d.skipped.contains(&r.0)).collect();
+    let rows: Vec<_> = missing_list(app).into_iter().filter(|r| d.pool.is_empty() || d.pool.contains(&r.0)).filter(|r| !d.skipped.contains(&r.0)).collect();
     if rows.is_empty() {
         app.ui.link_media = None;
         app.session.offline.prompt = false;
@@ -216,6 +247,8 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
                     let r = ui.checkbox(&mut d.relink_others, tl!("Relink others automatically"));
                     push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
+                    let r = ui.checkbox(&mut d.include_offline, tl!("Include Offline media"));
+                    push(&mut elems, "linkMedia.includeOffline", &r, "Include Offline media");
                 });
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
@@ -358,12 +391,16 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Some("offline") => {
             let _ = app.session.execute("media.makeOffline", json!({"items": [item]}));
+            // Keep the id in `pool` and hide it via `skipped`. Removing it would empty a
+            // one-item selection pool, and an empty pool means unrestricted (File open / legacy).
             d.skipped.push(item);
             d.candidates.clear();
             d.candidate = None;
         }
         Some("offlineAll") => {
-            let _ = app.session.execute("media.offlineAll", json!({}));
+            // Scope to the dialog pool (minus skipped); empty pool means the whole missing list.
+            let params = if d.pool.is_empty() { json!({}) } else { json!({"items": others_scope(&d)}) };
+            let _ = app.session.execute("media.offlineAll", params);
             keep = false;
         }
         // Cancel leaves the files missing for this session only; the next open asks again.

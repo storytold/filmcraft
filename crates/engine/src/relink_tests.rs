@@ -111,7 +111,8 @@ fn auto_relink_by_prefix_and_by_folder_search() {
 
 // An EDL line with no `* SOURCE FILE:` names its file by clip name only. Imported away from the
 // file, the clip is missing like any file that isn't found: the folder search and Relink Others
-// find it, and opening the project asks for it. It was made offline, which all three skip.
+// find it, and opening the project asks for it. Importing them as made-offline would skip the
+// open prompt (while media.rememberOfflineAll is on); Relink others includes Offline by default.
 #[test]
 fn edl_clips_named_only_by_clip_name_are_missing_not_made_offline() {
     let root = tmp_dir("relink-edl-reel");
@@ -491,6 +492,22 @@ fn new_offline_file_keeps_only_the_file_name() {
     }
 }
 
+/// Offline All with `items` only marks that pool; siblings outside it stay missing (not Offline).
+#[test]
+fn offline_all_respects_items_scope() {
+    let root = tmp_dir("relink-offline-all-scope");
+    let (path, items) = saved_project(&root);
+    std::fs::remove_dir_all(root.join("Media")).unwrap();
+    let mut s = open(&path);
+    assert_eq!(s.offline.missing.len(), 2);
+    let r = s.execute("media.offlineAll", json!({"items": [items[0].0]})).unwrap();
+    assert_eq!(r["offline"], json!([items[0].0]), "{r}");
+    assert!(s.project.item(items[0]).unwrap().as_media().unwrap().offline);
+    assert!(!s.project.item(items[1]).unwrap().as_media().unwrap().offline, "sibling outside the dialog pool must stay missing");
+    assert!(!s.offline.prompt);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // Offline All must be saved with the project: reopening it should not ask for the files again
 // (Premiere behaves this way). It used to only close the dialog, so every open asked again.
 #[test]
@@ -520,6 +537,152 @@ fn offline_all_is_saved_and_reopening_does_not_ask_again() {
     s.execute("file.save", json!({})).unwrap();
     assert!(open(&path).offline.prompt, "newly missing media asks again");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Relink others with `othersScope` stays inside that set (Link Media dialog pool).
+#[test]
+fn relink_others_respects_others_scope() {
+    let root = tmp_dir("relink-others-scope");
+    let (path, items) = saved_project(&root);
+    let moved = root.join("Moved").join("Media");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let a = moved.join("a.mov").to_string_lossy().into_owned();
+    let mut s = open(&path);
+    // Scope only the linked item: the sibling stays missing even though Relink others is on.
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "othersScope": [items[0].0]})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["remaining"], json!([items[1].0]), "{r}");
+    assert_eq!(s.execute("media.status", json!({"item": items[1].0})).unwrap()[0]["status"], json!("missing"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Offline-in-dialog then Link: with Include Offline on, `othersScope` without that id keeps it Offline.
+#[test]
+fn offline_then_link_does_not_clear_offline_when_scoped_out() {
+    let root = tmp_dir("relink-offline-then-link-scope");
+    let (path, items) = saved_project(&root);
+    let moved = root.join("Moved").join("Media");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let a = moved.join("a.mov").to_string_lossy().into_owned();
+    let mut s = open(&path);
+    s.execute("media.makeOffline", json!({"items": [items[1].0]})).unwrap();
+    assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline);
+    // Dialog pool after Offline drops items[1]; Relink others still has Include Offline on.
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOffline": true, "othersScope": [items[0].0]})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+    assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline, "scoped-out Offline stays Offline");
+    assert_eq!(s.execute("media.status", json!({"item": items[1].0})).unwrap()[0]["status"], json!("offline"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `media.linkMedia` / `media.linkSelectedMedia` return the dialog pool rows.
+#[test]
+fn link_media_items_scopes_the_missing_list() {
+    let root = tmp_dir("link-media-items-scope");
+    let (path, items) = saved_project(&root);
+    std::fs::rename(root.join("Media"), root.join("Moved")).unwrap();
+    let mut s = open(&path);
+    let all = s.execute("media.linkMedia", json!({})).unwrap();
+    assert_eq!(all["missing"].as_array().unwrap().len(), 2, "{all}");
+    assert!(s.offline.prompt, "whole-project linkMedia still requests the dialog");
+    let one = s.execute("media.linkMedia", json!({"items": [items[0].0]})).unwrap();
+    assert_eq!(one["missing"].as_array().unwrap().len(), 1, "{one}");
+    assert_eq!(one["missing"][0]["item"], json!(items[0].0));
+    assert!(!s.offline.prompt, "scoped linkMedia must not raise the open prompt");
+    s.execute("project.select", json!({"items": [items[1].0]})).unwrap();
+    let sel = s.execute("media.linkSelectedMedia", json!({})).unwrap();
+    assert_eq!(sel["missing"].as_array().unwrap().len(), 1, "{sel}");
+    assert_eq!(sel["missing"][0]["item"], json!(items[1].0));
+    assert!(!s.offline.prompt, "linkSelectedMedia must not raise the open prompt");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// After linking one item, a scoped `media.linkMedia` / linkSelectedMedia must not leave `prompt` set for a sibling that is still missing.
+#[test]
+fn link_selected_media_clears_prompt_when_selection_is_online() {
+    let root = tmp_dir("link-selected-no-prompt");
+    let (path, items) = saved_project(&root);
+    let moved = root.join("Moved").join("Media");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let a = moved.join("a.mov").to_string_lossy().into_owned();
+    let mut s = open(&path);
+    assert!(s.offline.prompt);
+    s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOthers": false})).unwrap();
+    assert!(s.offline.missing.iter().any(|i| *i == items[1]), "sibling stays missing");
+    // Same path as Clip ▸ Link Media / linkSelectedMedia (scoped items); the linked item is no longer missing.
+    let r = s.execute("media.linkMedia", json!({"items": [items[0].0]})).unwrap();
+    assert!(r["missing"].as_array().unwrap().is_empty(), "{r}");
+    assert!(!s.offline.prompt, "must not open Link Media for the other missing item after a scoped control-channel call");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Premiere default: Relink others reconnects Offline media; prefs / `relinkOffline` opt out.
+#[test]
+fn relink_others_includes_offline_by_default_with_prefs_to_opt_out() {
+    let setup = |label: &str| {
+        let root = tmp_dir(label);
+        let (path, items) = saved_project(&root);
+        let moved = root.join("Moved").join("Media");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(root.join("Media"), &moved).unwrap();
+        let a = moved.join("a.mov").to_string_lossy().into_owned();
+        (root, path, items, moved, a)
+    };
+
+    // Default: Offline All, then Relink others pulls the sibling Offline clip too.
+    {
+        let (root, path, items, _moved, a) = setup("relink-offline-others-default");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        let r = s.execute("media.relink", json!({"item": items[0].0, "path": a})).unwrap();
+        assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "Offline included by default: {r}");
+        assert_eq!(r["remaining"], json!([]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Explicit opt-out on the command: only the linked item comes online.
+    {
+        let (root, path, items, _moved, a) = setup("relink-offline-others-param");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOffline": false})).unwrap();
+        assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(r["remaining"], json!([items[1].0]), "{r}");
+        assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Pref off: autoRelink skips Offline.
+    {
+        let (root, path, items, moved, _a) = setup("relink-offline-others-pref");
+        let mut s = open(&path);
+        s.prefs.media.relink_offline_media = false;
+        s.execute("media.offlineAll", json!({})).unwrap();
+        let r = s.execute("media.autoRelink", json!({"folder": moved.to_string_lossy()})).unwrap();
+        assert!(r["relinked"].as_array().unwrap().is_empty(), "pref off skips Offline: {r}");
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Opt out of remembering Offline All: on_open asks for Offline media.
+    {
+        let (root, path, items, _moved, _a) = setup("relink-offline-others-prompt");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        s.execute("file.save", json!({})).unwrap();
+        // Prefs live outside the project; set them then re-run on_open.
+        let mut s = open(&path);
+        assert!(!s.offline.prompt, "setup: Offline All remembered with default pref");
+        s.prefs.media.remember_offline_all = false;
+        crate::relink::on_open(&mut s);
+        assert!(s.offline.prompt, "rememberOfflineAll off prompts for Offline media");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// The first video clip of the active sequence: (its media item, its source in-point).

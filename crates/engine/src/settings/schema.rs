@@ -462,6 +462,8 @@ pub(super) static CATEGORIES: &[Category] = &[
             ),
             b("media.hardwareDecoding", "Enable hardware accelerated decoding (requires restart)", false),
             b("media.proresHardwareEncoding", "Enable ProRes hardware accelerated encoding, if available", false),
+            b("media.relinkOfflineMedia", "Include Offline media when Relinking others (Link Media default)", true),
+            b("media.rememberOfflineAll", "Remember Offline All (don't ask on open)", true),
         ],
     },
     Category {

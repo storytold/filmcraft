@@ -36,7 +36,7 @@ const HISTORY_COMMANDS: &[(&[&str], Icon)] = &[
     (&["file.newBin", "file.newBinFromSelection", "file.newSearchBin", "project.moveToBin", "project.renameBin"], Icon::Folder),
     (&["file.newSequence", "file.newSequenceFromClip", "sequence.makeSubsequence"], Icon::Sequence),
     (&["clip.nest", "sequence.nestSequences"], Icon::Nest),
-    (&["clip.link", "media.linkMedia", "media.relink"], Icon::Link),
+    (&["clip.link", "media.linkMedia", "media.linkSelectedMedia", "media.relink"], Icon::Link),
     (&["project.delete", "edit.clear", "timeline.delete", "edit.removeUnused", "sequence.deleteTrack", "sequence.deleteTracks"], Icon::Trash),
     (&["file.newAdjustmentLayer"], Icon::Adjust),
     (&["media.makeOffline"], Icon::Offline),
