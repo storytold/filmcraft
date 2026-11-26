@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line, revision history and roadmap link added; content checked against the crate list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** trivial (crate table: `insta360` added) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 FilmCraft is a Cargo workspace of small crates with strictly enforced layering. The engine is
 headless: every feature can be reached without a window, and the egui UI is one client among the
@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · cfb · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 decoder and encoder · hevc · vp9 · av1 · mpeg2 · apv · prores decoder and encoder) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
+     codecs/containers: isobmff · insta360 · matroska · cfb · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 decoder and encoder · hevc · vp9 · av1 · mpeg2 · apv · prores decoder and encoder) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -42,6 +42,7 @@ and `filmcraft-cli`.
 | `color` | L0 | colour spaces, transfer functions, YUV↔RGB matrices, LUTs |
 | `bitstream` | L0 | bit reader/writer, Exp-Golomb, emulation prevention |
 | `isobmff` | L0 | MP4/MOV demux and mux |
+| `insta360` | L0 | Insta360 INSV metadata trailer: the end-of-file header, frame chain and the `OffsetV3` MEI lens calibration ([README](../crates/insta360/README.md)) |
 | `matroska` | L0 | MKV/WebM demux |
 | `cfb` | L0 | Compatibility facade over shared `craft-cfb`; AAF container parsing/writing lives in craft-libs ([README](../crates/cfb/README.md)) |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |

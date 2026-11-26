@@ -2568,6 +2568,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-insta360"
+version = "0.20.1"
+dependencies = [
+ "filmcraft-testkit",
+]
+
+[[package]]
 name = "filmcraft-interchange"
 version = "0.20.1"
 dependencies = [
