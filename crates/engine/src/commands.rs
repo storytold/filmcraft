@@ -4341,6 +4341,15 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
+        // the parameter's hard range, as `effects.setParam` checks it (a mask's own parameters have no definition)
+        let range = if p.get("mask").is_none_or(Value::is_null) {
+            e.def().and_then(|d| d.param(&pid)).and_then(|d| match d.kind {
+                filmcraft_project::ParamKind::Float { min, max, .. } => Some((min, max)),
+                _ => None,
+            })
+        } else {
+            None
+        };
         let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
         match op {
             "add" => {
@@ -4348,6 +4357,17 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 let added = !prm.remove_keyframe_at(mt_now);
                 if added {
                     prm.add_keyframe(mt_now);
+                    if let Some(v) = p.get("value")
+                        && let Some(k) = prm.keyframes.iter_mut().find(|k| k.time == mt_now)
+                    {
+                        let value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
+                        if let (Some((min, max)), ParamValue::Float(x)) = (range, &value)
+                            && !(min..=max).contains(x)
+                        {
+                            return Err(bad("keyframe", format!("`{pid}` must be between {min} and {max}, got {x}")));
+                        }
+                        k.value = value;
+                    }
                 }
                 reply = json!({"added": added, "mediaTime": mt_now.0});
             }
