@@ -191,12 +191,12 @@ fn marker_csv_menu_exports_sequence_review_notes() {
 
 #[test]
 fn chapter_marker_menu_saves_plain_text() {
-    let dir = tmp("chapters");
+    let dir = tempfile::tempdir().unwrap();
     let asked = Asked::default();
     let mut s = session();
     s.execute("markers.clearAll", json!({"target":"program"})).unwrap();
     s.execute("markers.add", json!({"target":"program", "frame":0, "name":"Introduction"})).unwrap();
-    let mut d = Driver::new(s, Some(dir.clone()), asked.clone());
+    let mut d = Driver::new(s, Some(dir.path().to_path_buf()), asked.clone());
 
     let menu = d.ok("ui.menu.list", json!({}));
     let entry = menu.as_array().unwrap().iter().find(|i| i["id"] == "markers.exportChapters").unwrap();
@@ -207,7 +207,7 @@ fn chapter_marker_menu_saves_plain_text() {
 
     let (_, extensions, suggested) = asked.lock().unwrap().last().cloned().unwrap();
     assert_eq!(extensions, ["txt"]);
-    assert_eq!(std::fs::read_to_string(dir.join(suggested)).unwrap(), "00:00 Introduction\n");
+    assert_eq!(std::fs::read_to_string(dir.path().join(suggested)).unwrap(), "00:00 Introduction\n");
 }
 
 #[test]
