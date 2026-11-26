@@ -5447,8 +5447,10 @@ fn is_premiere_project_path(path: &str) -> bool {
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     if is_premiere_project_path(path) {
+        // Cancel mask jobs only after open succeeds so a refused `.prproj` keeps tracking.
+        let opened = crate::premiere::open_document(s, path)?;
         crate::masks::discard_jobs(s);
-        return crate::premiere::open_document(s, path);
+        return Ok(opened);
     }
     let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;

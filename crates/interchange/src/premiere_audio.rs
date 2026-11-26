@@ -40,7 +40,8 @@ pub(super) fn read<'a, 'i>(
             (false, Some("1")) => "channel_volume.left",
             (false, Some("2")) => "channel_volume.right",
             (_, Some("0")) => {
-                if value(p, "CurrentValue").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) || value(p, "Keyframes").is_some() {
+                let start_mute = value(p, "StartKeyframe").and_then(|v| v.split(',').nth(1)).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+                if value(p, "CurrentValue").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) || value(p, "Keyframes").is_some() || start_mute {
                     warning(report, "intrinsic audio mute/bypass automation retained in provenance, not imported");
                 }
                 continue;

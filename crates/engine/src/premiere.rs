@@ -274,7 +274,10 @@ fn hash_counting(path: &Path, max: u64, read: &mut u64) -> Result<(String, u64)>
     let mut hash = Sha256::new();
     let mut buf = [0u8; 65536];
     loop {
-        let n = f.read(&mut buf).map_err(io)?;
+        // Cap each read to the remaining budget, plus one byte to distinguish EOF from growth past `max`.
+        let remaining = max.saturating_sub(*read).saturating_add(1);
+        let want = (buf.len() as u64).min(remaining) as usize;
+        let n = f.read(&mut buf[..want]).map_err(io)?;
         let chunk = buf.get(..n).ok_or_else(|| EngineError::Other(format!("{}: read past the buffer", path.display())))?;
         if chunk.is_empty() {
             break;
@@ -527,6 +530,7 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
                 Ok((src, media_source)) => {
                     record.original_path = stored_path(&src);
                     record.imported_path = record.original_path.clone();
+                    let probed_size = media_source.info().file_size;
                     let media_source = if mode == "copy" {
                         // The pool takes the copy's source, not this one.
                         drop(media_source);
@@ -537,33 +541,39 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
                                 record.sha256 = Some(copied.digest);
                                 record.bytes = Some(copied.size);
                                 record.imported_path = copied.path;
-                                copied.source
+                                Some(copied.source)
                             }
                             Err(error) => {
-                                // The placeholder keeps the source's fingerprint when it can be read.
+                                // Keep fingerprint of the resolved source; leave probed empty so the item stays offline.
                                 record.identity = crate::relink::identity_of(&*s.services, &record.original_path).ok();
                                 filmcraft_interchange::premiere::warning(
                                     &mut report,
                                     format!("unreadable media: {}; {error}; offline placeholder retained", stored_path(&src)),
                                 );
-                                records.insert(original, record);
-                                m.offline = true;
-                                continue;
+                                None
                             }
                         }
                     } else {
-                        media_source
+                        Some(media_source)
                     };
-                    // Like its media information, the fingerprint is of the file the item names:
-                    // the source when linked, the finished copy when copied.
-                    record.identity = crate::relink::identity_of(&*s.services, &record.imported_path).ok();
-                    if mode != "copy" {
-                        // Linked media stays online after a successful probe without a full-file
-                        // read for provenance. A later hash is an observation, not import-time proof.
-                        record.bytes = record.identity.as_ref().map(|i| i.size);
+                    if let Some(media_source) = media_source {
+                        // Fingerprint the file the item names; for linked media, drop it when size disagrees with the probe.
+                        record.identity = crate::relink::identity_of(&*s.services, &record.imported_path).ok();
+                        if mode != "copy" {
+                            record.bytes = probed_size.or_else(|| record.identity.as_ref().map(|i| i.size));
+                            if let (Some(ps), Some(id)) = (probed_size, record.identity.as_ref())
+                                && ps != id.size
+                            {
+                                filmcraft_interchange::premiere::warning(
+                                    &mut report,
+                                    format!("{}: media changed during import fingerprint; Clip ID omitted", record.imported_path),
+                                );
+                                record.identity = None;
+                            }
+                        }
+                        probed.insert(original.clone(), media_source.info().clone());
+                        opened.insert(record.imported_path.clone(), media_source);
                     }
-                    probed.insert(original.clone(), media_source.info().clone());
-                    opened.insert(record.imported_path.clone(), media_source);
                 }
                 Err(error) if absent(&original, tree.relative_media.get(&original), &source) => {
                     filmcraft_interchange::premiere::warning(&mut report, format!("{original}: {error}; missing, link it to reconnect"));
@@ -847,20 +857,25 @@ pub fn open_document(s: &mut Session, path: &str) -> Result<Value> {
 /// Save the live project into a `.prproj`, patching mapped fields and retaining unmodeled XML.
 pub fn save_document(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
-    let Some(native) = s.premiere_native.as_mut() else {
+    let Some(native) = s.premiere_native.as_ref() else {
         return Err(EngineError::Other("no Premiere project is open for native save; open a .prproj first or use Save As to a .fcproj".into()));
     };
+    // Stage on a clone so a failed write or Save a Copy does not mutate the retained sidecar.
+    let mut staged = native.source.clone();
     let mut report = filmcraft_interchange::Report::default();
-    filmcraft_interchange::premiere::sync_from_project(&mut native.source, &native.bindings, &s.project, &mut report)
+    filmcraft_interchange::premiere::sync_from_project(&mut staged, &native.bindings, &s.project, &mut report)
         .map_err(|e| EngineError::Other(e.to_string()))?;
     let gzip = native.gzip;
-    let bytes = filmcraft_interchange::premiere::encode(&native.source, gzip).map_err(|e| EngineError::Other(e.to_string()))?;
+    let bytes = filmcraft_interchange::premiere::encode(&staged, gzip).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let warnings: Vec<String> = report.entries.iter().map(|e| e.message.clone()).collect();
     for w in &warnings {
         s.log.push(crate::panels::Level::Warning, "premiere.save", w.clone());
     }
     if adopt {
+        if let Some(live) = s.premiere_native.as_mut() {
+            live.source = staged;
+        }
         if let Some(name) = Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned())
             && s.project.name != name
         {
@@ -912,6 +927,12 @@ pub fn commands() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(tag: &str) -> tempfile::TempDir {
+        let root = filmcraft_testkit::workspace_root().join("target").join(tag);
+        let _ = std::fs::create_dir_all(&root);
+        tempfile::Builder::new().prefix("case-").tempdir_in(&root).unwrap_or_else(|_| tempfile::tempdir().unwrap())
+    }
     #[test]
     fn stored_paths_remove_windows_verbatim_prefixes_and_preserve_unc() {
         for (path, expected) in [
@@ -926,9 +947,8 @@ mod tests {
 
     #[test]
     fn source_unchanged_stops_after_original_length_plus_one() {
-        let dir = filmcraft_testkit::workspace_root().join("target/premiere-source-rehash").join(std::process::id().to_string());
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _scratch = scratch("premiere-source-rehash");
+        let dir = _scratch.path();
         let path = dir.join("doc.prproj");
         let original = b"<PremiereData/>";
         std::fs::write(&path, original).unwrap();
@@ -939,13 +959,11 @@ mod tests {
         assert!(!source_unchanged(&path, original.len() as u64, &digest).unwrap());
         std::fs::write(&path, &original[..original.len() - 1]).unwrap();
         assert!(!source_unchanged(&path, original.len() as u64, &digest).unwrap(), "a shorter file is a change");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn copies_hold_exactly_the_hashed_bytes_and_never_replace_a_file() {
-        let dir = filmcraft_testkit::workspace_root().join("target/premiere-copy").join(std::process::id().to_string());
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _scratch = scratch("premiere-copy");
+        let dir = _scratch.path();
         let source = dir.join("source.bin");
         // Longer than one read buffer.
         std::fs::write(&source, (0..200_000u32).map(|i| i as u8).collect::<Vec<_>>()).unwrap();
@@ -968,13 +986,11 @@ mod tests {
         std::fs::write(&target, b"changed").unwrap();
         copy_hashing(&source, &partial).unwrap();
         assert!(publish_copy(&partial, &target, &copied.0, &hash_file).unwrap_err().to_string().contains("changed while copying"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn folder_listings_read_each_folder_once_and_keep_the_one_match_rule() {
-        let dir = filmcraft_testkit::workspace_root().join("target/premiere-listings").join(std::process::id().to_string());
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _scratch = scratch("premiere-listings");
+        let dir = _scratch.path();
         std::fs::write(dir.join("Clip.MOV"), b"").unwrap();
         std::fs::write(dir.join("other.mov"), b"").unwrap();
         let mut listings = FolderListings::new(MAX_FOLDER_ENTRIES, MAX_LISTED_NAMES);
@@ -1006,7 +1022,6 @@ mod tests {
         let index = index_by_lower_case(names(&["Take.mov", "take.MOV", "b.png"]), MAX_FOLDER_ENTRIES).unwrap();
         assert_eq!(index.get("take.mov"), Some(&None));
         assert_eq!(index.get("b.png"), Some(&Some("b.png".into())));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
     /// Folder entries read without error, as `index_by_lower_case` takes them.
     fn names(names: &[&str]) -> Vec<std::io::Result<std::ffi::OsString>> {
@@ -1024,9 +1039,8 @@ mod tests {
         assert_eq!(index_by_lower_case(failed, MAX_FOLDER_ENTRIES), None, "an entry that could not be read");
         // A real folder past the entry limit offers neither of its names (whichever is read
         // first), whether the incomplete listing is kept under the names budget or as a sticky sole entry.
-        let dir = filmcraft_testkit::workspace_root().join("target/premiere-partial-listing").join(std::process::id().to_string());
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _scratch = scratch("premiere-partial-listing");
+        let dir = _scratch.path();
         std::fs::write(dir.join("Clip.MOV"), b"").unwrap();
         std::fs::write(dir.join("other.mov"), b"").unwrap();
         for limit in [MAX_LISTED_NAMES, 0] {
@@ -1034,12 +1048,11 @@ mod tests {
             assert_eq!((listings.find(&dir, "clip.mov"), listings.find(&dir, "other.mov")), (None, None), "names limit {limit}");
         }
         assert_eq!(FolderListings::new(2, MAX_LISTED_NAMES).find(&dir, "clip.mov"), Some("Clip.MOV".into()), "listed in full");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn snapshot_bytes_survive_link_copy_undo_and_save() {
-        let dir = filmcraft_testkit::workspace_root().join("target/premiere-snapshot").join(std::process::id().to_string());
-        std::fs::create_dir_all(&dir).unwrap();
+        let _scratch = scratch("premiere-snapshot");
+        let dir = _scratch.path();
         let source = dir.join("source.prproj");
         let xml = b"<PremiereData><Sequence ObjectUID=\"s\"><Name>Sequence</Name></Sequence></PremiereData>";
         std::fs::write(&source, xml).unwrap();
@@ -1063,12 +1076,11 @@ mod tests {
             assert_eq!(session.project.workflow, provenance);
             assert_eq!(hash_file(&snapshot).unwrap(), expected);
         }
-        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn offline_anchor_stays_auto_until_source_size_is_known() {
-        let dir = filmcraft_testkit::workspace_root().join("target/premiere-anchor").join(std::process::id().to_string());
-        std::fs::create_dir_all(&dir).unwrap();
+        let _scratch = scratch("premiere-anchor");
+        let dir = _scratch.path();
         let source = dir.join("source.prproj");
         // Deliberately missing source, sequence size is not the source size.
         let xml = r#"<PremiereData><Sequence ObjectUID="s"><Name>S</Name><TrackGroups><TrackGroup><Second ObjectRef="v"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="v"><TrackGroup><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="i"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="i"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="sub"><Name>missing.mov</Name></SubClip></PremiereData>"#;
@@ -1094,6 +1106,5 @@ mod tests {
         let seq = project.sequence(session.state.active_sequence.unwrap()).unwrap();
         let anchor = seq.video_tracks[0].items[0].effects.iter().find_map(|e| e.params.get("anchor")).unwrap();
         assert!(matches!(&anchor.value, filmcraft_project::ParamValue::Vec2(v) if v.x == 1920.0 && v.y == 1080.0));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

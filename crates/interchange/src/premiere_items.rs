@@ -79,7 +79,7 @@ impl<'a, 'i> Walk<'a, 'i, '_> {
             }
             let label = checked_name(name(item))?;
             match item.tag_name().name() {
-                "BinProjectItem" if depth + 1 >= MAX_DEPTH => {
+                "BinProjectItem" if depth + 1 > MAX_DEPTH => {
                     warning(self.report, format!("bins nested deeper than {MAX_DEPTH} levels were not read"));
                 }
                 "BinProjectItem" => {
@@ -145,19 +145,28 @@ impl<'a, 'i> Walk<'a, 'i, '_> {
         let content = |s: Node<'a, 'i>| child(s, "MediaSource").and_then(|m| child(m, "Content"));
         let bounded = sources.iter().find(|(s, _)| content(*s).and_then(|c| child(c, "StartBoundary")).is_some());
         let Some(&(source, out)) = bounded.or_else(|| sources.iter().find(|(s, _)| child(*s, "MediaSource").is_some())) else { return Ok(None) };
-        if let Some(content) = content(source)
-            && let (Some(start), Some(end)) = (child_text(content, "StartBoundary"), child_text(content, "EndBoundary"))
-        {
-            let bound = |s: &str| s.parse::<i64>().ok().filter(|t| (0..=Tick::MAX.0).contains(t)).map(Tick);
-            let (Some(start), Some(end)) = (bound(start), bound(end)) else {
-                warning(self.report, format!("{}: subclip boundaries could not be read; subclip skipped", entry.name));
-                return Ok(None);
-            };
-            if end <= start {
-                warning(self.report, format!("{}: subclip ends before it starts; subclip skipped", entry.name));
-                return Ok(None);
+        if let Some(content) = content(source) {
+            let start_raw = child_text(content, "StartBoundary");
+            let end_raw = child_text(content, "EndBoundary");
+            match (start_raw, end_raw) {
+                (None, None) => {}
+                (Some(_), None) | (None, Some(_)) => {
+                    warning(self.report, format!("{}: subclip has only one boundary; subclip skipped", entry.name));
+                    return Ok(None);
+                }
+                (Some(start), Some(end)) => {
+                    let bound = |s: &str| s.parse::<i64>().ok().filter(|t| (0..=Tick::MAX.0).contains(t)).map(Tick);
+                    let (Some(start), Some(end)) = (bound(start), bound(end)) else {
+                        warning(self.report, format!("{}: subclip boundaries could not be read; subclip skipped", entry.name));
+                        return Ok(None);
+                    };
+                    if end <= start {
+                        warning(self.report, format!("{}: subclip ends before it starts; subclip skipped", entry.name));
+                        return Ok(None);
+                    }
+                    entry.subclip = Some(SubclipRange { start, end, hard: flag(content, "BoundariesAreHard") });
+                }
             }
-            entry.subclip = Some(SubclipRange { start, end, hard: flag(content, "BoundariesAreHard") });
         }
         // An adjustment layer's master clip is flagged over generated black video.
         if entry.subclip.is_none() && flag(master, "IsAdjustmentLayer") {

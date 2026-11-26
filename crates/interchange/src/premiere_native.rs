@@ -102,6 +102,10 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
         };
         let ItemKind::Media(media) = &item.kind else { continue };
         let MediaRef::File { path } = &media.media else { continue };
+        // Unresolved import placeholders must not overwrite empty Premiere FilePath elements.
+        if path.starts_with("__missing_premiere__/") {
+            continue;
+        }
         for media_uid in media_uids {
             let field = if object_has_child(&objects, "ObjectUID", media_uid, "ActualMediaFilePath") { "ActualMediaFilePath" } else { "FilePath" };
             queue_field_patch(&source.xml, &objects, "ObjectUID", media_uid, field, path, &mut patches)?;
@@ -307,6 +311,7 @@ fn shared_clip_labels(bindings: &NativeBindings, clips: &BTreeMap<ClipId, &filmc
 }
 
 /// Replace the text of the first descendant element named `field` under the object with `attr`=`id`.
+#[cfg(test)]
 fn set_field(xml: &mut String, attr: &str, id: &str, field: &str, value: &str) -> Result<bool> {
     let doc = roxmltree::Document::parse(xml).map_err(|e| Error::Other(e.to_string()))?;
     let objects = index_xml_objects(&doc);
@@ -324,7 +329,10 @@ fn text_patch(xml: &str, node: Node<'_, '_>, value: &str) -> Result<Option<(std:
     let close = format!("</{name}>");
     let escaped = escape_text(value);
     let Some(close_at) = slice.rfind(&close) else {
-        return Ok(Some((range, format!("<{name}>{escaped}</{name}>"))));
+        // Self-closing: keep attributes from the original open tag (`<Name vendorFlag="keep"/>`).
+        let open = &slice[..open_end];
+        let open_prefix = open.trim_end_matches('>').trim_end_matches('/').trim_end();
+        return Ok(Some((range, format!("{open_prefix}>{escaped}</{name}>"))));
     };
     if close_at < open_end {
         return Err(Error::Other(format!("malformed <{name}>")));
@@ -462,6 +470,14 @@ mod tests {
         assert!(source.xml.contains(r#"<Name hint="a>b">Renamed</Name>"#), "{}", source.xml);
         assert!(roxmltree::Document::parse(&source.xml).is_ok(), "patched XML must still parse");
         assert_eq!(open_tag_end(r#"<Name hint='x>y'>T</Name>"#, "Name").unwrap(), r#"<Name hint='x>y'>"#.len());
+    }
+
+    #[test]
+    fn text_patch_keeps_attributes_when_expanding_self_closing_fields() {
+        let xml = r#"<PremiereData><Sequence ObjectUID="s"><Name vendorFlag="keep"/></Sequence></PremiereData>"#;
+        let mut source = NativeSource { xml: xml.into() };
+        assert!(set_field(&mut source.xml, "ObjectUID", "s", "Name", "Renamed").unwrap());
+        assert!(source.xml.contains(r#"<Name vendorFlag="keep">Renamed</Name>"#), "{}", source.xml);
     }
 
     #[test]

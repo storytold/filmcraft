@@ -40,22 +40,23 @@ fn sequence_audio_and_links(project: &filmcraft_project::Project) -> Vec<Value> 
 fn premiere_private_corpus_preserves_sources_and_offline_counts() {
     let manifest = std::env::var_os("FILMCRAFT_PREMIERE_CORPUS").expect("explicit corpus manifest required");
     let cases: Vec<Value> = serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let root = filmcraft_testkit::workspace_root().join("target/premiere-corpus").join(format!("{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch_root = filmcraft_testkit::workspace_root().join("target/premiere-corpus");
+    let _ = std::fs::create_dir_all(&scratch_root);
+    let root = tempfile::Builder::new().prefix("run-").tempdir_in(&scratch_root).unwrap_or_else(|_| tempfile::tempdir().unwrap());
     let mut rows = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         let original = PathBuf::from(case["source"].as_str().unwrap());
-        let folder = root.join(index.to_string());
+        let folder = root.path().join(index.to_string());
         std::fs::create_dir(&folder).unwrap();
         let before = hash_file(&original).unwrap();
-        let input = folder.join("source.prproj");
-        std::fs::copy(&original, &input).unwrap();
-        assert_eq!(hash_file(&input).unwrap(), before);
+        // Import the original in place so project-relative media still resolve; destination is isolated.
         let mut session = Session::default();
+        let previous_hw = session.prefs.playback.hardware_decoding.clone();
         session.execute("prefs.set", json!({"key":"playback.hardwareDecoding","value":"off"})).unwrap();
         let destination = folder.join("import");
-        let result = session.execute("premiere.import", json!({"path":input,"destination":destination,"mediaMode":"link"})).unwrap();
+        let result = session
+            .execute("premiere.import", json!({"path": original, "destination": destination, "mediaMode": "link"}))
+            .unwrap();
         let offline = result["offlineMedia"].as_array().unwrap().len();
         assert!(offline as u64 <= case["maxOffline"].as_u64().unwrap(), "case {index}: {result}");
         let workflow = session.project.workflow.clone().unwrap();
@@ -77,19 +78,21 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         let rates: Vec<_> = session.project.items.values().filter_map(|i| i.as_sequence().map(|s| s.frame_rate())).collect();
         if let Some(expected) = case.get("frameRate") {
             let expected: filmcraft_time::FrameRate = serde_json::from_value(expected.clone()).expect("manifest frameRate must be a valid rational rate");
+            assert!(!rates.is_empty(), "case {index}: frameRate expected but no sequences imported");
             assert!(rates.iter().all(|rate| *rate == expected), "case {index}: expected {expected:?}, imported {rates:?}");
         }
         let perf = session.execute("perf.stats", json!({})).unwrap();
         assert_eq!(perf["decode"]["hardware"]["backend"], Value::Null);
         assert_eq!(perf["decode"]["hardware"]["sessions"], 0);
         assert_eq!(perf["export"]["hardware"]["sessions"], 0);
+        session.execute("prefs.set", json!({"key":"playback.hardwareDecoding","value": previous_hw})).unwrap();
         let after = hash_file(&original).unwrap();
         assert_eq!(after, before);
-        assert_eq!(hash_file(&input).unwrap(), before);
         rows.push(json!({"case":index,"sourceBefore":before.0,"sourceAfter":after.0,"offline":offline,
             "warnings":result["report"].as_array().unwrap().len(),"rates":rates,"observedMediaUnchanged":media_count,"hardwareSessions":0,
             "sequenceAudioAndLinks":audio_and_links}));
-        std::fs::write(root.join("results.json"), serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+        if let Some(out) = std::env::var_os("FILMCRAFT_PREMIERE_CORPUS_RESULTS") {
+            std::fs::write(out, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+        }
     }
-    println!("Corpus results: {}", root.join("results.json").display());
 }

@@ -193,9 +193,10 @@ fn s(p: &std::path::Path) -> String {
 
 /// A Premiere project in `dir` whose one media file is missing: it imports, with warnings.
 pub(crate) fn premiere_project(dir: &std::path::Path) -> PathBuf {
+    let media = dir.join("missing.png");
+    let escaped = media.to_string_lossy().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     let xml = format!(
-        r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><FrameRate>8467191533</FrameRate><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>missing.png</Name></SubClip><Media><Title>missing.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
-        dir.join("missing.png").display()
+        r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><FrameRate>8467191533</FrameRate><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>missing.png</Name></SubClip><Media><Title>missing.png</Title><FilePath>{escaped}</FilePath></Media></PremiereData>"#
     );
     let path = dir.join("warnings.prproj");
     std::fs::write(&path, xml).unwrap();

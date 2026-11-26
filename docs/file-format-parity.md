@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag; bounded Premiere import; remaining fidelity gaps explicit; AVI import #650 and VP8 WebM #1064 ship; GIF export binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-26 · **Change:** minor (native `.prproj` Save of mapped fields marked partial write; uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag; bounded Premiere import; remaining fidelity gaps explicit; AVI import #650 and VP8 WebM #1064 ship; GIF export binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -13,7 +13,7 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write | Tested | % |
 |---|---|---|---|---|---|
-| **Premiere project `.prproj`** | native | **partial** | **no** | hand-written parser/engine regressions; four real Premiere projects (not committed) imported with unchanged source hashes | not scored; [limits](premiere-import.md) ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)) |
+| **Premiere project `.prproj`** | native | **partial** | **partial** (native open/save of mapped clip/media/sequence fields; not a full unrestricted export) | hand-written parser/engine regressions; four real Premiere projects (not committed) imported with unchanged source hashes | not scored; [limits](premiere-import.md) ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)) |
 | Our project `.fcproj` | — | yes, schema migrations | yes, atomic, auto-save, recovery journal | migration tests | — |
 | FCP7 XML (`xmeml`) | read + write | yes | yes | round-trip tests; Premiere-exported XML slow (#461) | 75% |
 | FCPXML | read (via XtoCC) | yes | yes | round-trip tests | 80% |

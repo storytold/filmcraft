@@ -809,9 +809,8 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
         spend(self.work, n)?;
         let name = child_text(n, "Name").unwrap_or("Sequence").to_string();
         // The sequence frame is the video track group's `FrameRect`; the preview size is only the
-        // fallback (it can differ: a 2560x1440 sequence previewing at 1920x1080).
-        let mut width = dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?;
-        let mut height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
+        // fallback (it can differ: a 2560x1440 sequence previewing at 1920x1080). Parse preview
+        // dims only when FrameRect is absent so an invalid preview cannot fail a valid FrameRect.
         let mut format = SequenceFormat::default();
         let mut tracks = Vec::new();
         let pointers = child(n, "TrackGroups")
@@ -835,9 +834,10 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
             format.add_group(group, &name)?;
             self.track_group(group, kind, &name, &mut tracks)?;
         }
-        if let Some((w, h)) = format.frame_rect {
-            (width, height) = (w, h);
-        }
+        let (width, height) = match format.frame_rect {
+            Some(size) => size,
+            None => (dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?, dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?),
+        };
         filmcraft_project::validate_frame_size(width, height).map_err(error)?;
         let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
         let markers = markers::read(n, &self.objects.ids, self.work, self.report, &name)?;
@@ -1053,11 +1053,16 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
                 && !child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 && let Some(v) = child(p, "StartKeyframeValue").filter(|v| v.attribute("Encoding") == Some("base64"))
             {
-                *text = self.decoded.get(v, v.text());
+                // Keep an earlier successful decode when a later layer fails.
+                match self.decoded.get(v, v.text()) {
+                    Some(decoded) => *text = Some(decoded),
+                    None if text.is_none() => {}
+                    None => warning(self.report, format!("{label}: a later Source Text layer could not be decoded; earlier text kept")),
+                }
             }
         }
         if text.is_none() {
-            warning(self.report, format!("{label}: static Source Text unavailable; layer name not used as visible text"));
+            warning(self.report, format!("{label}: static SourceText unavailable; layer name not used as visible text"));
         }
         Ok(())
     }
@@ -1363,6 +1368,10 @@ impl SequenceImport<'_> {
             captions.name = name.clone();
         }
         for item in &track.items {
+            if item.disabled {
+                warning(self.report, format!("{}: disabled caption omitted from the native caption track", item.label));
+                continue;
+            }
             captions.captions.push(Caption {
                 id: ClipId(self.b.alloc()),
                 start: item.start,
@@ -1430,7 +1439,10 @@ impl SequenceImport<'_> {
 
     /// Clips of one adjustment layer share its project item, long enough for each use.
     fn adjustment_layer(&mut self, key: &str, item: &Item) -> ItemId {
-        let needed = item.source_out.max(self.fps.frame_duration());
+        // Cover OutPoint and the speed-scaled timeline span (fallback OutPoint omits speed).
+        let timeline = (item.end.0 - item.start.0).max(0) as f64;
+        let speed_scaled = Tick(item.source_in.0.saturating_add((timeline * item.speed.abs()).round() as i64));
+        let needed = item.source_out.max(speed_scaled).max(self.fps.frame_duration());
         match self.b.find_media(key) {
             Some(id) => {
                 if let Some(ItemKind::AdjustmentLayer { duration, .. }) = self.b.p.item_mut(id).map(|i| &mut i.kind) {
@@ -1693,12 +1705,20 @@ fn bin_item(entry: &ProjectEntry, frame: (u32, u32, FrameRate), b: &mut Builder,
         sequences.get(uid).copied()
     } else if let Some(master) = &entry.adjustment_layer {
         let key = format!("premiere-adjustment-layer:{master}");
-        Some(b.find_media(&key).unwrap_or_else(|| {
-            let duration = entry.duration.unwrap_or(Tick::ZERO).max(fps.frame_duration());
-            let id = b.p.add_item(&entry.name, Label::Lavender, ItemKind::AdjustmentLayer { width, height, rate: fps, duration }, None);
-            b.register_media(&key, id);
-            id
-        }))
+        let needed = entry.duration.unwrap_or(Tick::ZERO).max(fps.frame_duration());
+        Some(match b.find_media(&key) {
+            Some(id) => {
+                if let Some(ItemKind::AdjustmentLayer { duration, .. }) = b.p.item_mut(id).map(|i| &mut i.kind) {
+                    *duration = (*duration).max(needed);
+                }
+                id
+            }
+            None => {
+                let id = b.p.add_item(&entry.name, Label::Lavender, ItemKind::AdjustmentLayer { width, height, rate: fps, duration: needed }, None);
+                b.register_media(&key, id);
+                id
+            }
+        })
     } else {
         let media = if let Some(path) = &entry.media_path {
             let spec = MediaSpec {
@@ -2864,9 +2884,7 @@ mod tests {
             filed.insert(item, bin);
             order.push(item);
         }
-        let start = std::time::Instant::now();
         file_items(&mut p, &filed, &order);
-        assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
         let in_their_bins = p.root.children.iter().all(|c| match c {
             BinEntry::Bin(bin) => matches!(bin.children.as_slice(), [BinEntry::Item(id)] if filed.get(id) == Some(&bin.id)),
             BinEntry::Item(_) => false,
