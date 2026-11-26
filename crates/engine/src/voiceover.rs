@@ -9,7 +9,7 @@
 //! | command | does |
 //! |---|---|
 //! | `audio.voiceover.settings` | get / set the Voice-Over Record Settings (preferences), list input devices |
-//! | `audio.voiceover.start` | arm and start capturing; returns R, C, the punch-out and the countdown cue times |
+//! | `audio.voiceover.start` | arm and start capturing; returns R, C, the punch-out and the countdown cue times. With `marker` (a range marker of the sequence) R and the punch-out are the marker's start and end instead of the In and Out marks |
 //! | `audio.voiceover.sync` | the host's playback actually started at `time`: restart the capture there |
 //! | `audio.voiceover.stop` | stop capturing; write, import and place the recording (one undo step) |
 //!
@@ -18,7 +18,8 @@
 //! exactly as many samples as the timeline asks for, so a recording lands sample-accurately.
 //!
 //! Files are named `<Name> <n>.wav` (Voice-over Record Settings ▸ Name, default `Voice-over`, `n`
-//! the first number not used by a project item or an existing file) and saved in Project Settings ▸
+//! the first number not used by a project item or an existing file; a take recorded for a marker
+//! uses the marker's name as `<Name>`, made safe for a file name, when it has one) and saved in Project Settings ▸
 //! Scratch Disks ▸ Captured Audio and Video, else next to the project file, else (unsaved project)
 //! in `Voice-over Recordings` in the data directory or the system temporary directory. They are
 //! mono 32-bit float WAV at the input's sample rate.
@@ -26,7 +27,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use filmcraft_project::{Sequence, TrackId, TrackKind};
+use filmcraft_project::{MarkerId, Sequence, TrackId, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::commands::{CommandSpec, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
@@ -171,10 +172,21 @@ pub struct Recording {
     pub capture_start: Tick,
     /// Out point when punching in (recording ends there).
     pub punch_out: Option<Tick>,
+    /// The range marker this take is recorded for, with its name when the take started (a rename
+    /// or deletion while recording does not change the file name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker: Option<RecordMarker>,
     pub format: InputFormat,
     pub channel: u32,
     /// `Session::document_epoch` when the take started: its sequence and track ids belong to that project.
     pub epoch: u64,
+}
+
+/// The range marker a take is recorded for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecordMarker {
+    pub id: MarkerId,
+    pub name: String,
 }
 
 /// Voice-over state of a session: the input device and the recording in progress.
@@ -349,6 +361,34 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(settings_json(s))
 }
 
+/// The range marker `marker` names: its identity and name, start and end. An unknown id, a marker
+/// without duration (nothing to punch) and `marker` together with a record point are errors.
+fn marker_p(s: &Session, p: &Value) -> Result<Option<(RecordMarker, Tick, Tick)>> {
+    const ID: &str = "audio.voiceover.start";
+    let Some(v) = p.get("marker").filter(|v| !v.is_null()) else { return Ok(None) };
+    if ["time", "frame", "seconds", "timecode"].iter().any(|k| p.get(k).is_some()) {
+        return Err(bad(ID, "use marker or a record time, not both: the marker's start is the record point"));
+    }
+    let id = v.as_u64().map(MarkerId).ok_or_else(|| bad(ID, "marker must be a marker id"))?;
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let m = seq.markers.iter().find(|m| m.id == id).ok_or_else(|| bad(ID, format!("no marker {} in the sequence", id.0)))?;
+    let end = m.start.0.checked_add(m.duration.0).map(Tick).filter(|end| *end > m.start);
+    let end = end.ok_or_else(|| bad(ID, format!("marker {} has no duration; choose a range marker", id.0)))?;
+    Ok(Some((RecordMarker { id, name: m.name.clone() }, m.start, end)))
+}
+
+/// `name` as the base of a file name: separators, reserved and control characters become `_`,
+/// leading dots and trailing dots and spaces go, and the length is capped. None when nothing
+/// usable is left.
+fn file_base(name: &str) -> Option<String> {
+    const MAX_CHARS: usize = 80;
+    let clean: String = name.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
+    let clean = clean.trim_start_matches(['.', ' ']);
+    let clipped: String = clean.chars().take(MAX_CHARS).collect();
+    let clipped = clipped.trim_end_matches(['.', ' ']);
+    (!clipped.is_empty()).then(|| clipped.to_string())
+}
+
 fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let track = record_track(s, p)?;
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
@@ -359,20 +399,29 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let sr = seq.settings.sample_rate.max(1);
     let (mark_in, mark_out) = (seq.mark_in, seq.mark_out);
     let vo = s.prefs.voice_over.clone();
-    let punch = mark_in.is_some() && mark_out.is_some_and(|o| Some(o) > mark_in);
-    let record_start = if punch { mark_in.unwrap_or_default() } else { time_p(s, p, "").unwrap_or(s.playhead()) };
+    let marker = marker_p(s, p)?;
+    let span = match &marker {
+        Some((_, start, end)) => Some((*start, *end)),
+        None => mark_in.zip(mark_out).filter(|(i, o)| o > i),
+    };
+    let record_start = match span {
+        Some((start, _)) => start,
+        None => time_p(s, p, "").unwrap_or(s.playhead()),
+    };
     if record_start < Tick::ZERO {
         return Err(bad("audio.voiceover.start", "the record point cannot be negative"));
     }
     let preroll = Tick::from_seconds_f64(f64_p(p, "preroll").unwrap_or(vo.preroll_seconds).clamp(0.0, 60.0));
     let capture_start = (record_start - preroll).max(Tick::ZERO);
-    let punch_out = if punch { mark_out } else { None };
+    let punch_out = span.map(|(_, end)| end);
+    let marker = marker.map(|(m, _, _)| m);
     let device = if vo.source.is_empty() { s.prefs.audio_hardware.default_input.clone() } else { vo.source.clone() };
     let format = s.voiceover.input().start(&device, sr).map_err(|e| EngineError::Other(format!("voice-over input: {e}")))?;
     let channel = vo.input_channel.min(format.channels.saturating_sub(1) as u32);
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
-    s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
+    s.voiceover.rec =
+        Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, marker: marker.clone(), format, channel, epoch: s.document_epoch });
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     Ok(json!({
@@ -381,6 +430,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
         "recordStart": record_start.0,
         "captureStart": capture_start.0,
         "punchOut": punch_out.map(|t| t.0),
+        "marker": marker.map(|m| m.id.0),
         "postroll": Tick::from_seconds_f64(vo.postroll_seconds).0,
         "cues": cues,
         "sampleRate": format.sample_rate,
@@ -511,7 +561,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // write the file
     let dir = record_dir(s, p)?;
-    let base = s.prefs.voice_over.name.clone();
+    let base = rec.marker.as_ref().and_then(|m| file_base(&m.name)).unwrap_or_else(|| s.prefs.voice_over.name.clone());
     let path = unique_wav_path(s, &dir, &base)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
@@ -558,6 +608,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         "item": item.0,
         "clip": clip.0,
         "track": track_label,
+        "marker": rec.marker.as_ref().map(|m| m.id.0),
         "start": at.0,
         "duration": dur.0,
         "samples": sample_count,
@@ -586,7 +637,14 @@ pub fn commands() -> Vec<CommandSpec> {
             settings,
             true,
         ),
-        spec("audio.voiceover.start", "Start Voice-over Recording", r#"{"track":"A1"|id?,"time":ticks?,"preroll":seconds?}"#, can_start, start, true),
+        spec(
+            "audio.voiceover.start",
+            "Start Voice-over Recording",
+            r#"{"track":"A1"|id?,"time":ticks?,"preroll":seconds?,"marker":id?}"#,
+            can_start,
+            start,
+            true,
+        ),
         spec("audio.voiceover.sync", "Sync Voice-over Capture", r#"{"time":ticks?}"#, is_recording, sync, true),
         spec("audio.voiceover.stop", "Stop Voice-over Recording", r#"{"time":ticks?,"dir":str?,"discard":bool?}"#, is_recording, stop, true),
     ]

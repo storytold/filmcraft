@@ -364,6 +364,7 @@ fn only_a_running_transport_has_something_to_stop() {
         track: filmcraft_project::TrackId(0),
         record_start: filmcraft_time::Tick::ZERO,
         capture_start: filmcraft_time::Tick::ZERO,
+        marker: None,
         punch_out: None,
         format: filmcraft_engine::voiceover::InputFormat { sample_rate: 48_000, channels: 1 },
         channel: 0,

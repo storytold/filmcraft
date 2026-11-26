@@ -9,7 +9,8 @@
 //! `voiceover.source`, `voiceover.source.<i>`, `voiceover.input`, `voiceover.input.<i>`,
 //! `voiceover.name`, `voiceover.countdown`, `voiceover.preroll`, `voiceover.postroll`,
 //! `voiceover.ok`, `voiceover.cancel`; the countdown overlay is `voiceover.countdown.overlay`.
-//! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
+//! UI commands: `voiceover.recordToggle {track?, marker?}` (`marker`: record a range marker's span, as the
+//! marker menus do) and `voiceover.settingsDialog`.
 
 use crate::widgets::CenteredDialog as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -83,6 +84,11 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, a: Action) {
 
 /// Start recording on `track` (None = the engine's choice), or stop the recording in progress.
 pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, String> {
+    record(app, track, None)
+}
+
+/// [`toggle`], recording the span of the range marker `marker` when it starts a take.
+fn record(app: &mut FilmcraftApp, track: Option<u64>, marker: Option<u64>) -> Result<Value, String> {
     if app.session.voiceover.recording() {
         if app.playback.playing {
             app.stop(); // runs `audio.voiceover.stop` (see `on_stop`)
@@ -93,10 +99,13 @@ pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, Strin
     if app.playback.playing {
         app.stop();
     }
-    let p = match track {
+    let mut p = match track {
         Some(t) => json!({"track": t}),
         None => json!({}),
     };
+    if let Some(marker) = marker {
+        p["marker"] = json!(marker);
+    }
     let r = app.session.execute("audio.voiceover.start", p).map_err(|e| e.to_string())?;
     let from = Tick(r["captureStart"].as_i64().unwrap_or(0));
     app.session.set_playhead(from);
@@ -177,7 +186,14 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, p: &Value, d
                     }
                 }
             };
-            Some(toggle(app, track))
+            let marker = match p.get("marker") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_u64() {
+                    Some(id) => Some(id),
+                    None => return Some(Err(format!("marker must be a marker id, not {v}"))),
+                },
+            };
+            Some(record(app, track, marker))
         }
         "voiceover.settingsDialog" if !dialogs => Some(app.session.execute("audio.voiceover.settings", json!({})).map_err(|e| e.to_string())),
         "voiceover.settingsDialog" => {

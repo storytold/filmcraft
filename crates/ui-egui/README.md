@@ -226,3 +226,29 @@ than one clip is selected, matching the existing Speed control.
 
 `clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
 text input, validation, application, Cancel, and Undo/Redo.
+
+## Record a voice-over for a marker
+
+Right-click a range marker of the open sequence on the Timeline or in the Markers panel (or in the
+Program monitor, which shares the menu) and choose **Record Voice-over for Marker**
+(`<menu>.recordVoiceover`). It runs the UI command `voiceover.recordToggle {marker}`, which calls the
+engine's `audio.voiceover.start {marker}` and then plays from the capture start, as the track
+header's microphone does. The engine decisions, which automation sees too:
+
+- The marker's start and end are the punch-in and punch-out. Pre-roll and post-roll work as with In
+  and Out marked, and the sequence's In and Out are never changed.
+- A range marker means a duration greater than zero. A zero-duration marker or an unknown id is an
+  error and nothing records; `marker` together with a record time (`time`, `frame`, `seconds`,
+  `timecode`) is refused as ambiguous.
+- The take is named `<marker name> <n>.wav`; an unnamed marker uses the Name setting. The name is
+  read when the take starts and made safe: separators, reserved and control characters become `_`,
+  leading dots and trailing dots and spaces are dropped, at most 80 characters.
+- The entry is offered only for markers of the open sequence, not source markers. It is disabled,
+  with the reason on hover, for a marker with no duration and while a take is recording.
+- `audio.voiceover.start` and `.stop` report `marker`.
+
+Limitation: the placed clip does not store its marker yet. That needs a project schema version
+bump in `storytold/craft-libs`, so the takes of a section can be found by file name only.
+
+Tests: `voiceover_tests` in the engine (bounds, In/Out untouched, naming, hostile names, refusals)
+and `marker_menus_record_a_take_of_the_range` in `tests/it/sequence_ui.rs`.

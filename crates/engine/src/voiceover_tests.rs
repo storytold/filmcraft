@@ -306,3 +306,110 @@ fn the_input_meter_follows_the_input_while_recording() {
     assert!(s.previews.live.take_input_meter().is_empty(), "stopped: the meter stays idle");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ------------------------------------------------------------------------------ range markers
+
+/// A range marker `[start, start + length)` seconds named `name`; returns its id.
+fn range_marker(s: &mut Session, start: f64, length: f64, name: &str) -> u64 {
+    s.execute("markers.addRange", json!({"time": sec(start), "duration": sec(length), "name": name})).unwrap()["marker"].as_u64().unwrap()
+}
+
+fn recorded_file_name(v: &serde_json::Value) -> String {
+    std::path::Path::new(v["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().into_owned()
+}
+
+#[test]
+fn recording_a_marker_punches_in_and_out_at_its_bounds_and_leaves_in_and_out_alone() {
+    let (mut s, rt, ti) = demo();
+    let dir = tmp("marker-punch");
+    s.execute("markers.markIn", json!({"time": sec(10.0)})).unwrap();
+    s.execute("markers.markOut", json!({"time": sec(12.0)})).unwrap();
+    let marker = range_marker(&mut s, 3.0, 1.5, "Intro");
+    let r = s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "preroll": 1.0})).unwrap();
+    assert_eq!(r["recordStart"], sec(3.0), "punch-in at the marker's start");
+    assert_eq!(r["punchOut"], sec(4.5), "punch-out at the marker's end");
+    assert_eq!(r["captureStart"], sec(2.0), "the pre-roll counts back from the punch-in as with In marked");
+    assert_eq!(r["marker"], marker);
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.mark_in, q.mark_out), (Some(Tick(sec(10.0))), Some(Tick(sec(12.0)))), "the sequence's In and Out are not touched");
+    // playback ran on through the post-roll: the take still ends at the marker's end
+    let v = s.execute("audio.voiceover.stop", json!({"time": sec(9.0), "dir": dir})).unwrap();
+    assert_eq!(v["marker"], marker);
+    let c = track_clips(&s, ti).into_iter().find(|c| c.id.0 == v["clip"].as_u64().unwrap()).unwrap();
+    assert_eq!((c.start, c.end()), (Tick(sec(3.0)), Tick(sec(4.5))));
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.mark_in, q.mark_out), (Some(Tick(sec(10.0))), Some(Tick(sec(12.0)))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_take_is_named_after_its_marker_with_the_existing_numbering() {
+    let (mut s, rt, _) = demo();
+    let dir = tmp("marker-name");
+    let named = range_marker(&mut s, 1.0, 1.0, "Chapter One");
+    let unnamed = range_marker(&mut s, 5.0, 1.0, "");
+    let take = |s: &mut Session, marker: u64| {
+        s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "preroll": 0})).unwrap();
+        recorded_file_name(&s.execute("audio.voiceover.stop", json!({"time": sec(9.0), "dir": dir})).unwrap())
+    };
+    assert_eq!(take(&mut s, named), "Chapter One 1.wav");
+    assert_eq!(take(&mut s, named), "Chapter One 2.wav", "retakes of a section number on");
+    let base = s.prefs.voice_over.name.clone();
+    assert_eq!(take(&mut s, unnamed), format!("{base} 1.wav"), "an unnamed marker falls back to the Name setting");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hostile_marker_names_make_safe_file_names() {
+    let (mut s, rt, _) = demo();
+    let dir = tmp("marker-hostile");
+    let long = "x".repeat(5_000);
+    let names = ["../../etc/passwd", "a/b\\c", "..", ".hidden", "con:*?\"<>|", "tab\there\nnewline\0nul", " . ", &long, "日本語のナレーション", "...."];
+    for name in names {
+        let marker = range_marker(&mut s, 1.0, 1.0, name);
+        s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "preroll": 0})).unwrap();
+        let v = s.execute("audio.voiceover.stop", json!({"time": sec(9.0), "dir": dir})).unwrap();
+        let path = std::path::PathBuf::from(v["path"].as_str().unwrap());
+        assert_eq!(path.parent().unwrap(), std::path::Path::new(&dir), "{name:?} stays in the recordings folder");
+        let file = recorded_file_name(&v);
+        assert!(file.ends_with(".wav") && !file.starts_with('.'), "{name:?}: {file}");
+        assert!(!file.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c)), "{name:?}: {file}");
+        assert!(file.len() < 255, "{name:?}: a file name must fit the file system");
+        assert!(path.exists(), "{name:?}: the take was written");
+        s.execute("markers.delete", json!({"marker": marker})).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_marker_without_duration_or_that_does_not_exist_is_refused_and_nothing_records() {
+    let (mut s, rt, _) = demo();
+    let chapter = s.execute("markers.addChapter", json!({"time": sec(2.0), "name": "Point"})).unwrap()["marker"].as_u64().unwrap();
+    let error = s.execute("audio.voiceover.start", json!({"track": rt, "marker": chapter})).unwrap_err().to_string();
+    assert!(error.contains("no duration"), "{error}");
+    assert!(!s.voiceover.recording());
+    let error = s.execute("audio.voiceover.start", json!({"track": rt, "marker": 987_654})).unwrap_err().to_string();
+    assert!(error.contains("no marker"), "{error}");
+    assert!(!s.voiceover.recording());
+    for bad in [json!("Intro"), json!(-1), json!(1.5)] {
+        assert!(s.execute("audio.voiceover.start", json!({"track": rt, "marker": bad})).is_err(), "{bad}");
+        assert!(!s.voiceover.recording());
+    }
+    // a record time next to a marker is ambiguous
+    let marker = range_marker(&mut s, 1.0, 1.0, "Intro");
+    let error = s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "time": sec(5.0)})).unwrap_err().to_string();
+    assert!(error.contains("not both"), "{error}");
+    assert!(!s.voiceover.recording());
+}
+
+#[test]
+fn a_take_keeps_the_name_the_marker_had_when_it_started() {
+    let (mut s, rt, _) = demo();
+    let dir = tmp("marker-renamed");
+    let marker = range_marker(&mut s, 1.0, 1.0, "Before");
+    s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "preroll": 0})).unwrap();
+    s.execute("markers.edit", json!({"marker": marker, "name": "After"})).unwrap();
+    let v = s.execute("audio.voiceover.stop", json!({"time": sec(9.0), "dir": dir})).unwrap();
+    assert!(recorded_file_name(&v).starts_with("Before "), "{}", recorded_file_name(&v));
+    let _ = std::fs::remove_dir_all(&dir);
+}
