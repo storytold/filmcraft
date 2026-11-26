@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod audio_levels;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
@@ -36,6 +37,7 @@ pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod pacing;
 mod palette;
 pub mod panels;
 pub mod paste_media;
