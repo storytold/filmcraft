@@ -313,7 +313,7 @@ fn text_patch(xml: &str, node: Node<'_, '_>, value: &str) -> Result<Option<(std:
     let range = node.range();
     let slice = &xml[range.clone()];
     let name = node.tag_name().name();
-    let open_end = slice.find('>').ok_or_else(|| Error::Other(format!("malformed <{name}>")))? + 1;
+    let open_end = open_tag_end(slice, name)?;
     let close = format!("</{name}>");
     let escaped = escape_text(value);
     let Some(close_at) = slice.rfind(&close) else {
@@ -328,6 +328,31 @@ fn text_patch(xml: &str, node: Node<'_, '_>, value: &str) -> Result<Option<(std:
         return Ok(None);
     }
     Ok(Some((from..to, escaped)))
+}
+
+/// Index just past the opening tag's `>`, ignoring `>` inside quoted attribute values (`hint="a>b"`).
+fn open_tag_end(slice: &str, name: &str) -> Result<usize> {
+    let bytes = slice.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i] != b'<' {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return Err(Error::Other(format!("malformed <{name}>")));
+    }
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) => {}
+            None if b == b'"' || b == b'\'' => quote = Some(b),
+            None if b == b'>' => return Ok(i + 1),
+            _ => {}
+        }
+        i += 1;
+    }
+    Err(Error::Other(format!("malformed <{name}>")))
 }
 
 fn escape_text(s: &str) -> String {
@@ -415,6 +440,17 @@ mod tests {
         assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("relocated.mov"));
         assert!(source.xml.contains("OrphanCustom"));
         assert!(source.xml.contains("unmodeled"));
+    }
+
+    #[test]
+    fn text_patch_ignores_greater_than_inside_quoted_attributes() {
+        // A naive find('>') would cut at hint="a>b" and leave an unterminated attribute.
+        let xml = r#"<PremiereData><Sequence ObjectUID="s"><Name hint="a>b">Parent</Name></Sequence></PremiereData>"#;
+        let mut source = NativeSource { xml: xml.into() };
+        assert!(set_field(&mut source.xml, "ObjectUID", "s", "Name", "Renamed").unwrap());
+        assert!(source.xml.contains(r#"<Name hint="a>b">Renamed</Name>"#), "{}", source.xml);
+        assert!(roxmltree::Document::parse(&source.xml).is_ok(), "patched XML must still parse");
+        assert_eq!(open_tag_end(r#"<Name hint='x>y'>T</Name>"#, "Name").unwrap(), r#"<Name hint='x>y'>"#.len());
     }
 
     #[test]
