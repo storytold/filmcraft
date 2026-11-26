@@ -871,7 +871,8 @@ impl FxOp {
                 let look_lut = creative_on.then(|| crate::luts::resolve(cx.project, text(e, "look_lut"))).flatten();
                 let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
                 let look_k = if creative_on { f(e, "look_intensity", cx) / 100.0 } else { 1.0 };
-                let tone = eval_tone(e, cx, w, h, creative_on);
+                // HDR stays on the CPU `lumetri` path, which builds its own curve tables.
+                let tone = if is_hdr { ToneEval { tone: None, gpu: false } } else { eval_tone(e, cx, w, h, creative_on) };
                 let uses_look = look > 0 || look_lut.is_some();
                 let gpu_capable =
                     !is_hdr && grade_lut_fits(input_lut.as_deref()) && grade_lut_fits(look_lut.as_deref()) && (!uses_look || look_k.is_finite()) && tone.gpu;

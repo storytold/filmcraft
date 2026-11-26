@@ -857,11 +857,77 @@ fn log_source_with_effects_matches_cpu() {
     };
     let cpu = execute_cpu(&plan).over_black_rgba8();
     let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device (see the log for the pipeline error)");
     c.composite(&plan);
     let (_, _, gpu) = c.read_output().expect("readback");
     let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; w * h]);
     eprintln!("log source with effects (S-Log3 -> HLG): p99 {p99}, mean {mean:.2}, max {max}");
     assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}, max {max}");
+    // The same picture when the effect stage cannot run: the CPU fallback decodes through the
+    // layer's input transform, as `execute_layers` does.
+    c.fx = None;
+    c.composite(&plan);
+    let (_, _, fallback) = c.read_output().expect("readback");
+    let (p99, mean, max) = stats8(&cpu, &fallback, &vec![true; w * h]);
+    assert!(p99 <= 6 && mean < 1.5, "fallback p99 {p99}, mean {mean}, max {max}");
+}
+
+/// A zero-radius unsharp has no blur passes. Its combine still clamps a negative channel, as
+/// `unsharp_boxes` does.
+#[test]
+fn zero_radius_unsharp_clamps_negative_rgb() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (4u32, 4u32);
+    let mut px = vec![0.0; (w * h * 4) as usize];
+    for p in px.chunks_mut(4) {
+        p[0] = -0.4;
+        p[3] = 1.0;
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![FxOp::Unsharp { rx: Vec::new(), ry: Vec::new(), amount: 1.0, threshold: 0.0 }] };
+    let cpu = filmcraft_render::plan::effect_image(&frame, &fx);
+    assert!(px[0] < cpu.px[0], "the combine did not lift the negative channel");
+    assert!(cpu.px.chunks(4).all(|p| p[0] >= 0.0));
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device (see the log for the pipeline error)");
+    let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+    let (worst, flips) = compare(&cpu.px, &gpu);
+    assert!(worst <= EXACT && flips == 0.0, "zero-radius unsharp: {worst:.2e}, flips {flips:.4}");
+}
+
+/// Look intensity is not part of the LUT. A second grade with the same cube must not upload it again.
+#[test]
+fn a_retained_grade_lut_is_uploaded_once() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let lut = std::sync::Arc::new(filmcraft_color::Lut::from_cube(filmcraft_color::Lut3d::identity(2)));
+    let (w, h) = (8u32, 8u32);
+    let grade = |k: f32| {
+        let mut op =
+            FxOp::eval(&effect("lumetri", &[("look_intensity", fl(f64::from(k * 100.0)))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("lumetri");
+        let FxOp::Lumetri { input_lut, look_k, .. } = &mut op else { panic!("lumetri") };
+        *input_lut = Some(lut.clone());
+        *look_k = k;
+        assert!(op.gpu_ok());
+        op
+    };
+    let frame = VideoFrame::rgba_f32(w, h, [0.2, 0.3, 0.4, 1.0].repeat((w * h) as usize));
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device (see the log for the pipeline error)");
+    let run = |c: &mut GpuCompositor, op: FxOp| {
+        c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+    };
+    let before = c.fx.as_ref().expect("fx").grade_lut_fills;
+    run(&mut c, grade(0.4));
+    let once = c.fx.as_ref().expect("fx").grade_lut_fills;
+    assert!(once > before, "the cube was not uploaded");
+    run(&mut c, grade(0.9));
+    assert_eq!(c.fx.as_ref().expect("fx").grade_lut_fills, once, "changing look intensity uploaded the cube again");
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working

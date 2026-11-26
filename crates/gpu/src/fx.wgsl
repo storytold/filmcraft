@@ -19,10 +19,11 @@ struct U {
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
 // Unsharp Mask: the image before blurring.
 @group(0) @binding(3) var aux: texture_2d<f32>;
-// Color Grading Input LUT and Creative Look. Read only when `u.i1.z != 0`.
-// Header (vec4 slots): sizes, look id and intensity, input cube domain, input shaper domain,
-// look cube domain, look shaper domain. Texels follow: input shaper, input cube, look shaper, look cube.
+// Color Grading header, wheels, curves and HSL. Read only when `u.i1.z != 0`.
+// Header (vec4 slots): sizes, look id and intensity, domains, wheels, curve mask, HSL.
+// Curve samples follow the header. LUT texels are `grade_lut` (input shaper, input cube, look shaper, look cube).
 @group(0) @binding(4) var<storage, read> grade: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> grade_lut: array<vec4<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -557,7 +558,7 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
 }
 
 fn grade_at(base: u32, n: u32, r: u32, g: u32, b: u32) -> vec3<f32> {
-    return grade[base + r + g * n + b * n * n].xyz;
+    return grade_lut[base + r + g * n + b * n * n].xyz;
 }
 
 fn lut1d(base: u32, size: u32, dmin: vec3<f32>, dmax: vec3<f32>, rgb: vec3<f32>) -> vec3<f32> {
@@ -565,12 +566,12 @@ fn lut1d(base: u32, size: u32, dmin: vec3<f32>, dmax: vec3<f32>, rgb: vec3<f32>)
     let t = clamp((rgb - dmin) / (dmax - dmin), vec3(0.0), vec3(1.0)) * f32(n);
     let i = min(vec3<u32>(t), vec3(n - 1u));
     let f = t - vec3<f32>(i);
-    let a0 = grade[base + i.x];
-    let b0 = grade[base + i.x + 1u];
-    let a1 = grade[base + i.y];
-    let b1 = grade[base + i.y + 1u];
-    let a2 = grade[base + i.z];
-    let b2 = grade[base + i.z + 1u];
+    let a0 = grade_lut[base + i.x];
+    let b0 = grade_lut[base + i.x + 1u];
+    let a1 = grade_lut[base + i.y];
+    let b1 = grade_lut[base + i.y + 1u];
+    let a2 = grade_lut[base + i.z];
+    let b2 = grade_lut[base + i.z + 1u];
     return vec3(a0.x + (b0.x - a0.x) * f.x, a1.y + (b1.y - a1.y) * f.y, a2.z + (b2.z - a2.z) * f.z);
 }
 
@@ -671,7 +672,8 @@ fn apply_look(look: u32, c: vec3<f32>) -> vec3<f32> {
 }
 
 fn lut_base() -> u32 {
-    return 18u + countOneBits(u32(grade[13].x)) * 256u;
+    // Texels start at 0 of `grade_lut`. A look LUT skips past the input LUT.
+    return 0u;
 }
 
 fn grade_f(idx: u32) -> f32 {

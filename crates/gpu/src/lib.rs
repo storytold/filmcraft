@@ -638,6 +638,28 @@ impl GpuCompositor {
         plane
     }
 
+    /// Keep `plane` for a later upload of the same size. When the pool is full of other sizes,
+    /// drop those first: otherwise a resolution change leaves them resident and allocates every
+    /// frame. Planes retired during this composite are not in the pool yet, so a texture still
+    /// referenced by an unsubmitted draw is not reused here.
+    fn retire_plane(&mut self, plane: UploadPlane) {
+        if self.plane_pool_bytes + plane.bytes > PLANE_POOL_BYTES {
+            let mut i = 0;
+            while i < self.plane_pool.len() && self.plane_pool_bytes + plane.bytes > PLANE_POOL_BYTES {
+                if self.plane_pool[i].key != plane.key {
+                    let old = self.plane_pool.swap_remove(i);
+                    self.plane_pool_bytes -= old.bytes;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        if self.plane_pool_bytes + plane.bytes <= PLANE_POOL_BYTES {
+            self.plane_pool_bytes += plane.bytes;
+            self.retired_planes.push(plane);
+        }
+    }
+
     /// Upload the CPU's log decode table in rows that fit portable texture-size limits.
     /// Adapted from upstream PR #3219 (25fc87b4).
     fn lut_texture(&mut self, values: &[f32]) -> wgpu::TextureView {
@@ -811,10 +833,7 @@ impl GpuCompositor {
             for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
                 if let Some(up) = self.uploads.remove(&k) {
                     for plane in up.planes {
-                        if self.plane_pool_bytes + plane.bytes <= PLANE_POOL_BYTES {
-                            self.plane_pool_bytes += plane.bytes;
-                            self.retired_planes.push(plane);
-                        }
+                        self.retire_plane(plane);
                     }
                 }
             }
@@ -1006,7 +1025,8 @@ impl GpuCompositor {
                 if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
                     return None;
                 }
-                let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
+                // Decode through the layer's input transform first, as `execute_layers` does.
+                let img = filmcraft_render::plan::effect_image_with(&l.frame, lfx, l.input.as_deref());
                 Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
             })
             .collect();

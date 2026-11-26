@@ -13,6 +13,7 @@
 //! radius costs O(1) per pixel like on the CPU (radii are capped by `gaussian_boxes`).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use filmcraft_render::gpufx::FxOp;
 use filmcraft_render::plan::LayerFx;
@@ -68,6 +69,11 @@ pub(crate) struct FxStage {
     source: wgpu::RenderPipeline,
     /// Bound when a pass has no Color Grading LUT or look, so the storage binding still exists.
     grade_none: wgpu::Buffer,
+    /// LUT texel buffers kept by the `Arc` address of the input and look LUTs. Animated grade
+    /// controls live in the per-pass header, so changing them does not upload the cubes again.
+    grade_luts: Vec<CachedGradeLut>,
+    /// How many LUT texel buffers were created (a cache hit does not increment this).
+    pub(crate) grade_lut_fills: u64,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
     /// Open [`begin_frame`](Self::begin_frame)s.
@@ -107,8 +113,24 @@ struct Step {
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
-    /// Color Grading Input LUT and Creative Look, packed for `fx.wgsl` (`grade`). Empty: none.
+    /// Color Grading header, wheels, curves and HSL, packed for `fx.wgsl` (`grade`). Empty: none.
     grade: Vec<f32>,
+    /// Input and look LUT texels. The GPU buffer is cached; this keeps the `Arc`s alive so their
+    /// addresses cannot be reused for different texels while that buffer is cached.
+    luts: Option<GradeLuts>,
+}
+
+/// One grade pass's LUTs, keyed by the allocation address of each `Arc`.
+struct GradeLuts {
+    key: (usize, usize),
+    input: Option<Arc<filmcraft_color::Lut>>,
+    look: Option<Arc<filmcraft_color::Lut>>,
+}
+
+struct CachedGradeLut {
+    key: (usize, usize),
+    buffer: wgpu::Buffer,
+    _keep: (Option<Arc<filmcraft_color::Lut>>, Option<Arc<filmcraft_color::Lut>>),
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -116,12 +138,12 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new(), grade: Vec::new() }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new(), grade: Vec::new(), luts: None }
 }
 
-/// Header slots in a grade table: sizes, look id and intensity, then four domains (cube and
-/// shaper, input then look). Each slot is one `vec4`. Table texels follow, input shaper, input
-/// cube, look shaper, look cube.
+/// Header slots in a grade table: sizes, look id and intensity, domains, wheels, curve mask and
+/// HSL. Each slot is one `vec4`. Curve samples follow in this buffer. LUT texels are a second
+/// buffer, cached by LUT identity.
 const GRADE_HEADER: usize = 18;
 
 fn put_domain(buf: &mut [f32], slot: usize, min: [f32; 3], max: [f32; 3]) {
@@ -202,9 +224,17 @@ fn grade_table(
         put4(&mut buf, 15, [h.lmax, h.soft, h.temp, h.tint]);
         put4(&mut buf, 16, [h.sat, h.shift, 0.0, 0.0]);
     }
-    append_lut(&mut buf, input);
-    append_lut(&mut buf, look_lut);
     buf
+}
+
+/// LUTs whose texels the shader reads. `None` when neither cube nor shaper is present.
+fn retained_luts(input: &Option<Arc<filmcraft_color::Lut>>, look: &Option<Arc<filmcraft_color::Lut>>) -> Option<GradeLuts> {
+    let present = |l: &Option<Arc<filmcraft_color::Lut>>| l.as_ref().is_some_and(|l| l.cube.is_some() || l.shaper.is_some());
+    if !present(input) && !present(look) {
+        return None;
+    }
+    let id = |l: &Option<Arc<filmcraft_color::Lut>>| l.as_ref().map(|l| Arc::as_ptr(l) as usize).unwrap_or(0);
+    Some(GradeLuts { key: (id(input), id(look)), input: input.clone(), look: look.clone() })
 }
 
 /// Texels a row of a kernel texture holds.
@@ -239,11 +269,9 @@ fn kernel_texture(device: &wgpu::Device, queue: &wgpu::Queue, kernel: &[(i32, i3
     t.create_view(&Default::default())
 }
 
-/// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
+/// Box passes along x (vertical = false) or y, then the combine. A radius of 0 adds no box
+/// pass; the combine still runs, which is what clamps a negative channel when every radius is 0.
 fn push_unsharp(out: &mut Vec<Step>, rx: &[u32], ry: &[u32], amount: f32, threshold: f32) {
-    if rx.iter().chain(ry).all(|r| *r == 0) {
-        return;
-    }
     let start = out.len();
     boxes(rx, false, true, out);
     boxes(ry, true, true, out);
@@ -426,6 +454,7 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             let grade = grade_table(input_lut.as_deref(), look_lut.as_deref(), *look, *look_k, wheels, curves, hsl);
             let mut s = step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, (!grade.is_empty()) as u32, 0], &p);
             s.grade = grade;
+            s.luts = retained_luts(input_lut, look_lut);
             out.push(s);
             if let Some(t) = tone
                 && t.sharpen.abs() > 1e-3
@@ -443,7 +472,8 @@ impl FxStage {
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
-            && l.max_storage_buffers_per_shader_stage >= 1
+            // The grade header and the LUT texels are separate storage bindings.
+            && l.max_storage_buffers_per_shader_stage >= 2
             && l.max_storage_buffer_binding_size >= 16 * 1024 * 1024
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
@@ -497,6 +527,16 @@ impl FxStage {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -541,7 +581,19 @@ impl FxStage {
             view.copy_from_slice(&[0; 16]);
         }
         grade_none.unmap();
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, grade_none, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            grade_none,
+            grade_luts: Vec::new(),
+            grade_lut_fills: 0,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            frames: 0,
+            created: 0,
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -595,6 +647,36 @@ impl FxStage {
             self.created = self.created.saturating_add(1);
         }
         v.iter().take(n).cloned().collect()
+    }
+
+    /// The LUT texel buffer for `luts`, created on the first use of that pair of LUTs.
+    fn cached_grade_lut(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, luts: &GradeLuts) -> wgpu::Buffer {
+        if let Some(i) = self.grade_luts.iter().position(|c| c.key == luts.key) {
+            let hit = self.grade_luts.remove(i);
+            let buf = hit.buffer.clone();
+            self.grade_luts.push(hit);
+            return buf;
+        }
+        let mut texels = Vec::new();
+        append_lut(&mut texels, luts.input.as_deref());
+        append_lut(&mut texels, luts.look.as_deref());
+        let raw: Vec<u8> = texels.iter().flat_map(|v| v.to_le_bytes()).collect();
+        if raw.is_empty() {
+            return self.grade_none.clone();
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-grade-lut"),
+            size: raw.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &raw);
+        self.grade_lut_fills = self.grade_lut_fills.saturating_add(1);
+        if self.grade_luts.len() >= 8 {
+            self.grade_luts.remove(0);
+        }
+        self.grade_luts.push(CachedGradeLut { key: luts.key, buffer: buffer.clone(), _keep: (luts.input.clone(), luts.look.clone()) });
+        buffer
     }
 
     /// Prepare the passes of `fx`, whose source draw uses `source_bg` (a layer bind group whose
@@ -662,6 +744,10 @@ impl FxStage {
                 queue.write_buffer(&g, 0, &raw);
                 g
             };
+            let lut = match &s.luts {
+                Some(luts) => self.cached_grade_lut(device, queue, luts),
+                None => self.grade_none.clone(),
+            };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -671,6 +757,7 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
                     wgpu::BindGroupEntry { binding: 4, resource: grade.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: lut.as_entire_binding() },
                 ],
             });
             let groups = if s.run {

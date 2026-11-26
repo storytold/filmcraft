@@ -182,6 +182,40 @@ fn evicted_upload_planes_are_reused_without_stale_pixels() {
     assert!(reused, "playback kept allocating instead of reusing evicted planes");
 }
 
+/// Eight distinct 8 MiB planes fill the pool exactly. A smaller size admitted afterwards is
+/// reused, which only happens if those planes were dropped to make room.
+#[test]
+fn a_full_plane_pool_makes_room_for_a_new_size() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for i in 0..8u32 {
+        let (w, h) = if i % 2 == 0 { (2048, 1024) } else { (1024, 2048) };
+        let frame = VideoFrame::rgba8(w, h, [30, 40, 50, 255].repeat((w * h) as usize));
+        c.upload(&frame, None);
+    }
+    for i in 0..24u8 {
+        let frame = VideoFrame::rgba8(32, 16, [i, 1, 2, 255].repeat(32 * 16));
+        c.upload(&frame, None);
+    }
+    c.plane_pool.append(&mut c.retired_planes);
+    let small = 32 * 16 * 4;
+    assert!(c.plane_pool_bytes + small > PLANE_POOL_BYTES, "the pool still had room for the new size");
+    assert!(c.plane_pool.iter().all(|p| p.key.0 >= 512));
+    let mut reused = false;
+    for i in 0..2u8 {
+        let frame = VideoFrame::rgba8(32, 16, [100u8 + i, 3, 4, 255].repeat(32 * 16));
+        let pooled: Vec<_> = c.plane_pool.iter().map(|p| p.texture.clone()).collect();
+        c.upload(&frame, None);
+        reused |= c.uploads.values().flat_map(|u| &u.planes).any(|p| p.key.0 == 32 && pooled.contains(&p.texture));
+        c.plane_pool.append(&mut c.retired_planes);
+        assert!(c.plane_pool_bytes <= PLANE_POOL_BYTES, "unbounded texture retention");
+    }
+    assert!(reused, "a full pool of other sizes kept allocating the new one");
+}
+
 #[test]
 fn gpu_matches_cpu_plan() {
     let Some((dev, q)) = device() else {
