@@ -380,7 +380,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             && param.is_animated()
                             && graphable(&param.value)
                         {
-                            graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions);
+                            graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions, &mut keys);
                         }
                     };
                     // Scale Width while Uniform Scale is on: greyed out, neither its value nor its
@@ -1444,6 +1444,7 @@ pub(crate) fn graph_rows(
     lane: &Rect,
     it: &TrackItem,
     actions: &mut Vec<(String, Value)>,
+    keys: &mut Interaction,
 ) {
     let t = app.tokens;
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
@@ -1529,7 +1530,7 @@ pub(crate) fn graph_rows(
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
     // keyframes + handles
-    draw_graph_keyframes(app, ui, &p, clip, idx, mask, pd, param, it, lane, lo, hi, area, actions);
+    draw_graph_keyframes(app, ui, &p, clip, idx, mask, pd, param, it, lane, lo, hi, area, actions, keys);
 }
 
 /// One parameter's keyframe diamonds on its graph, with the Bezier influence handles.
@@ -1549,6 +1550,7 @@ fn draw_graph_keyframes(
     hi: f64,
     area: Rect,
     actions: &mut Vec<(String, Value)>,
+    keys: &mut Interaction,
 ) {
     let t = app.tokens;
     let speed = it.speed.abs().max(1e-6);
@@ -1595,6 +1597,8 @@ fn draw_graph_keyframes(
                 _ => format!("effectControls.{}.graph.keyframe.{}.y", pd.id, k.time.0),
             };
             app.auto.add(&auto_id, r, "keyframe value");
+            // A Shift scrub snaps to a keyframe seen on its graph too, as when its row is scrolled out of view.
+            keys.drawn_key(ui, timeline_time_of(it, k.time), c);
             // influence handles: flat (ease) tangents with length ∝ influence × neighbouring segment;
             // a point's sit on its X curve only, as both coordinates share the influence
             let (eases_out, eases_in) = (ci == 0 && eases_out, ci == 0 && eases_in);
@@ -1922,7 +1926,8 @@ mod graph_drag_tests {
                 let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
                 let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
                 let mut actions = Vec::new();
-                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, &it, &mut actions);
+                let mut keys = Interaction::begin(&mut self.app, ui, Rect::NOTHING, self.clip.0);
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, &it, &mut actions, &mut keys);
                 run(&mut self.app, ui.ctx(), actions);
             });
             out.textures_delta.clear();
@@ -1946,6 +1951,28 @@ mod graph_drag_tests {
     /// #1918, #1921: a keyframe dragged to a new value stays where it was dropped. The graph
     /// used to fit itself to the new values, so with two keyframes the one at the bottom (or
     /// the top) went straight back there and the curve looked unchanged.
+    #[test]
+    fn a_shift_scrub_snaps_to_keyframes_seen_only_on_their_graph() {
+        // The graph without its row, as when the row is scrolled out of view above it.
+        let mut d = Driver::new();
+        let it = d.app.session.active_sequence().unwrap().find_item(d.clip).unwrap().1.clone();
+        let index = it.effects.iter().position(|e| e.effect == "motion").unwrap();
+        let effect = it.effects[index].clone();
+        let pd = effect.def().unwrap().param(d.param).unwrap();
+        let mut times = Vec::new();
+        let mut out = d.ctx.run_ui(egui::RawInput { time: Some(0.1), ..Default::default() }, |ui| {
+            let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
+            let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
+            let mut actions = Vec::new();
+            let mut keys = Interaction::begin(&mut d.app, ui, lane, d.clip.0);
+            graph_rows(&mut d.app, ui, body, d.clip, index, None, pd, &effect.params[d.param], &lane, &it, &mut actions, &mut keys);
+            times = keys.key_times().to_vec();
+        });
+        out.textures_delta.clear();
+        let expected: Vec<Tick> = effect.params[d.param].keyframes.iter().map(|k| timeline_time_of(&it, k.time)).collect();
+        assert_eq!(times, expected, "both graph keyframes are snap targets");
+    }
+
     #[test]
     fn a_dropped_graph_keyframe_stays_where_it_was_dropped() {
         for (key, offset) in [(0, vec2(0.0, -20.0)), (1, vec2(0.0, 20.0))] {

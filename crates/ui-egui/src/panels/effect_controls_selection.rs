@@ -125,6 +125,13 @@ impl Interaction {
         &self.drawn
     }
 
+    /// Records a keyframe drawn at `at` outside its row (on its value graph) at timeline `time`, when it shows in the lane.
+    pub(crate) fn drawn_key(&mut self, ui: &egui::Ui, time: Tick, at: Pos2) {
+        if self.area.contains(at) && ui.clip_rect().contains(at) {
+            self.drawn.push(time);
+        }
+    }
+
     /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
     /// gestures as UI-only previews.
     pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
