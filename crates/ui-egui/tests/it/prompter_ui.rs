@@ -73,8 +73,10 @@ fn the_prompter_follows_the_playhead_through_points_and_sections() {
     for s in [1.0, 4.0, 7.5, 9.0, 16.5, 19.0] {
         d.at(s);
         let q = d.exec("prompter.inspect", json!({}));
+        assert!(d.prompter().is_some(), "at {s} s the overlay is drawn");
         let label = d.label();
         let section = q["section"]["name"].as_str().unwrap_or_default().to_owned();
+        assert!(!section.is_empty(), "at {s} s the playhead is in a named section: {q}");
         assert!(label.starts_with(&section), "at {s} s the overlay shows the section the engine reports ({section}): {label}");
         if let Some(i) = q["section"]["current"].as_u64() {
             let point = q["section"]["points"][i as usize]["text"].as_str().unwrap_or_default();
@@ -142,4 +144,22 @@ fn points_longer_than_their_section_are_reported_on_the_overlay() {
     assert!(d.label().contains("past the end of the section"), "the overrun is said, not hidden: {}", d.label());
     d.at(1.0);
     assert!(!d.label().contains("past the end"), "and only where it happens: {}", d.label());
+}
+
+#[test]
+fn the_accessibility_text_names_every_point_the_card_lists() {
+    let mut d = Driver::open(demo_session(), with_shots(builder()));
+    let rate = d.app().session.sequence_rate();
+    let len = rate.frame_at(Tick(12 * TICKS_PER_SECOND));
+    // six points sharing twelve seconds: two seconds each
+    d.exec("markers.add", json!({"time": 0, "name": "Six", "comment": "- One\n- Two\n- Three\n- Four\n- Five\n- Six", "durationFrames": len}));
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
+    d.at(3.0);
+    let label = d.label();
+    // full screen has room for the finished point, the current one, three next ones and the count
+    for part in ["Done: One", "Now: Two", "Then: Three", "Then: Four", "Then: Five", "1 more"] {
+        assert!(label.contains(part), "the card lists it, so the text says it ({part}): {label}");
+    }
+    assert!(!label.contains("Then: Six"), "a point the card only counts is counted, not named: {label}");
 }

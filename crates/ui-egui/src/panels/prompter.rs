@@ -43,6 +43,12 @@ const UPCOMING_ROWS: usize = 3;
 const CURRENT_ROWS: usize = 2;
 /// Script lines shown at most; with three the reading line is the second, else the first.
 const SCRIPT_ROWS: usize = 3;
+/// The narrowest the current point's text may be beside the script, in its own type size: two or
+/// three words a row. The points column widens to give it that.
+const CURRENT_MIN_EMS: f32 = 10.0;
+/// The narrowest the script may be beside the points, in its type size; narrower, it goes under
+/// the points instead.
+const SCRIPT_MIN_EMS: f32 = 10.0;
 /// The least contrast of the marker accent (never behind text) against the card and the bars' groove.
 const ACCENT_CONTRAST: f64 = 3.0;
 /// The least contrast of text against what it is drawn on.
@@ -143,11 +149,16 @@ pub fn spoken(p: &Prompt) -> String {
     match &p.section {
         Some(s) => {
             parts.push(format!("{} {}", s.name, tlf!("{elapsed} of {length}", elapsed = clock(s.elapsed), length = clock_up(s.duration))));
-            if let Some(c) = s.current.and_then(|i| s.points.get(i)) {
-                parts.push(tlf!("Now: {point}", point = point_label(c)));
-                if let Some(n) = s.current.and_then(|i| s.points.get(i + 1)) {
-                    parts.push(tlf!("Then: {point}", point = point_label(n)));
-                }
+            // the points the card lists when it has room (the same rows), and the count of the rest
+            let rows = PointRows::of(s);
+            let name = |i: Option<usize>| i.and_then(|i| s.points.get(i)).map(point_label);
+            parts.extend(name(rows.done).map(|point| tlf!("Done: {point}", point = point)));
+            parts.extend(name(rows.current).map(|point| tlf!("Now: {point}", point = point)));
+            parts.extend(rows.upcoming.iter().filter_map(|i| name(Some(*i))).map(|point| tlf!("Then: {point}", point = point)));
+            let last = rows.upcoming.last().copied().or(rows.current).or(rows.done);
+            let more = last.map_or(0, |i| s.points.len().saturating_sub(i + 1));
+            if more > 0 {
+                parts.push(tlf!("{n} more", n = more));
             }
             if let Some(line) = s.script.as_ref().and_then(|x| script_excerpt(&x.text, x.offset)) {
                 parts.push(tlf!("Script: {text}", text = line));
@@ -335,6 +346,10 @@ struct Plan {
     /// The current point's text, laid out to the room it has, and its height.
     current: Option<(Arc<Galley>, f32)>,
     script_rows: usize,
+    /// The script is under the points, not beside them: a card too narrow for both side by side.
+    stacked: bool,
+    /// The points' height: the body's when they are beside the script.
+    points_h: f32,
     /// The body's height (points and script side by side share it).
     body_h: f32,
     next: bool,
@@ -349,10 +364,16 @@ struct Plan {
 /// What the card holds when it may be at most `max_h` tall and `inner_w` wide inside, in order
 /// of what the narrator needs most: the header and the current point (or two script lines)
 /// always; then the next point, the next section, the warnings, the caption, a third script
-/// line, the other upcoming points, the last finished point and the count of the rest.
-fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32) -> Plan {
+/// line, the other upcoming points, the last finished point and the count of the rest. When the
+/// script is under the points, two lines of it come right after the current point.
+///
+/// The current point (or the script) is cut to one row when two do not fit in `max_h`, and the
+/// card grows past `max_h` to hold that one row, up to `limit` (the picture inside its inset);
+/// beyond that the card holds the header alone.
+fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32, limit: f32) -> Plan {
     let m = &d.m;
     let mut p = Plan::default();
+    let mut max_h = max_h;
     let header = m.line(&m.item()) + if prompt.section.is_some() { m.gap + m.bar() } else { 0.0 };
     let mut left = max_h - 2.0 * m.pad - header;
     let take = |left: &mut f32, cost: f32| {
@@ -367,15 +388,17 @@ fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32) -> Plan {
     let script_line = m.line(&m.script());
     let mut body_points = 0.0;
     let mut script_only = false;
+    let mut header_only = false;
     if let Some(s) = &prompt.section {
-        let (points_w, _) = body_columns(d, s, inner_w);
+        let (points_w, _, stacked) = body_columns(d, s, inner_w);
+        p.stacked = stacked;
         p.rows = PointRows::of(s);
-        // required: the current point, else the first listed one, else two script lines
+        // required: the current point, else the first listed one, else two script lines; in one
+        // row when two do not fit
+        let room = left - m.section + 0.5;
         let mut required = 0.0;
         if let Some(c) = p.rows.current.and_then(|i| s.points.get(i)) {
-            let text_w = current_text_w(d, c, points_w);
-            let g = d.p.layout_job(wrap_job(&point_label(c), m.now(), d.c.text, text_w, CURRENT_ROWS));
-            let h = m.gap + g.size().y.max(m.line(&m.now())) + m.gap + m.underline() + m.gap;
+            let (g, h) = current_row(d, c, points_w, room);
             p.current = Some((g, h));
             required += h;
         } else if !p.rows.upcoming.is_empty() {
@@ -387,16 +410,44 @@ fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32) -> Plan {
         }
         if s.points.is_empty() && s.script.is_some() {
             script_only = true;
-            p.script_rows = 2;
-            required = 2.0 * script_line;
+            p.script_rows = if 2.0 * script_line > room { 1 } else { 2 };
+            required = p.script_rows as f32 * script_line;
         }
         if required > 0.0 {
-            left -= m.section + required;
+            let need = m.section + required;
+            if need > left + 0.5 {
+                if 2.0 * m.pad + header + need <= limit + 0.5 {
+                    // the card grows past its usual height rather than cut the line to say now
+                    max_h = 2.0 * m.pad + header + need;
+                    left = need;
+                } else {
+                    // no room for even one row of it on this picture: the header alone
+                    (p.current, p.upcoming, p.show_done, p.script_rows) = (None, 0, false, 0);
+                    script_only = false;
+                    header_only = true;
+                    required = 0.0;
+                }
+            }
+            if required > 0.0 {
+                left -= need;
+            }
         }
         body_points = required;
-        if !script_only && p.upcoming == 0 && !p.rows.upcoming.is_empty() && take(&mut left, row_gap + item_h) {
+        p.points_h = if script_only { 0.0 } else { required };
+        if stacked && required > 0.0 && take(&mut left, m.section + script_line) {
+            p.script_rows = 1;
+            if take(&mut left, script_line) {
+                p.script_rows = 2;
+            }
+        }
+        if !script_only && required > 0.0 && p.upcoming == 0 && !p.rows.upcoming.is_empty() && take(&mut left, row_gap + item_h) {
             p.upcoming = 1;
             body_points += row_gap + item_h;
+        }
+        if header_only {
+            let used = max_h - left;
+            p.height = used.min(max_h).max(2.0 * m.pad + m.line(&m.item()));
+            return p;
         }
     }
     // the footer
@@ -421,8 +472,8 @@ fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32) -> Plan {
         p.caption = p.shared_foot || foot(&mut left, &mut footer_started);
     }
     if let Some(s) = &prompt.section {
-        if script_only && take(&mut left, script_line) {
-            p.script_rows = SCRIPT_ROWS;
+        if (script_only || (p.stacked && p.script_rows == 2)) && take(&mut left, script_line) {
+            p.script_rows += 1;
         }
         if !script_only {
             while p.upcoming < p.rows.upcoming.len() && take(&mut left, row_gap + item_h) {
@@ -439,28 +490,55 @@ fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32) -> Plan {
                 p.more = after;
                 body_points += row_gap + m.line(&m.small());
             }
-            if s.script.is_some() {
+            if s.script.is_some() && !p.stacked {
                 // beside the points, the script has the points' height: as many lines as fit
                 p.script_rows = ((body_points / script_line).floor() as usize).clamp(1, SCRIPT_ROWS);
             }
+            p.points_h = body_points;
         }
-        p.body_h = if script_only { p.script_rows as f32 * script_line } else { body_points };
+        p.body_h = if script_only {
+            p.script_rows as f32 * script_line
+        } else if p.stacked && p.script_rows > 0 {
+            body_points + m.section + p.script_rows as f32 * script_line
+        } else {
+            body_points
+        };
     }
     let used = max_h - left;
     p.height = used.min(max_h).max(2.0 * m.pad + m.line(&m.item()));
     p
 }
 
-/// The widths of the points column and the script column (0 for the one the section lacks).
-fn body_columns(d: &Draw, s: &Section, inner_w: f32) -> (f32, f32) {
+/// The current point `c` laid out in a points column `w` wide, and its row's height: in
+/// [`CURRENT_ROWS`] rows, or one when those are taller than `room`.
+fn current_row(d: &Draw, c: &Point, w: f32, room: f32) -> (Arc<Galley>, f32) {
+    let m = &d.m;
+    let text_w = current_text_w(d, c, w);
+    let layout = |rows| {
+        let g = d.p.layout_job(wrap_job(&point_label(c), m.now(), d.c.text, text_w, rows));
+        let h = m.gap + g.size().y.max(m.line(&m.now())) + m.gap + m.underline() + m.gap;
+        (g, h)
+    };
+    let (g, h) = layout(CURRENT_ROWS);
+    if h > room { layout(1) } else { (g, h) }
+}
+
+/// The widths of the points column and the script column (0 for the one the section lacks), and
+/// whether the script goes under the points. Beside the script, the points take 42% of the width,
+/// more when the current point would have less than [`CURRENT_MIN_EMS`]; when that leaves the
+/// script less than [`SCRIPT_MIN_EMS`], both take the whole width, the script under the points.
+fn body_columns(d: &Draw, s: &Section, inner_w: f32) -> (f32, f32, bool) {
     match (s.points.is_empty(), s.script.is_none()) {
         (false, false) => {
-            let points = (inner_w * 0.42).round();
-            (points, inner_w - points - d.m.section)
+            let widest_badge = s.points.iter().map(|p| badge_w(d, &point_length(p))).fold(0.0, f32::max);
+            let chrome = -current_text_w_for(d, widest_badge, 0.0);
+            let points = (inner_w * 0.42).max(d.m.now().size * CURRENT_MIN_EMS + chrome).round();
+            let script = inner_w - points - d.m.section;
+            if script < d.m.script().size * SCRIPT_MIN_EMS { (inner_w, inner_w, true) } else { (points, script, false) }
         }
-        (false, true) => (inner_w, 0.0),
-        (true, false) => (0.0, inner_w),
-        (true, true) => (0.0, 0.0),
+        (false, true) => (inner_w, 0.0, false),
+        (true, false) => (0.0, inner_w, false),
+        (true, true) => (0.0, 0.0, false),
     }
 }
 
@@ -472,8 +550,13 @@ fn point_length(p: &Point) -> String {
 /// The room for the current point's text in a points column `w` wide: the row's inset, the mark
 /// and a gap on the left; a gap, the badge and the inset on the right (as [`points`] draws them).
 fn current_text_w(d: &Draw, p: &Point, w: f32) -> f32 {
+    current_text_w_for(d, badge_w(d, &point_length(p)), w)
+}
+
+/// [`current_text_w`] with a badge `badge` wide.
+fn current_text_w_for(d: &Draw, badge: f32, w: f32) -> f32 {
     let inset = (d.m.gap * 1.5).round();
-    w - 2.0 * inset - d.m.mark_w() - 2.0 * d.m.gap - badge_w(d, &point_length(p))
+    w - 2.0 * inset - d.m.mark_w() - 2.0 * d.m.gap - badge
 }
 
 /// The painter, colours and sizes the drawing functions share.
@@ -522,7 +605,7 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     };
     let width = (area.width() - 2.0 * inset).min(widest).max(1.0);
     let inner_w = width - 2.0 * m.pad;
-    let plan = plan(&d, &prompt, inner_w, area.height() * MAX_HEIGHT);
+    let plan = plan(&d, &prompt, inner_w, area.height() * MAX_HEIGHT, area.height() - 2.0 * inset);
     let card = Rect::from_min_size(
         pos2((area.center().x - width / 2.0).round(), (area.max.y - inset - plan.height).round()),
         vec2(width.round(), plan.height.round()),
@@ -557,12 +640,14 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
         && plan.body_h > 0.0
     {
         y += m.section;
-        let (points_w, script_w) = body_columns(&d, s, inner_w);
+        let (points_w, script_w, _) = body_columns(&d, s, inner_w);
         if points_w > 0.0 {
-            points(&d, Rect::from_min_size(pos2(content.min.x, y), vec2(points_w, plan.body_h)), s, &plan, prompt.time);
+            points(&d, Rect::from_min_size(pos2(content.min.x, y), vec2(points_w, plan.points_h)), s, &plan, prompt.time);
         }
-        if let (true, Some(script)) = (script_w > 0.0, &s.script) {
-            let r = Rect::from_min_size(pos2(content.max.x - script_w, y), vec2(script_w, plan.body_h));
+        if let (true, true, Some(script)) = (script_w > 0.0, plan.script_rows > 0, &s.script) {
+            // beside the points, or under them with a section gap
+            let top = if plan.stacked { y + plan.points_h + m.section } else { y };
+            let r = Rect::from_min_max(pos2(content.max.x - script_w, top), pos2(content.max.x, y + plan.body_h));
             script_lines(&d, r, script, plan.script_rows, egui::Id::unique(("program-prompter-script", s.marker)));
         }
         y += plan.body_h;
@@ -763,12 +848,10 @@ fn script_lines(d: &Draw, r: Rect, script: &Script, rows: usize, id: egui::Id) {
     let (text, offset) = (&script.text, script.offset);
     let row_h = m.line(&m.script());
     let bar_w = (m.gap * 0.75).round().max(3.0);
-    let split = text.char_indices().nth(offset).map_or(text.len(), |(b, _)| b);
-    let font = m.script();
+    // one layout per text and width: the reading position only changes which part is drawn dim,
+    // so it never lays the script out again (the placeholder colour takes the colour drawn with)
     let mut job = LayoutJob::default();
-    let format = |color| TextFormat { font_id: font.clone(), color, line_height: Some(row_h), ..Default::default() };
-    job.append(text.get(..split).unwrap_or(""), 0.0, format(d.c.dim));
-    job.append(text.get(split..).unwrap_or(""), 0.0, format(d.c.text));
+    job.append(text, 0.0, TextFormat { font_id: m.script(), color: Color32::PLACEHOLDER, line_height: Some(row_h), ..Default::default() });
     let text_x = r.min.x + bar_w + m.gap * 1.5;
     job.wrap.max_width = (r.max.x - m.gap - text_x).max(1.0);
     let galley = d.p.layout_job(job);
@@ -792,7 +875,17 @@ fn script_lines(d: &Draw, r: Rect, script: &Script, rows: usize, id: egui::Id) {
     let p = d.p.with_clip_rect(d.p.clip_rect().intersect(r));
     p.rect_filled(band, m.radius, d.c.current);
     p.rect_filled(Rect::from_min_size(band.min, vec2(bar_w, row_h)).shrink2(vec2(0.0, (m.gap / 2.0).round())), bar_w / 2.0, d.c.text);
-    p.galley(pos2(text_x, shift), galley, d.c.text);
+    // what is read is dim: the rows above the reading position's row and its start up to it
+    let at = galley.pos_from_cursor(egui::text::CCursor::new(offset));
+    let (row_top, row_bottom, split_x) = (shift + at.min.y, shift + at.max.y, text_x + at.min.x);
+    for (area, color) in [
+        (Rect::from_min_max(pos2(r.min.x, r.min.y), pos2(r.max.x, row_top)), d.c.dim),
+        (Rect::from_min_max(pos2(r.min.x, row_top), pos2(split_x, row_bottom)), d.c.dim),
+        (Rect::from_min_max(pos2(split_x, row_top), pos2(r.max.x, row_bottom)), d.c.text),
+        (Rect::from_min_max(pos2(r.min.x, row_bottom), pos2(r.max.x, r.max.y)), d.c.text),
+    ] {
+        p.with_clip_rect(p.clip_rect().intersect(area)).galley(pos2(text_x, shift), galley.clone(), color);
+    }
 }
 
 /// The next section at the right end of `r` (or its left end when it has the row to itself): its
@@ -855,6 +948,104 @@ mod tests {
     fn contrast(a: Color32, b: Color32) -> f64 {
         let (x, y) = (luminance(a), luminance(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// The prompt at `seconds` in the demo with one twelve-second section from `comment`.
+    fn prompt(comment: &str, seconds: f64) -> Prompt {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let fps = s.sequence_rate().frame_at(Tick(TICKS_PER_SECOND));
+        s.execute("markers.add", serde_json::json!({"time": 0, "name": "Opening", "comment": comment, "durationFrames": 12 * fps})).unwrap();
+        prompt_at(s.active_sequence().unwrap(), Tick::from_seconds_f64(seconds))
+    }
+
+    /// A frame of the app's fonts and theme, and the drawing state for a picture of each size.
+    fn drawing(sizes: &[(f32, f32)], mut f: impl FnMut((f32, f32), &Draw)) {
+        let ctx = egui::Context::default();
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        crate::theme::install(&ctx, &t);
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            for &(w, h) in sizes {
+                let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h));
+                let body = ui.style().text_styles.get(&egui::TextStyle::Body).map_or(12.0, |f| f.size);
+                f((w, h), &Draw { p: ui.painter().clone(), c: palette(&t), m: Metrics::new(area, &t, body), accent: Color32::WHITE, anim: 0.0 });
+            }
+        })
+        .textures_delta
+        .clear();
+    }
+
+    /// Plans the card for `prompt` over a picture of each size as the overlay does, and hands
+    /// each plan to `check` with the card's room for content.
+    fn plans(prompt: &Prompt, sizes: &[(f32, f32)], mut check: impl FnMut((f32, f32), &Draw, &Plan, f32)) {
+        drawing(sizes, |(w, h), d| {
+            let t = Tokens::for_kind(ThemeKind::Dark);
+            let inset = (w.min(h) * INSET).clamp(2.0 * t.gap, 10.0 * t.gap);
+            let inner_w = (w - 2.0 * inset).min(d.m.base * MAX_WIDTH_EMS) - 2.0 * d.m.pad;
+            let plan = plan(d, prompt, inner_w, h * MAX_HEIGHT, h - 2.0 * inset);
+            check((w, h), d, &plan, h - 2.0 * inset);
+        });
+    }
+
+    #[test]
+    fn reading_on_through_the_script_lays_it_out_once() {
+        let p = prompt(&format!("{}\n- A point", "Every region grew this year. ".repeat(200)), 1.0);
+        let script = p.section.and_then(|s| s.script).unwrap();
+        drawing(&[(1600.0, 900.0)], |_, d| {
+            let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 120.0));
+            let cached = || d.p.ctx().fonts(|f| f.num_galleys_in_cache());
+            let before = cached();
+            // the narrator's position moves on every few frames while the playhead runs
+            for offset in (0..script.chars).step_by(37) {
+                script_lines(d, r, &Script { offset, ..script.clone() }, SCRIPT_ROWS, egui::Id::unique("script"));
+            }
+            let added = cached() - before;
+            assert!(added <= 1, "{} positions, {added} layouts of the script", script.chars.div_ceil(37));
+        });
+    }
+
+    /// The characters the current point shows, an ellipsis included.
+    fn shown(plan: &Plan) -> String {
+        plan.current.as_ref().map(|(g, _)| g.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| g.chr)).collect()).unwrap_or_default()
+    }
+
+    // pictures from a small Program monitor up: 16:9, and the 300x120 one as letterboxed
+    const SIZES: [(f32, f32); 7] = [(213.0, 120.0), (300.0, 120.0), (300.0, 169.0), (350.0, 197.0), (420.0, 236.0), (640.0, 360.0), (1600.0, 900.0)];
+
+    #[test]
+    fn the_current_point_stays_inside_the_card_on_a_small_picture() {
+        for comment in [
+            "- Say hello to everyone in the room [0:04]\n- Introduce the topic",
+            "Sales grew every quarter this year.\n- Say hello to everyone in the room [0:04]\n- Introduce the topic",
+        ] {
+            plans(&prompt(comment, 1.0), &SIZES, |size, d, plan, limit| {
+                let m = &d.m;
+                let (_, current_h) = plan.current.as_ref().unwrap_or_else(|| panic!("{size:?}: the current point is on the card"));
+                let header = m.line(&m.item()) + m.gap + m.bar();
+                let above_and_in = 2.0 * m.pad + header + m.section + current_h;
+                assert!(above_and_in <= plan.height + 0.5, "{size:?}: the current row ends inside the card ({above_and_in} of {})", plan.height);
+                assert!(plan.height <= limit + 0.5, "{size:?}: the card stays inside the picture ({} of {limit})", plan.height);
+            });
+        }
+    }
+
+    #[test]
+    fn the_current_point_beside_a_script_shows_its_first_words() {
+        let with_script = prompt(
+            "Sales grew every quarter this year, and the second half carried most of it.\n- Say hello to everyone in the room [0:04]\n- Introduce the topic",
+            1.0,
+        );
+        let alone = prompt("- Say hello to everyone in the room [0:04]\n- Introduce the topic", 1.0);
+        let mut seen = Vec::new();
+        plans(&alone, &SIZES, |_, _, plan, _| seen.push(shown(plan)));
+        let mut alone_shown = seen.into_iter();
+        plans(&with_script, &SIZES, |size, _, plan, _| {
+            let text = shown(plan);
+            assert!(text.starts_with("Say hello to"), "{size:?}: the narrator can read the start of the point: {text:?}");
+            // a section without a script keeps its full-width points
+            assert!(alone_shown.next().is_some_and(|a| a.starts_with("Say hello to")), "{size:?}: alone too");
+        });
     }
 
     #[test]

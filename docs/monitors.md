@@ -75,10 +75,11 @@ action-safe margin, at most 45% of the picture's height):
 - the caption at the playhead, from the top caption track that is turned on, drawn as the Timeline
   draws captions: the track's badge (C1) beside the caption text in a caption block.
 
-Talking points and script side by side share the card, points on the left. The card's text and
-spacing grow with the picture, from the small Program panel to full screen on a large display.
-When the picture is too small for everything, the card keeps the header and the current point (or
-two script lines) and then, in this order, what fits: the next point, the next section, the
+Talking points and script side by side share the card, points on the left; on a narrow card the
+script goes under the points. The card's text and spacing grow with the picture, from the small
+Program panel to full screen on a large display. When the picture is too small for everything, the
+card keeps the header and the current point (on one line if two do not fit; the card grows to
+hold it), or two script lines, and then, in this order, what fits: the next point, the next section, the
 warnings, the caption, more script, the other points, the last finished point, the count. Between
 sections it says so, and a sequence without range markers says how to make sections. Only the
 first 64 KiB of a comment and its first 100 talking points are read.
