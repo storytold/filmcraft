@@ -31,7 +31,10 @@ impl Driver {
         if snapshots.is_some() {
             builder = builder.wgpu();
         }
-        let harness = builder.build_eframe(move |_cc| app);
+        let harness = builder.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut driver = Self { harness, tx, snapshots };
         driver.frames(4);
         driver
@@ -39,10 +42,6 @@ impl Driver {
 
     fn frames(&mut self, count: usize) {
         for _ in 0..count {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
             self.harness.step();
         }
     }
@@ -1186,8 +1185,9 @@ fn dropping_project_clips_beside_script_text_creates_setups_at_the_hovered_lines
         driver.harness.state_mut().ui.script.selected_lines = Some((first, second));
         driver.frames(4);
         if view == "list" {
-            driver.ok("ui.scroll", json!({"id":format!("project.item.{source}"),"dy":-150.0}));
-            driver.frames(4);
+            // List rows can start outside the viewport. Bring this source into view before the drag.
+            driver.harness.state_mut().ui.project_panel.reveal = Some(source);
+            driver.frames(30);
         }
         let [x, _, width, _] = driver.rect("script.emptyCanvas");
         let [_, y, _, height] = driver.rect(&format!("script.line.{second}"));

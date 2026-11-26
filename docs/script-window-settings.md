@@ -1,5 +1,7 @@
 # Script window settings inventory
 
+Open **Window → Lined Script** to show the panel, or choose **Window → Workspaces → Lined Script** for the dedicated layout.
+
 The Script toolbar has a gear menu for settings that are implemented today. This inventory tracks the other requested controls without presenting them as working features.
 
 Toolbar controls wrap when the panel is narrow. Scene/Page captions stay with their menus, the **?** help button stays visible and aligned with the first row, and search sits below the wrapped controls. The **?** button opens the same getting-started guide shown before a script is created or imported.
