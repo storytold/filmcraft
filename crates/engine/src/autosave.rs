@@ -567,6 +567,16 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
+    /// True when `native.xml` / `native.json` were written with this journal (Premiere open/save).
+    pub has_native: bool,
+}
+
+/// Gzip flag + bindings stored beside the recovery snapshot for a live `.prproj`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeJournalEnvelope {
+    gzip: bool,
+    bindings: filmcraft_interchange::premiere::NativeBindings,
 }
 
 /// Unsaved changes left behind by a session that is no longer running.
@@ -584,6 +594,8 @@ pub struct RecoveryCandidate {
 const SNAPSHOT: &str = "snapshot.fcproj";
 const META: &str = "session.json";
 const LOCK: &str = "lock";
+const NATIVE_XML: &str = "native.xml";
+const NATIVE_JSON: &str = "native.json";
 
 pub fn recovery_root(data_dir: &Path) -> PathBuf {
     data_dir.join("Recovery")
@@ -633,6 +645,36 @@ pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded,
     filmcraft_format::decode(&b).map_err(|e| e.to_string())
 }
 
+/// Load the Premiere sidecar written with a recovery journal, if present and within size bounds.
+pub fn load_native_sidecar(dir: &Path) -> Option<crate::premiere::NativeOpen> {
+    let xml_path = dir.join(NATIVE_XML);
+    let json_path = dir.join(NATIVE_JSON);
+    if !xml_path.is_file() || !json_path.is_file() {
+        return None;
+    }
+    let xml_bytes = filmcraft_media::reader::read_regular_file_bounded(&xml_path, filmcraft_interchange::premiere::MAX_DOCUMENT_BYTES as u64).ok()?;
+    let xml = String::from_utf8(xml_bytes).ok()?;
+    let env_bytes = filmcraft_media::reader::read_regular_file_bounded(&json_path, filmcraft_format::MAX_PROJECT_BYTES).ok()?;
+    let envelope: NativeJournalEnvelope = serde_json::from_slice(&env_bytes).ok()?;
+    Some(crate::premiere::NativeOpen { source: filmcraft_interchange::premiere::NativeSource { xml }, bindings: envelope.bindings, gzip: envelope.gzip })
+}
+
+fn remove_native_sidecar(dir: &Path) {
+    let _ = fs::remove_file(dir.join(NATIVE_XML));
+    let _ = fs::remove_file(dir.join(NATIVE_JSON));
+}
+
+fn write_native_sidecar(dir: &Path, native: &crate::premiere::NativeOpen) -> io::Result<()> {
+    if native.source.xml.len() > filmcraft_interchange::premiere::MAX_DOCUMENT_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Premiere XML exceeds 512 MiB limit"));
+    }
+    let envelope = NativeJournalEnvelope { gzip: native.gzip, bindings: native.bindings.clone() };
+    let json = serde_json::to_vec_pretty(&envelope).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    filmcraft_format::atomic_write(&dir.join(NATIVE_XML), native.source.xml.as_bytes())?;
+    filmcraft_format::atomic_write(&dir.join(NATIVE_JSON), &json)?;
+    Ok(())
+}
+
 pub fn discard_candidate(c: &RecoveryCandidate) -> io::Result<()> {
     fs::remove_dir_all(&c.dir)
 }
@@ -667,6 +709,8 @@ struct Snapshot {
     project: Arc<Project>,
     revision: u64,
     path: Option<String>,
+    /// Present when the session has a live native `.prproj` (needed if "also save current" writes `path`).
+    premiere_native: Option<crate::premiere::NativeOpen>,
 }
 
 enum Msg {
@@ -814,8 +858,14 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        self.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(
+        &self,
+        project: Arc<Project>,
+        revision: u64,
+        path: Option<String>,
+        premiere_native: Option<crate::premiere::NativeOpen>,
+    ) {
+        self.send(Msg::Dirty(Snapshot { project, revision, path, premiere_native }));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -1070,9 +1120,18 @@ impl Worker {
         meta.project_name = s.project.name.clone();
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
-        // Snapshot first, then the meta that makes it a candidate.
-        let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
-            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
+        meta.has_native = s.premiere_native.is_some();
+        // Snapshot, optional Premiere sidecar, then the meta that makes it a candidate.
+        let r = (|| -> io::Result<()> {
+            filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)?;
+            if let Some(native) = &s.premiere_native {
+                write_native_sidecar(&self.session_dir, native)?;
+            } else {
+                remove_native_sidecar(&self.session_dir);
+            }
+            filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default())?;
+            Ok(())
+        })();
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(()) => {
@@ -1095,6 +1154,7 @@ impl Worker {
     fn clear_journal(&mut self) {
         let _ = fs::remove_file(self.session_dir.join(META));
         let _ = fs::remove_file(self.session_dir.join(SNAPSHOT));
+        remove_native_sidecar(&self.session_dir);
         self.journaled = 0;
     }
 
@@ -1127,10 +1187,13 @@ impl Worker {
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
-                    match filmcraft_format::atomic_write(Path::new(p), &bytes) {
-                        Ok(()) => {
-                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
-                        }
+                    match current_project_bytes(s, &bytes) {
+                        Ok(path_bytes) => match filmcraft_format::atomic_write(Path::new(p), &path_bytes) {
+                            Ok(()) => {
+                                let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
+                            }
+                            Err(e) => self.error(format!("saving {p}: {e}")),
+                        },
                         Err(e) => self.error(format!("saving {p}: {e}")),
                     }
                 }
@@ -1143,6 +1206,23 @@ impl Worker {
             }
         }
     }
+}
+
+/// Bytes for "also save the current project": Premiere XML when a native `.prproj` is open, otherwise the FilmCraft encoding already built for the auto-save ring.
+fn current_project_bytes(s: &Snapshot, filmcraft_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let Some(path) = s.path.as_deref() else {
+        return Ok(filmcraft_bytes.to_vec());
+    };
+    if !crate::premiere::is_project(path) {
+        return Ok(filmcraft_bytes.to_vec());
+    }
+    let Some(native) = &s.premiere_native else {
+        return Err("open Premiere project has no native sidecar; refusing to overwrite the .prproj with FilmCraft data".into());
+    };
+    let mut source = native.source.clone();
+    let mut report = filmcraft_interchange::Report::default();
+    filmcraft_interchange::premiere::sync_from_project(&mut source, &native.bindings, &s.project, &mut report).map_err(|e| e.to_string())?;
+    filmcraft_interchange::premiere::encode(&source, native.gzip).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

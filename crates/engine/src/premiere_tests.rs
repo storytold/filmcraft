@@ -1,0 +1,852 @@
+//! Synthetic native import and persistence acceptance tests. MIT OR Apache-2.0.
+use crate::{Session, premiere::hash_file};
+use serde_json::json;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "premiere_corpus_tests.rs"]
+mod corpus;
+
+fn xml_text(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+struct Fixture {
+    dir: tempfile::TempDir,
+}
+impl Fixture {
+    fn new() -> Self {
+        let root = filmcraft_testkit::workspace_root().join("target/premiere-tests");
+        let _ = std::fs::create_dir_all(&root);
+        let dir = tempfile::Builder::new().prefix("case-").tempdir_in(&root).unwrap_or_else(|_| tempfile::tempdir().unwrap());
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([30, 120, 220, 255])).save(dir.path().join("source.png")).unwrap();
+        let source = dir.path().join("source.png");
+        let xml = format!(
+            r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><FrameRate>8467191533</FrameRate><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>source.png</Name></SubClip><Media><Title>source.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
+            xml_text(&source.to_string_lossy())
+        );
+        std::fs::write(dir.path().join("source.prproj"), xml).unwrap();
+        Self { dir }
+    }
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+#[test]
+fn premiere_non_media_references_are_never_hashed_or_copied() {
+    struct ReadCounter(AtomicU64);
+    impl crate::Services for ReadCounter {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            std::fs::read(path)
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            std::fs::write(path, bytes)
+        }
+    }
+    for name in ["secret.txt", "disguised.png"] {
+        let fixture = Fixture::new();
+        let source = fixture.path().join(name);
+        std::fs::write(&source, b"private non-media contents").unwrap();
+        let before = hash_file(&source).unwrap();
+        let doc = fixture.path().join("source.prproj");
+        let xml = std::fs::read_to_string(&doc).unwrap().replace("source.png", name).replace("FilePath>", "ActualMediaFilePath>");
+        std::fs::write(&doc, xml).unwrap();
+        for mode in ["link", "copy"] {
+            let mut s = Session::default();
+            let reads = std::sync::Arc::new(ReadCounter(AtomicU64::new(0)));
+            s.services = reads.clone();
+            let dest = fixture.path().join(mode);
+            let result = s.execute("premiere.import", json!({"path":doc,"destination":dest,"mediaMode":mode})).unwrap();
+            assert_eq!(result["offlineMedia"], json!([name]));
+            assert_eq!(reads.0.load(Ordering::Relaxed), u64::from(name == "disguised.png"), "only recognized extensions may be probed");
+            let workflow = s.project.workflow.as_ref().unwrap();
+            let media = &workflow.imports[0].media[0];
+            assert!(media.sha256.is_none() && media.bytes.is_none(), "rejected reference must not be hashed: {name}");
+            assert_eq!(media.original_path, source.to_str().unwrap());
+            assert_eq!(media.imported_path, media.original_path);
+            assert!(result["report"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("offline placeholder")));
+            if mode == "copy" {
+                assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+            }
+            let provenance = std::fs::read_to_string(dest.join("provenance.json")).unwrap();
+            assert!(!provenance.contains(&before.0));
+            assert_eq!(hash_file(&source).unwrap(), before);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn premiere_media_symlink_cannot_bypass_target_extension_check() {
+    let fixture = Fixture::new();
+    let source = fixture.path().join("source.png");
+    let target = fixture.path().join("secret.txt");
+    // Valid image bytes under a disallowed name prove that a successful probe alone is insufficient.
+    std::fs::rename(&source, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &source).unwrap();
+    let before = hash_file(&target).unwrap();
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let dest = fixture.path().join(mode);
+        let result = s.execute("premiere.import", json!({"path":fixture.path().join("source.prproj"),"destination":dest,"mediaMode":mode})).unwrap();
+        assert_eq!(result["offlineMedia"], json!(["source.png"]));
+        assert!(s.project.workflow.as_ref().unwrap().imports[0].media[0].sha256.is_none());
+        if mode == "copy" {
+            assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+        }
+        assert_eq!(hash_file(&target).unwrap(), before);
+    }
+}
+
+#[test]
+fn premiere_default_sequence_prefers_content_over_english_name() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let original = std::fs::read_to_string(&doc).unwrap().replace("Sequence 01", "Edición");
+    for (index, other_group) in ["", "<TrackGroups><TrackGroup><Second ObjectRef=\"1\"/></TrackGroup></TrackGroups>"].iter().enumerate() {
+        let xml =
+            original.replace("</PremiereData>", &format!("<Sequence ObjectUID=\"empty\"><Name>Sequence 01</Name>{other_group}</Sequence></PremiereData>"));
+        std::fs::write(&doc, xml).unwrap();
+        let mut s = Session::default();
+        s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join(index.to_string())})).unwrap();
+        let id = s.state.active_sequence.unwrap();
+        assert_eq!(s.project.item(id).unwrap().name, if index == 0 { "Edición" } else { "Sequence 01" });
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
+    }
+}
+
+#[test]
+fn premiere_document_network_paths_are_refused_before_filesystem_access() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let xml = std::fs::read_to_string(&doc).unwrap().replace(fixture.path().join("source.png").to_str().unwrap(), "file://192.0.2.1/share/source.png");
+    std::fs::write(&doc, xml).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("refused")})).unwrap();
+    assert_eq!(result["offlineMedia"], json!(["source.png"]));
+    assert!(result["report"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("document path refused")));
+    assert!(s.project.workflow.as_ref().unwrap().imports[0].media[0].sha256.is_none());
+}
+
+#[test]
+fn premiere_duplicate_sequence_names_import_and_select_by_uid() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let xml =
+        std::fs::read_to_string(&doc).unwrap().replace("</PremiereData>", "<Sequence ObjectUID=\"other\"><Name>Sequence 01</Name></Sequence></PremiereData>");
+    std::fs::write(&doc, xml).unwrap();
+    let before = hash_file(&doc).unwrap();
+    for selector in [None, Some("s"), Some("other"), Some("Sequence 01")] {
+        let mut s = Session::default();
+        let destination = fixture.path().join(selector.unwrap_or("default"));
+        let mut params = json!({"path":doc,"destination":destination,"mediaMode":"link"});
+        if let Some(selector) = selector {
+            params["sequence"] = json!(selector);
+        }
+        let result = s.execute("premiere.import", params);
+        if selector == Some("Sequence 01") {
+            assert!(result.unwrap_err().to_string().contains("ObjectUID"));
+            assert!(!destination.exists());
+        } else {
+            assert_eq!(result.unwrap()["sequences"].as_array().unwrap().len(), 2);
+            let active = s.active_sequence().unwrap();
+            assert_eq!(active.video_tracks.is_empty(), selector == Some("other"));
+        }
+        assert_eq!(hash_file(&doc).unwrap(), before);
+    }
+}
+
+#[test]
+fn premiere_link_copy_save_reopen_and_undo_preserve_input() {
+    let fixture = Fixture::new();
+    let source = fixture.path().join("source.png");
+    let doc = fixture.path().join("source.prproj");
+    let source_hash = hash_file(&source).unwrap();
+    let doc_hash = hash_file(&doc).unwrap();
+    for mode in ["link", "copy"] {
+        let mut session = Session::default();
+        let dest = fixture.path().join(mode);
+        let r = session.execute("premiere.import", json!({"path":doc,"destination":dest,"mediaMode":mode,"frameRate":{"num":30,"den":1}})).unwrap();
+        assert_eq!(r["offlineMedia"], json!([]));
+        assert_eq!(r["sourceSha256"], doc_hash.0);
+        let provenance = session.project.workflow.clone().unwrap();
+        let media = &provenance.imports[0].media[0];
+        let imported = PathBuf::from(&media.imported_path);
+        assert_eq!(hash_file(&imported).unwrap(), source_hash);
+        // Stored interchange paths deliberately omit Windows verbatim prefixes.
+        assert_eq!(imported.canonicalize().unwrap() == source.canonicalize().unwrap(), mode == "link");
+        #[cfg(target_os = "windows")]
+        assert!(!media.imported_path.starts_with(r"\\?\"));
+        let saved = fixture.path().join(format!("{mode}.fcproj"));
+        session.execute("file.saveAs", json!({"path":saved})).unwrap();
+        let bytes = std::fs::read(&saved).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope["format"], filmcraft_format::WORKFLOW_FORMAT_ID);
+        let mut reopened = Session::default();
+        reopened.execute("file.open", json!({"path":saved})).unwrap();
+        assert_eq!(reopened.project.workflow.as_ref(), Some(&provenance));
+        reopened.execute("project.setNotes", json!({"text":"edited"})).unwrap();
+        reopened.execute("file.save", json!({})).unwrap();
+        assert_eq!(filmcraft_format::decode(&std::fs::read(&saved).unwrap()).unwrap().project.workflow, Some(provenance));
+        session.execute("edit.undo", json!({})).unwrap();
+        assert!(session.project.workflow.is_none());
+        assert!(dest.join("source.prproj").exists());
+        session.execute("edit.redo", json!({})).unwrap();
+        assert!(session.project.workflow.is_some());
+        assert_eq!(hash_file(&source).unwrap(), source_hash);
+        assert_eq!(hash_file(&doc).unwrap(), doc_hash);
+    }
+}
+#[test]
+fn premiere_missing_media_and_standard_import_route() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.path().join("source.png")).unwrap();
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths":[fixture.path().join("source.prproj")],"destination":fixture.path().join("offline")})).unwrap();
+    assert_eq!(r["sequences"].as_array().unwrap().len(), 1);
+    assert!(s.project.workflow.is_some());
+    // A file that is not there is missing, not made offline: Link Media and auto-relink look for it.
+    assert!(s.project.items.values().all(|i| !matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)));
+    let found = s.execute("media.findMissing", json!({})).unwrap();
+    assert_eq!(found["missing"].as_array().unwrap().iter().map(|m| m["status"].clone()).collect::<Vec<_>>(), [json!("missing")], "{found}");
+}
+
+#[test]
+fn premiere_media_moved_with_its_folder_auto_relinks() {
+    let fixture = Fixture::new();
+    let moved = fixture.path().join("moved");
+    std::fs::create_dir(&moved).unwrap();
+    std::fs::rename(fixture.path().join("source.png"), moved.join("source.png")).unwrap();
+    let mut s = Session::default();
+    s.execute("premiere.import", json!({"path":fixture.path().join("source.prproj"),"destination":fixture.path().join("import")})).unwrap();
+    // The placeholder's size and duration are provisional (the sequence frame and the clip's
+    // extent), so this matches by name and file only.
+    let checks = json!({"duration": false, "metadata": false});
+    let r = s.execute("media.autoRelink", json!({"from": fixture.path().to_string_lossy(), "to": moved.to_string_lossy(), "match": checks})).unwrap();
+    assert!(s.execute("media.findMissing", json!({})).unwrap()["missing"].as_array().unwrap().is_empty(), "{r}");
+    let item = s.project.items.values().find_map(|i| i.as_media()).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+    assert!(!item.offline && matches!(&item.media, filmcraft_project::MediaRef::File { path } if Path::new(path).ends_with("moved/source.png")), "{r}");
+}
+#[cfg(unix)]
+#[test]
+fn premiere_unreadable_media_stays_offline_in_link_and_copy_modes() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let source = fixture.path().join("source.png");
+    let doc = fixture.path().join("source.prproj");
+    let source_hash = hash_file(&source).unwrap();
+    let doc_hash = hash_file(&doc).unwrap();
+    // Change permissions only on this test's generated image, never on reference footage.
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&source).is_ok() {
+        eprintln!("permission regression requires an unprivileged user; root bypasses mode bits");
+        return;
+    }
+    let read_error = std::fs::File::open(&source).unwrap_err().to_string();
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let dest = fixture.path().join(mode);
+        let r = s.execute("premiere.import", json!({"path":doc,"destination":dest,"mediaMode":mode})).unwrap();
+        assert_eq!(r["offlineMedia"], json!(["source.png"]));
+        assert!(r["report"].as_array().unwrap().iter().any(|w| {
+            let w = w.as_str().unwrap();
+            w.contains(source.to_str().unwrap()) && w.contains(&read_error) && w.contains("offline placeholder")
+        }));
+        let workflow = s.project.workflow.as_ref().unwrap();
+        let media = &workflow.imports[0].media[0];
+        assert_eq!(media.original_path, source.to_str().unwrap());
+        assert!(media.sha256.is_none() && media.bytes.is_none());
+        assert_eq!(hash_file(&dest.join("source.prproj")).unwrap(), doc_hash);
+        if mode == "copy" {
+            assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+        }
+        let saved = fixture.path().join(format!("{mode}.fcproj"));
+        s.execute("file.saveAs", json!({"path":saved})).unwrap();
+        let mut reopened = Session::default();
+        reopened.execute("file.open", json!({"path":saved})).unwrap();
+        assert!(reopened.project.items.values().any(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)));
+        assert_eq!(reopened.project.workflow, s.project.workflow);
+    }
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(hash_file(&source).unwrap(), source_hash);
+    assert_eq!(hash_file(&doc).unwrap(), doc_hash);
+}
+#[test]
+fn premiere_invalid_commands_do_not_mutate_project_or_existing_destination() {
+    let fixture = Fixture::new();
+    let mut s = Session::default();
+    let before = (*s.project).clone();
+    for params in [
+        json!(null),
+        json!({"path":5}),
+        json!({"path":fixture.path().join("source.prproj"),"mediaMode":"move"}),
+        json!({"path":fixture.path().join("source.prproj"),"destination":fixture.path()}),
+        json!({"path":fixture.path().join("source.prproj"),"frameRate":{"num":0,"den":0}}),
+    ] {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("premiere.import", params)));
+        assert!(r.is_ok());
+        assert!(r.unwrap().is_err());
+        assert_eq!(*s.project, before);
+    }
+    assert!(fixture.path().join("source.png").is_file());
+}
+
+#[test]
+fn premiere_workflow_versions_fail_closed_and_plain_projects_stay_upstream_compatible() {
+    let plain = filmcraft_project::Project::default();
+    let encoded = filmcraft_format::encode(&plain, false);
+    let doc: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(doc["format"], filmcraft_format::FORMAT_ID);
+    let mut modified = plain;
+    modified.workflow = Some(Default::default());
+    let mut doc: serde_json::Value = serde_json::from_slice(&filmcraft_format::encode(&modified, false)).unwrap();
+    assert_eq!(doc["format"], filmcraft_format::WORKFLOW_FORMAT_ID);
+    doc["project"]["workflow"]["version"] = json!(999);
+    assert!(filmcraft_format::decode(&serde_json::to_vec(&doc).unwrap()).unwrap_err().to_string().contains("unsupported workflow"));
+}
+
+#[test]
+fn premiere_link_defers_hashes_and_explicit_inspection_does_not_rewrite_provenance() {
+    let fixture = Fixture::new();
+    let source = fixture.path().join("source.png");
+    let original = hash_file(&source).unwrap();
+    let doc = fixture.path().join("source.prproj");
+    let dest = fixture.path().join("deferred");
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":dest})).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]));
+    let provenance = s.project.workflow.clone().unwrap();
+    assert_eq!(provenance.imports[0].media[0].sha256, None, "linked import must not compute a full media hash");
+    assert_eq!(provenance.imports[0].media[0].bytes, Some(original.1));
+    let identity = crate::relink::identity_of(&*s.services, source.to_str().unwrap()).unwrap();
+    assert_eq!(provenance.imports[0].media[0].identity, Some(identity));
+    // Older provenance without the new optional fingerprint remains readable.
+    let mut old = serde_json::to_value(&provenance.imports[0].media[0]).unwrap();
+    old.as_object_mut().unwrap().remove("identity");
+    assert!(serde_json::from_value::<filmcraft_project::workflow::SourceMedia>(old).unwrap().identity.is_none());
+    let disk_record = std::fs::read(dest.join("provenance.json")).unwrap();
+    let project = filmcraft_format::encode(&s.project, false);
+    let observed = s.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+    assert_eq!(observed["media"][0]["sha256"], original.0);
+    assert_eq!(observed["media"][0]["bytes"], original.1);
+    assert_eq!(observed["media"][0]["matchesImport"], serde_json::Value::Null);
+    // A later observation is not proof of what existed at import time.
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([220, 40, 30, 255])).save(&source).unwrap();
+    let changed = hash_file(&source).unwrap();
+    assert_ne!(changed.0, original.0);
+    let observed = s.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+    assert_eq!(observed["media"][0]["sha256"], changed.0);
+    assert_eq!(observed["media"][0]["matchesImport"], serde_json::Value::Null);
+    assert_eq!(s.project.workflow.as_ref(), Some(&provenance));
+    assert_eq!(std::fs::read(dest.join("provenance.json")).unwrap(), disk_record);
+    assert_eq!(filmcraft_format::encode(&s.project, false), project);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.workflow.is_none(), "hash inspection must not add an undo step");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project.workflow.as_ref(), Some(&provenance));
+}
+
+#[test]
+fn premiere_hash_inspection_rechecks_media_policy_and_copy_identity() {
+    let fixture = Fixture::new();
+    let mut s = Session::default();
+    let dest = fixture.path().join("copy");
+    s.execute("premiere.import", json!({"path":fixture.path().join("source.prproj"),"destination":dest,"mediaMode":"copy"})).unwrap();
+    let media = s.project.workflow.as_ref().unwrap().imports[0].media[0].clone();
+    let observed = s.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+    assert_eq!(observed["media"][0]["sha256"], json!(media.sha256));
+    assert_eq!(observed["media"][0]["matchesImport"], true);
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([1, 2, 3, 255])).save(&media.imported_path).unwrap();
+    let observed = s.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+    assert_eq!(observed["media"][0]["matchesImport"], false);
+    std::fs::write(&media.imported_path, b"not media anymore").unwrap();
+    let observed = s.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+    assert!(observed["media"][0]["sha256"].is_null());
+    assert!(observed["media"][0]["error"].as_str().unwrap().contains("probe failed"));
+    // A hand-edited project record must not bypass the document path / extension gate.
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    let import = std::sync::Arc::make_mut(&mut workflow.imports[0]);
+    import.media[0].imported_path = "file://192.0.2.1/share/clip.mov".into();
+    s.project = std::sync::Arc::new(project);
+    let observed = s.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+    assert!(observed["media"][0]["error"].as_str().unwrap().contains("document path refused"));
+    for params in [json!(null), json!([]), json!({}), json!({"import":-1}), json!({"import":0.5}), json!({"import":"0"}), json!({"import":u64::MAX})] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("premiere.hashMedia", params)));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_err());
+    }
+}
+
+#[test]
+fn premiere_link_never_calls_media_hasher_but_copy_still_does() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj").canonicalize().unwrap();
+    let hashes = std::cell::Cell::new(0);
+    let copies = std::cell::Cell::new(0);
+    let hash = |path: &std::path::Path| {
+        if path != doc {
+            hashes.set(hashes.get() + 1);
+            return Err(crate::EngineError::Other("media hasher unavailable".into()));
+        }
+        hash_file(path)
+    };
+    // Copy mode hashes media while copying it; a source it cannot read stays offline.
+    let copy = |_: &std::path::Path, _: &std::path::Path| {
+        copies.set(copies.get() + 1);
+        Err(crate::premiere::CopyError::Unreadable("media reader unavailable".into()))
+    };
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let dest = fixture.path().join(mode);
+        let io = crate::premiere::FileIo { hash: &hash, copy: &copy };
+        let result = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":dest,"mediaMode":mode}), &io).unwrap();
+        assert_eq!(hashes.get(), 0, "{mode}: media is read in full only by the copier");
+        if mode == "link" {
+            assert_eq!(copies.get(), 0);
+            assert_eq!(result["offlineMedia"], json!([]));
+        } else {
+            assert_eq!(copies.get(), 1);
+            assert_eq!(result["offlineMedia"], json!(["source.png"]));
+            assert!(result["report"].to_string().contains("media reader unavailable"), "{result}");
+            assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+        }
+    }
+}
+
+#[test]
+fn premiere_copy_reads_media_in_one_pass() {
+    let fixture = Fixture::new();
+    let expected = hash_file(&fixture.path().join("source.png")).unwrap();
+    let doc = fixture.path().join("source.prproj").canonicalize().unwrap();
+    let hashes = std::cell::Cell::new(0);
+    let copies = std::cell::Cell::new(0);
+    let hash = |path: &std::path::Path| {
+        if path != doc {
+            hashes.set(hashes.get() + 1);
+        }
+        hash_file(path)
+    };
+    let copy = |from: &std::path::Path, to: &std::path::Path| {
+        copies.set(copies.get() + 1);
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let dest = fixture.path().join("copy");
+    let io = crate::premiere::FileIo { hash: &hash, copy: &copy };
+    let result = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":dest,"mediaMode":"copy"}), &io).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]), "{result}");
+    assert_eq!((copies.get(), hashes.get()), (1, 0), "no separate full read of the source or of its copy");
+    let media = &s.project.workflow.as_ref().unwrap().imports[0].media[0];
+    assert_eq!((media.sha256.as_deref(), media.bytes), (Some(expected.0.as_str()), Some(expected.1)));
+    let copied: Vec<_> = std::fs::read_dir(dest.join("media")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(copied, [std::ffi::OsString::from(format!("{}.png", expected.0))], "only the finished copy, named by its digest");
+    assert_eq!(hash_file(std::path::Path::new(&media.imported_path)).unwrap(), expected);
+}
+
+#[test]
+fn premiere_import_rejects_grown_source_and_removes_destination() {
+    // Growing the project after parse must fail the bounded re-hash and leave no import directory.
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj").canonicalize().unwrap();
+    let destination = fixture.path().join("grown-source");
+    let grow = |from: &std::path::Path, to: &std::path::Path| {
+        std::fs::OpenOptions::new().append(true).open(&doc).unwrap().write_all(&[0u8; 1_048_576]).unwrap();
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let before = s.project.clone();
+    let io = crate::premiere::FileIo { hash: &hash_file, copy: &grow };
+    let error = crate::premiere::import_with_io(&mut s, &json!({"path": doc, "destination": &destination, "mediaMode": "copy"}), &io).unwrap_err();
+    assert!(error.to_string().contains("project changed during import"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&s.project, &before) && !destination.exists(), "nothing imported, nothing left behind");
+}
+
+#[test]
+fn premiere_copy_describes_the_bytes_it_copied() {
+    // The source is replaced by other media after its probe and before its copy: the item, its
+    // anchors and its fingerprint follow the copy, not the earlier probe.
+    let fixture = Fixture::new();
+    let source = fixture.path().join("source.png");
+    let doc = fixture.path().join("source.prproj").canonicalize().unwrap();
+    let replaced = |from: &std::path::Path, to: &std::path::Path| {
+        image::RgbaImage::from_pixel(32, 24, image::Rgba([220, 40, 30, 255])).save(from).unwrap();
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let io = crate::premiere::FileIo { hash: &hash_file, copy: &replaced };
+    let result = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":fixture.path().join("copy"),"mediaMode":"copy"}), &io).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]), "{result}");
+    let item = s.project.items.values().find(|i| i.as_media().is_some()).unwrap();
+    let media = item.as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((32, 24)), "the copy's picture size");
+    let record = &s.project.workflow.as_ref().unwrap().imports[0].media[0];
+    assert_eq!(hash_file(std::path::Path::new(&record.imported_path)).unwrap(), (record.sha256.clone().unwrap(), record.bytes.unwrap()));
+    let identity = crate::relink::identity_of(&*s.services, &record.imported_path).unwrap();
+    assert_eq!((media.identity, record.identity), (Some(identity), Some(identity)), "the copy's fingerprint");
+    let clip = &s.active_sequence().unwrap().video_tracks[0].items[0];
+    let anchor = clip.effects.iter().find_map(|e| e.params.get("anchor")).unwrap();
+    assert!(matches!(&anchor.value, filmcraft_project::ParamValue::Vec2(v) if v.x == 16.0 && v.y == 12.0), "centred in the copy: {anchor:?}");
+    let pooled = s.media.cached(item.id).expect("the item's source is in the pool");
+    assert_eq!(pooled.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 24)));
+    // Replaced by a file that is not media: its copy cannot be opened, and the import is cancelled.
+    let not_media = |from: &std::path::Path, to: &std::path::Path| {
+        std::fs::write(from, b"not media anymore").unwrap();
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let before = s.project.clone();
+    let destination = fixture.path().join("changed");
+    let io = crate::premiere::FileIo { hash: &hash_file, copy: &not_media };
+    let error = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":destination,"mediaMode":"copy"}), &io).unwrap_err();
+    assert!(error.to_string().contains("changed while copying"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&s.project, &before) && !destination.exists(), "nothing imported, nothing left behind");
+    assert!(source.is_file());
+}
+
+#[test]
+fn premiere_import_reports_levels_and_names_an_existing_destination() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.path().join("source.png")).unwrap();
+    let doc = fixture.path().join("source.prproj");
+    let destination = fixture.path().join("levels");
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":destination})).unwrap();
+    // `report` stays the list of messages; `reportEntries` adds each one's level and count.
+    let report = result["report"].as_array().unwrap();
+    let entries = result["reportEntries"].as_array().expect("reportEntries");
+    assert_eq!(entries.len(), report.len(), "{result}");
+    for (entry, message) in entries.iter().zip(report) {
+        assert_eq!(&entry["message"], message);
+        assert!(matches!(entry["level"].as_str(), Some("info" | "warning")), "{entry}");
+        assert!(entry["count"].as_u64().is_some_and(|n| n >= 1), "{entry}");
+    }
+    assert!(entries.iter().any(|e| e["level"] == "warning" && e["message"].as_str().unwrap().contains("missing, link it to reconnect")), "{result}");
+    // (The project holds NaN auto anchors, so it is compared by identity: no edit at all.)
+    let before = s.project.clone();
+    let error = s.execute("premiere.import", json!({"path":doc,"destination":destination})).unwrap_err();
+    assert!(matches!(error, crate::EngineError::BadParams { .. }) && error.to_string().contains("already exists"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&s.project, &before));
+    assert!(destination.join("provenance.json").is_file(), "the existing destination is left as it was");
+}
+
+#[test]
+fn premiere_import_opens_each_source_file_once() {
+    /// The native host, recording each media file it opens.
+    #[derive(Default)]
+    struct Opens(std::sync::Mutex<Vec<String>>);
+    impl crate::Services for Opens {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            crate::FsServices.read_file(path)
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            crate::FsServices.write_file(path, bytes)
+        }
+        fn file_size(&self, path: &str) -> std::io::Result<u64> {
+            crate::FsServices.file_size(path)
+        }
+        fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+            crate::FsServices.read_range(path, offset, len)
+        }
+        fn reader(&self, path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+            self.0.lock().unwrap().push(path.to_string());
+            crate::FsServices.reader(path)
+        }
+    }
+    let fixture = Fixture::new();
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let opens = std::sync::Arc::new(Opens::default());
+        s.services = opens.clone();
+        let result = s.execute("premiere.import", json!({"path":fixture.path().join("source.prproj"),"destination":fixture.path().join(mode),"mediaMode":mode})).unwrap();
+        assert_eq!(result["offlineMedia"], json!([]), "{result}");
+        let opened = opens.0.lock().unwrap().clone();
+        // Link mode keeps the probe's source for its item; copy mode opens its copy instead.
+        assert_eq!(opened.iter().filter(|path| path.ends_with("source.png")).count(), 1, "{mode}: {opened:?}");
+        assert_eq!(opened.len(), if mode == "link" { 1 } else { 2 }, "{mode}: {opened:?}");
+        let item = s.project.items.values().find(|i| i.as_media().is_some()).unwrap();
+        let source = s.media.cached(item.id).expect("the item's source is in the pool");
+        assert_eq!(source.info().video.as_ref().map(|v| (v.width, v.height)), Some((16, 16)));
+    }
+}
+
+#[test]
+fn premiere_plain_xml_larger_than_64_mib_reaches_parser_and_snapshot() {
+    let fixture = Fixture::new();
+    let source = fixture.path().join("source.prproj");
+    let xml = std::fs::read_to_string(&source).unwrap();
+    let mut padded = String::from("<!--");
+    padded.extend(std::iter::repeat_n(' ', 65 * 1024 * 1024));
+    padded.push_str("-->");
+    padded.push_str(&xml);
+    std::fs::write(&source, padded.as_bytes()).unwrap();
+    let before = hash_file(&source).unwrap();
+    let destination = fixture.path().join("large-plain-import");
+    let mut session = Session::default();
+    session.execute("premiere.import", json!({"path":source,"destination":destination,"mediaMode":"link"})).unwrap();
+    assert_eq!(hash_file(&source).unwrap(), before);
+    let imports = &session.project.workflow.as_ref().unwrap().imports;
+    assert_eq!(imports.len(), 1);
+    assert_eq!(imports[0].source_sha256, before.0);
+    assert_eq!(hash_file(std::path::Path::new(&imports[0].snapshot_path)).unwrap(), before);
+}
+
+#[test]
+fn premiere_missing_absolute_media_falls_back_to_the_relative_path_through_policy() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let original = fixture.path().join("source.png");
+    let moved = fixture.path().join("moved-away").join("source.png");
+    let xml = std::fs::read_to_string(&doc).unwrap();
+    for (relative, online) in [("source.png", true), ("file://192.0.2.1/share/source.png", false)] {
+        let edited = xml.replace(
+            &format!("<FilePath>{}</FilePath>", original.display()),
+            &format!("<FilePath>{}</FilePath><RelativePath>{relative}</RelativePath>", moved.display()),
+        );
+        assert_ne!(edited, xml);
+        std::fs::write(&doc, edited).unwrap();
+        let mut s = Session::default();
+        let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join(format!("relative-{online}"))})).unwrap();
+        let media = &s.project.workflow.as_ref().unwrap().imports[0].media[0];
+        let report: Vec<_> = result["report"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+        if online {
+            assert_eq!(result["offlineMedia"], json!([]), "{report:?}");
+            assert_eq!(std::path::Path::new(&media.original_path).canonicalize().unwrap(), original.canonicalize().unwrap());
+            assert!(report.iter().any(|w| w.contains("project-relative")), "{report:?}");
+        } else {
+            assert_eq!(result["offlineMedia"], json!(["source.png"]));
+            assert!(report.iter().any(|w| w.contains("document path refused")), "{report:?}");
+            assert!(media.sha256.is_none() && media.bytes.is_none());
+        }
+    }
+}
+
+#[test]
+fn premiere_media_whose_name_differs_only_in_case_is_found() {
+    // A project saved on Windows or macOS stores `source.png` for a file that a case-sensitive
+    // disk holds as `source.PNG`.
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    std::fs::rename(fixture.path().join("source.png"), fixture.path().join("source.PNG")).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("case")})).unwrap();
+    let report: Vec<_> = result["report"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    assert_eq!(result["offlineMedia"], json!([]), "{report:?}");
+    if cfg!(target_os = "linux") {
+        assert!(report.iter().any(|w| w.contains("differs only in letter case")), "{report:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn premiere_case_fallback_refuses_an_ambiguous_name() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    std::fs::rename(fixture.path().join("source.png"), fixture.path().join("source.PNG")).unwrap();
+    std::fs::copy(fixture.path().join("source.PNG"), fixture.path().join("Source.png")).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("ambiguous")})).unwrap();
+    assert_eq!(result["offlineMedia"], json!(["source.png"]));
+}
+
+#[test]
+fn premiere_generated_media_is_not_probed_as_a_file() {
+    // Hand-written: black video stores its four-character code (`BLAK`) as its file path.
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let xml = std::fs::read_to_string(&doc).unwrap();
+    let code = u32::from_be_bytes(*b"BLAK");
+    let edited = xml
+        .replace("<SubClip ObjectID=\"3\"><Name>source.png</Name></SubClip>", "<SubClip ObjectID=\"3\"><Name>Vídeo negro</Name><Clip ObjectRef=\"4\"/></SubClip><VideoClip ObjectID=\"4\"><Clip><Source ObjectRef=\"5\"/></Clip></VideoClip><VideoMediaSource ObjectID=\"5\"><MediaSource><Media ObjectURef=\"m\"/></MediaSource></VideoMediaSource>")
+        .replace(&format!("<Media><Title>source.png</Title><FilePath>{}</FilePath></Media>", fixture.path().join("source.png").display()), &format!("<Media ObjectUID=\"m\"><Title>Vídeo negro</Title><FilePath>{code}</FilePath></Media>"));
+    assert_ne!(edited, xml);
+    std::fs::write(&doc, edited).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("generated")})).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]), "{result}");
+    assert!(s.project.workflow.as_ref().unwrap().imports[0].media.is_empty(), "no file reference is recorded");
+    assert!(s.project.items.values().any(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m)
+        if m.media == filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BlackVideo))));
+}
+
+#[test]
+fn premiere_project_with_binned_media_and_no_sequence_imports() {
+    // Hand-written: a bin holding one probed media file; the project has no sequence.
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let xml = format!(
+        r#"<PremiereData><Project ObjectID="p"><RootProjectItem ObjectURef="root"/></Project><RootProjectItem ObjectUID="root"><ProjectItemContainer><Items><Item ObjectURef="bin"/></Items></ProjectItemContainer></RootProjectItem><BinProjectItem ObjectUID="bin"><ProjectItem><Name>Stills</Name></ProjectItem><ProjectItemContainer><Items><Item ObjectURef="item"/></Items></ProjectItemContainer></BinProjectItem><ClipProjectItem ObjectUID="item"><ProjectItem><Name>source.png</Name></ProjectItem><MasterClip ObjectURef="master"/></ClipProjectItem><MasterClip ObjectUID="master"><Clips><Clip ObjectRef="clip"/></Clips></MasterClip><VideoClip ObjectID="clip"><Clip><Source ObjectRef="source"/></Clip></VideoClip><VideoMediaSource ObjectID="source"><MediaSource><Media ObjectURef="media"/></MediaSource></VideoMediaSource><Media ObjectUID="media"><Title>source.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
+        fixture.path().join("source.png").display()
+    );
+    std::fs::write(&doc, xml).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("binned")})).unwrap();
+    assert_eq!((result["sequences"].clone(), result["offlineMedia"].clone()), (json!([]), json!([])), "{result}");
+    let item = s.project.items.values().find(|i| i.name == "source.png").unwrap();
+    let bin = s.project.root.parent_of(item.id).and_then(|b| s.project.root.find_bin(b)).unwrap();
+    assert_eq!(bin.name, "Stills");
+    assert_eq!(s.project.workflow.as_ref().unwrap().imports[0].media.len(), 1, "probed through the import policy");
+}
+
+#[test]
+fn premiere_offline_media_lists_only_items_added_by_this_import() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let media = fixture.path().join("source.png");
+    let parked = fixture.path().join("parked.bin");
+    std::fs::rename(&media, &parked).unwrap();
+    let mut s = Session::default();
+    let first = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("offline")})).unwrap();
+    assert_eq!(first["offlineMedia"], json!(["source.png"]));
+    std::fs::rename(&parked, &media).unwrap();
+    let second = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("online")})).unwrap();
+    assert_eq!(second["offlineMedia"], json!([]), "an earlier import's offline item is not this import's");
+    let placed = s.project.items.values().filter(|i| i.name == "source.png" && i.as_media().is_some()).count();
+    assert_eq!(placed, 2, "the earlier placeholder stays in the project");
+}
+
+#[test]
+fn premiere_hash_media_addresses_an_import_by_its_destination() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    let mut s = Session::default();
+    let first = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("first")})).unwrap();
+    let second = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("second"),"mediaMode":"copy"})).unwrap();
+    let observed = s.execute("premiere.hashMedia", json!({"import":second["destination"]})).unwrap();
+    assert_eq!((observed["import"].clone(), observed["destination"].clone()), (json!(1), second["destination"].clone()));
+    assert_eq!(observed["media"][0]["matchesImport"], true, "{observed}");
+    let destination = PathBuf::from(second["destination"].as_str().unwrap());
+    // The index form, the snapshot inside the destination and another spelling of it name the same import.
+    for selector in [json!(1), json!(destination.join("source.prproj")), json!(destination.join("..").join("second"))] {
+        assert_eq!(s.execute("premiere.hashMedia", json!({"import":selector})).unwrap(), observed, "{selector}");
+    }
+    // Undo the second import and import again: index 1 is now another import, but the
+    // destination still names only the one it was returned for.
+    s.execute("edit.undo", json!({})).unwrap();
+    let third = s.execute("premiere.import", json!({"path":doc,"destination":fixture.path().join("third")})).unwrap();
+    assert!(s.execute("premiere.hashMedia", json!({"import":second["destination"]})).is_err(), "an undone import is not replaced by a later one");
+    assert_eq!(s.execute("premiere.hashMedia", json!({"import":1})).unwrap()["destination"], third["destination"]);
+    assert_eq!(s.execute("premiere.hashMedia", json!({"import":first["destination"]})).unwrap()["import"], 0);
+    // A hand-edited project with two records for one destination is ambiguous, not a guess.
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    workflow.imports.push(workflow.imports[0].clone());
+    s.project = std::sync::Arc::new(project);
+    let ambiguous = s.execute("premiere.hashMedia", json!({"import":first["destination"]})).unwrap_err().to_string();
+    assert!(ambiguous.contains("index"), "{ambiguous}");
+    for selector in [json!(""), json!(fixture.path().join("missing")), json!(fixture.path().join("source.png")), json!({"path":first["destination"]})] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("premiere.hashMedia", json!({"import":selector}))));
+        assert!(result.unwrap().is_err(), "{selector}");
+    }
+}
+
+#[test]
+fn premiere_import_lands_in_the_requested_bin_in_one_undo_step() {
+    let fixture = Fixture::new();
+    let doc = fixture.path().join("source.prproj");
+    for (index, command) in ["file.import", "premiere.import"].into_iter().enumerate() {
+        let mut s = Session::default();
+        let bin = filmcraft_project::BinId(s.execute("file.newBin", json!({"name":"Premiere"})).unwrap()["bin"].as_u64().unwrap());
+        let before = (*s.project).clone();
+        let mut params = json!({"bin":bin.0,"destination":fixture.path().join(format!("binned-{index}"))});
+        if command == "file.import" {
+            // A Premiere project is never a numbered still: the image-sequence flag does not apply.
+            params["paths"] = json!([doc]);
+            params["imageSequence"] = json!(true);
+        } else {
+            params["path"] = json!(doc);
+        }
+        let result = s.execute(command, params).unwrap();
+        assert!(result.get("imageSequences").is_none(), "{command}: {result}");
+        let added: Vec<_> = s.project.items.keys().copied().filter(|id| !before.items.contains_key(id)).collect();
+        assert!(added.len() >= 2, "{command}: a sequence and its media: {added:?}");
+        for id in added {
+            assert_eq!(s.project.root.parent_of(id), Some(bin), "{command}: {id:?} is in the bin the import was aimed at");
+        }
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, before, "{command}: the import and its filing are one undo step");
+    }
+    // An unknown bin is the root, as for other documents.
+    let mut s = Session::default();
+    s.execute("file.import", json!({"paths":[doc],"bin":987_654_321u64,"destination":fixture.path().join("unknown-bin")})).unwrap();
+    assert!(s.project.items.keys().all(|id| s.project.root.parent_of(*id) == Some(s.project.root.id)));
+}
+
+#[test]
+fn premiere_hash_media_hashes_each_file_once_within_a_byte_limit() {
+    let fixture = Fixture::new();
+    let expected = hash_file(&fixture.path().join("source.png")).unwrap();
+    let mut s = Session::default();
+    let destination = fixture.path().join("import");
+    s.execute("premiere.import", json!({"path":fixture.path().join("source.prproj"),"destination":destination})).unwrap();
+    // Four references to one file: the same stored path twice, then two other spellings of it
+    // (relative to the snapshot's folder, and through `..`).
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    let import = std::sync::Arc::make_mut(&mut workflow.imports[0]);
+    let reference = import.media[0].clone();
+    for path in [reference.imported_path.clone(), "../source.png".into(), destination.join("..").join("source.png").to_string_lossy().into_owned()] {
+        import.media.push(filmcraft_project::workflow::SourceMedia { imported_path: path, ..reference.clone() });
+    }
+    s.project = std::sync::Arc::new(project);
+    let calls = std::cell::Cell::new(0);
+    let hasher = |path: &std::path::Path, max: u64| {
+        calls.set(calls.get() + 1);
+        crate::premiere::hash_file_within(path, max)
+    };
+    // The limit counts each file once: four references to it fit in its own size.
+    let observed = crate::premiere::hash_media_with(&s, &json!({"import":0}), &hasher, expected.1).unwrap();
+    assert_eq!(calls.get(), 1, "{observed}");
+    let rows = observed["media"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|row| row["sha256"] == expected.0 && row["bytes"] == expected.1), "{observed}");
+    // Over the limit, nothing is read.
+    let refused = crate::premiere::hash_media_with(&s, &json!({"import":0}), &hasher, expected.1 - 1).unwrap_err().to_string();
+    assert!(refused.contains("limit"), "{refused}");
+    assert_eq!(calls.get(), 1, "a refused inspection hashes nothing");
+    // A file that grows past the limit while it is hashed stops there.
+    assert!(crate::premiere::hash_file_within(&fixture.path().join("source.png"), expected.1 - 1).is_err());
+    assert_eq!(crate::premiere::hash_file_within(&fixture.path().join("source.png"), expected.1).unwrap(), expected);
+}
+
+#[test]
+fn premiere_hash_media_counts_a_failed_read_against_its_byte_limit() {
+    let fixture = Fixture::new();
+    let other = fixture.path().join("other.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])).save(&other).unwrap();
+    let mut s = Session::default();
+    s.execute("premiere.import", json!({"path":fixture.path().join("source.prproj"),"destination":fixture.path().join("import")})).unwrap();
+    // A second file in the import's record, so that one call hashes two.
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    let import = std::sync::Arc::make_mut(&mut workflow.imports[0]);
+    let reference = import.media[0].clone();
+    import.media.push(filmcraft_project::workflow::SourceMedia { imported_path: other.to_string_lossy().into_owned(), ..reference });
+    s.project = std::sync::Arc::new(project);
+    // Their sizes fit the limit, so the inspection starts.
+    let max = hash_file(&fixture.path().join("source.png")).unwrap().1 + hash_file(&other).unwrap().1;
+    // The limit each read is given; each fails after reading `read` bytes.
+    let limits = std::cell::RefCell::new(Vec::new());
+    let fail = |limit: u64, read: u64| {
+        limits.borrow_mut().push(limit);
+        Err::<(String, u64), _>(crate::premiere::HashFailure { error: crate::EngineError::Other("read failed".into()), read })
+    };
+    // Each file has grown since the sizes were summed: its read stops one byte past what is left of
+    // the limit, as `hash_file_within` does, and fails. That spends the limit: the other file is
+    // not read at all.
+    let grown = |_: &std::path::Path, limit: u64| fail(limit, limit + 1);
+    let observed = crate::premiere::hash_media_with(&s, &json!({"import":0}), &grown, max).unwrap();
+    assert_eq!(*limits.borrow(), [max], "{observed}");
+    let rows = observed["media"].as_array().unwrap();
+    assert!(rows.iter().all(|row| row["sha256"].is_null()), "{observed}");
+    assert_eq!(rows.iter().filter(|row| row["error"].as_str().is_some_and(|e| e.contains("not read"))).count(), 1, "{observed}");
+    // A read that fails partway charges what it read: the next file gets the rest of the limit.
+    limits.borrow_mut().clear();
+    let partway = |_: &std::path::Path, limit: u64| fail(limit, 10);
+    crate::premiere::hash_media_with(&s, &json!({"import":0}), &partway, max).unwrap();
+    assert_eq!(*limits.borrow(), [max, max - 10]);
+}

@@ -51,7 +51,9 @@ pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
     /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
     pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
-    pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
+    /// Save Project dialog: suggested file name and preferred extension (`fcproj` or `prproj`) → path.
+    /// The preferred extension is the default Save-as-type; both project types should stay offered.
+    pub pick_save: Option<Box<dyn FnMut(&str, &str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path. The
     /// suggestion may be a full path, and the dialog then starts in its folder.

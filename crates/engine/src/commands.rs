@@ -1616,6 +1616,8 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             crate::masks::discard_jobs(s);
+            // Drop any open `.prproj` sidecar so Save As cannot patch the previous Premiere XML.
+            s.premiere_native = None;
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1633,6 +1635,8 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
+            // Drop any open `.prproj` sidecar so Save As cannot patch the previous Premiere XML.
+            s.premiere_native = None;
             s.project = std::sync::Arc::new(p);
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1848,6 +1852,21 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if crate::premiere::is_project(&path) {
+                    // The Premiere importer reads `bin` (and its own options) from these
+                    // parameters; a project is never a numbered still, so `imageSequence` and
+                    // image-sequence detection do not apply to it.
+                    let mut options = p.clone();
+                    options["path"] = json!(path);
+                    match crate::premiere::import(s, &options) {
+                        Ok(r) => {
+                            sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                            reports.push(r);
+                        }
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
@@ -4225,6 +4244,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     crate::sequence_tools::splice(&mut v);
     v.extend(crate::captions::commands());
+    v.extend(crate::premiere::commands());
     v.extend(crate::settings::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
@@ -5338,12 +5358,15 @@ fn project_name_for(path: &str) -> Option<String> {
     (!stem.is_empty()).then_some(stem)
 }
 
-fn name_project(p: &mut filmcraft_project::Project, name: String) {
+pub(crate) fn name_project(p: &mut filmcraft_project::Project, name: String) {
     p.root.name.clone_from(&name);
     p.name = name;
 }
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+    if is_premiere_project_path(path) {
+        return crate::premiere::save_document(s, path, adopt);
+    }
     let t0 = web_time::Instant::now();
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
@@ -5367,6 +5390,8 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if adopt {
+        // Clear only after the `.fcproj` write succeeds so a failed Save As still leaves native Save working.
+        s.premiere_native = None;
         s.path = Some(path.to_string());
         s.previews_follow_path();
         s.note_recent_project();
@@ -5383,6 +5408,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    // Callers that open a Premiere project re-attach `premiere_native` after this.
+    s.premiere_native = None;
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
@@ -5414,7 +5441,17 @@ pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Proj
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
+fn is_premiere_project_path(path: &str) -> bool {
+    crate::premiere::is_project(path)
+}
+
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+    if is_premiere_project_path(path) {
+        // Cancel mask jobs only after open succeeds so a refused `.prproj` keeps tracking.
+        let opened = crate::premiere::open_document(s, path)?;
+        crate::masks::discard_jobs(s);
+        return Ok(opened);
+    }
     let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
@@ -5447,6 +5484,16 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    // Re-attach the Premiere sidecar when the journal kept one; otherwise a `.prproj` path cannot Save natively.
+    let mut native_warning = None;
+    if let Some(native) = crate::autosave::load_native_sidecar(&c.dir) {
+        s.premiere_native = Some(native);
+    } else if c.meta.has_native || c.meta.project_path.as_deref().is_some_and(is_premiere_project_path) {
+        s.path = None;
+        native_warning = Some(
+            "Recovered Premiere project has no native sidecar; use Save As to a .fcproj, or reopen the .prproj".to_string(),
+        );
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
@@ -5468,8 +5515,19 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         ))
     })?;
     per.candidates.remove(idx);
+    if let Some(w) = &native_warning {
+        s.toast(w.clone());
+    }
     s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
-    Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
+    Ok(json!({
+        "id": c.id,
+        "name": c.meta.project_name,
+        "path": s.path,
+        "savedAt": saved_at,
+        "revision": c.meta.revision,
+        "native": s.premiere_native.is_some(),
+        "nativeWarning": native_warning,
+    }))
 }
 
 /// Where auto-saves of the current project go.

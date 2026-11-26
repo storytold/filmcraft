@@ -432,7 +432,7 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
     d.edit();
     let picked = path.to_string_lossy().into_owned();
     let mut answers = vec![None, Some(picked)];
-    d.app().hooks.pick_save = Some(Box::new(move |_| if answers.is_empty() { None } else { answers.remove(0) }));
+    d.app().hooks.pick_save = Some(Box::new(move |_, _| if answers.is_empty() { None } else { answers.remove(0) }));
     d.request_close();
     d.frames(2);
     // the Save dialog is cancelled: back to the prompt, nothing quits
@@ -800,7 +800,7 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
     let saved_path = saved.to_string_lossy().into_owned();
     let mut fresh = Driver::demo();
     fresh.app().session.path = None;
-    fresh.app().hooks.pick_save = Some(Box::new(move |_| Some(saved_path.clone())));
+    fresh.app().hooks.pick_save = Some(Box::new(move |_, _| Some(saved_path.clone())));
     fresh.edit();
     fresh.drop_files(&[&b]);
     fresh.click("openProject.save");

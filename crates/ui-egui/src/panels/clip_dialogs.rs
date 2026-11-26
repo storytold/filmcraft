@@ -388,7 +388,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     // a never-saved project is saved through the Save dialog
-    let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
+    let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::save_project(String::new(), "fcproj").available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
@@ -758,8 +758,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let (prompt, ctx2) = (d.clone(), ctx.clone());
             // the project the dialog saves (not one opened, created or closed to meanwhile)
             let project = app.session.document_epoch;
-            let name = format!("{}.fcproj", app.session.project.name);
-            let r = app.pick(crate::native_dialogs::FileDialog::SaveProject { name }, move |app, paths| {
+            let ext = if app.session.premiere_native.is_some() { "prproj" } else { "fcproj" };
+            let name = format!("{}.{ext}", app.session.project.name);
+            let r = app.pick(crate::native_dialogs::FileDialog::save_project(name, ext), move |app, paths| {
                 if app.session.document_epoch != project {
                     return Ok(Value::Null);
                 }

@@ -171,7 +171,7 @@ fn home_recent_save_on_a_never_saved_project_switches_to_edit_once_it_opens() {
     d.app().session.path = None;
     d.edit();
     let saved = dir.join("saved.fcproj").to_string_lossy().into_owned();
-    d.app().hooks.pick_save = Some(Box::new(move |_| Some(saved.clone())));
+    d.app().hooks.pick_save = Some(Box::new(move |_, _| Some(saved.clone())));
     d.click("header.home");
     let i = d.recent(&other);
     d.click(&format!("import.recent.{i}"));

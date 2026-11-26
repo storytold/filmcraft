@@ -142,7 +142,9 @@ the copies, so a clock change at the end of daylight saving time cannot reorder 
 unsaved project uses `<data dir>/Auto-Save/`. After each write the oldest copies beyond the limit are
 deleted. Only files named exactly `<name>-<timestamp>.fcproj` or `<name>-<timestamp>-<unix seconds>.fcproj` are ever deleted. An auto-save is an
 ordinary project file: open it with File ▸ Open Project. `file.listAutoSaves` lists them, newest
-first.
+first. With **also save the current project** on, the open file is updated too: a native
+`.prproj` is written through the Premiere round-trip writer (never replaced with FilmCraft
+bytes); a `.fcproj` gets the usual FilmCraft encoding.
 
 Project Settings ▸ Scratch Disks can send auto-saves (Project Auto Save), render previews (Video
 Previews), captured and generated media (Captured Audio and Video, also the default for proxies)
@@ -159,8 +161,10 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
 
 - Whenever the project has unsaved changes, a snapshot is written to
   `<data dir>/Recovery/<started>-<pid>[-<n>]/snapshot.fcproj`, plus `session.json` (time, revision, project
-  name and path). It is written about 1 s after the last edit, or after at most
-  `recoveryIntervalSeconds` while edits keep coming. Saving the project deletes the snapshot.
+  name and path). When a `.prproj` is open, the journal also stores `native.xml` and `native.json`
+  (Premiere XML and ObjectID/ObjectUID bindings) so Recover can Save natively again. It is written
+  about 1 s after the last edit, or after at most `recoveryIntervalSeconds` while edits keep coming.
+  Saving the project deletes the snapshot.
 - Each running FilmCraft holds an OS file lock on `<session>/lock`. When the process dies (crash,
   `kill -9`, power loss) the OS releases the lock.
 - At startup, every other session directory whose lock can be taken and that has a snapshot is a
@@ -175,11 +179,14 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   the open project. Use **File ▸ Save** or **Save As** to save them; the worker is not restarted
   automatically. Ordinary write errors are reported without treating a live worker as stopped.
 - Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
-  over the original file. The recovered state goes into the new session's own journal before the old
-  journal is deleted. Both the replacement snapshot and its metadata must be successfully written
-  for that recovered revision. If journaling is disabled, writing fails, or the worker cannot
-  confirm the write, recovery reports an error and retains the original candidate. The recovered
-  project remains open and unsaved; use Save or Save As to keep it.
+  over the original file. When the journal includes a Premiere sidecar, Recover re-attaches it and
+  Save patches the `.prproj`. If the path is a `.prproj` but the sidecar is missing, the session path
+  is cleared and the toast asks for Save As to a `.fcproj` (or reopen the `.prproj`). The recovered
+  state goes into the new session's own journal before the old journal is deleted. Both the
+  replacement snapshot and its metadata must be successfully written for that recovered revision. If
+  journaling is disabled, writing fails, or the worker cannot confirm the write, recovery reports an
+  error and retains the original candidate. The recovered project remains open and unsaved; use Save
+  or Save As to keep it.
 - If removing the old recovery folder fails after the replacement is confirmed, the recovered project
   stays open and the candidate stays listed. The old folder may have been partly removed. Save or use
   Save As before retrying: if the old snapshot remains intact, another recovery can overwrite unsaved edits.

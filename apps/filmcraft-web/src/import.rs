@@ -138,11 +138,13 @@ pub async fn open_project_file(file: web_sys::File) -> Result<Value, String> {
     open_project_bytes(format!("/projects/{}", file.name()), js_sys::Uint8Array::new(&buf).to_vec()).await
 }
 
-/// Open a `.fcproj` handed over as bytes (a host's `filmcraft:open`) at a virtual `/projects/`
-/// path, like a picked or dropped project: into the file table, then `file.open`.
+/// Open a `.fcproj` / `.prproj` handed over as bytes (a host's `filmcraft:open`) at a virtual
+/// `/projects/` path, like a picked or dropped project: into the file table, then File ▸ Open
+/// (asking Save / Don't Save / Cancel first when the current project has unsaved changes, as on
+/// desktop).
 pub async fn open_project_bytes(path: String, bytes: Vec<u8>) -> Result<Value, String> {
     fs::put(&path, bytes);
-    on_ui(move |w, _| w.app.session.execute("file.open", json!({ "path": path })).map_err(|e| e.to_string())).await
+    on_ui(move |w, ctx| filmcraft_ui_egui::menus::invoke(&mut w.app, ctx, "file.open", json!({ "path": path }))).await
 }
 
 /// Import a file handed over by a host (`filmcraft:open`): registered like a dropped file (a
@@ -165,10 +167,28 @@ pub async fn import_blob(name: String, blob: web_sys::Blob) {
     }
 }
 
-/// Handle files from a picker or a drop: projects open, everything else is imported.
-pub fn take_files(files: Vec<web_sys::File>) {
+/// How [`take_files`] treats `.fcproj` / `.prproj`: File ▸ Open and drops open them; File ▸ Import
+/// always imports into the active project (desktop `file.import` behaviour).
+#[derive(Clone, Copy)]
+pub enum TakeMode {
+    /// Open project files; import everything else.
+    OpenOrImport,
+    /// Import every file, including `.prproj` (never replace the open project).
+    ImportOnly,
+}
+
+fn is_project_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".fcproj") || name.ends_with(".prproj")
+}
+
+/// Handle files from a picker or a drop.
+pub fn take_files(files: Vec<web_sys::File>, mode: TakeMode) {
     wasm_bindgen_futures::spawn_local(async move {
-        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj"));
+        let (projects, media) = match mode {
+            TakeMode::ImportOnly => (Vec::new(), files),
+            TakeMode::OpenOrImport => files.into_iter().partition(|f| is_project_name(&f.name())),
+        };
         for p in projects {
             if let Err(e) = open_project_file(p).await {
                 crate::post(move |w, _| w.app.status(e));
@@ -182,8 +202,8 @@ pub fn take_files(files: Vec<web_sys::File>) {
 
 /// Files a picker returned: imported, or with a relink hint, the first one is registered under
 /// `/files/<name>` and the hint's command runs on it (#111).
-fn picked(files: Vec<web_sys::File>, relink: Option<RelinkHint>) {
-    let Some(hint) = relink else { return take_files(files) };
+fn picked(files: Vec<web_sys::File>, relink: Option<RelinkHint>, mode: TakeMode) {
+    let Some(hint) = relink else { return take_files(files, mode) };
     let Some(f) = files.into_iter().next() else { return };
     wasm_bindgen_futures::spawn_local(async move {
         let path = fs::register_blob(&f.name(), f.clone().into());
@@ -211,12 +231,12 @@ fn has_fsa_picker() -> bool {
 }
 
 /// Let the user pick files: `showOpenFilePicker` when available, else a file input.
-pub fn pick(exts: &[&str], multiple: bool) {
-    pick_then(exts, multiple, None);
+pub fn pick(exts: &[&str], multiple: bool, mode: TakeMode) {
+    pick_then(exts, multiple, None, mode);
 }
 
 /// [`pick`], handing the files to [`picked`]: a cancelled picker leaves nothing pending.
-fn pick_then(exts: &[&str], multiple: bool, relink: Option<RelinkHint>) {
+fn pick_then(exts: &[&str], multiple: bool, relink: Option<RelinkHint>, mode: TakeMode) {
     let accept: Vec<String> = exts.iter().map(|e| format!(".{e}")).collect();
     if has_fsa_picker() {
         let opts = js_sys::Object::new();
@@ -236,7 +256,7 @@ fn pick_then(exts: &[&str], multiple: bool, relink: Option<RelinkHint>) {
                     files.push(f);
                 }
             }
-            picked(files, relink);
+            picked(files, relink, mode);
         });
         return;
     }
@@ -248,7 +268,7 @@ fn pick_then(exts: &[&str], multiple: bool, relink: Option<RelinkHint>) {
     let inp = input.clone();
     let on_change = Closure::<dyn FnMut()>::new(move || {
         if let Some(list) = inp.files() {
-            picked((0..list.length()).filter_map(|i| list.get(i)).collect(), relink.clone());
+            picked((0..list.length()).filter_map(|i| list.get(i)).collect(), relink.clone(), mode);
         }
     });
     input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
@@ -266,7 +286,7 @@ pub fn install_drop_handlers() -> Result<(), JsValue> {
         e.prevent_default();
         e.stop_propagation();
         if let Some(list) = e.data_transfer().and_then(|d| d.files()) {
-            take_files((0..list.length()).filter_map(|i| list.get(i)).collect());
+            take_files((0..list.length()).filter_map(|i| list.get(i)).collect(), TakeMode::OpenOrImport);
         }
     });
     w.add_event_listener_with_callback_and_bool("drop", drop.as_ref().unchecked_ref(), true)?;
@@ -279,24 +299,27 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
     // Pickers are asynchronous: the dialog hook starts the picker and returns nothing; the files
     // are imported when the user has chosen them.
     app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
-        pick(exts, true);
+        pick(exts, true, TakeMode::ImportOnly);
         Vec::new()
     }));
     app.hooks.pick_open_project = Some(Box::new(|| {
-        pick(&["fcproj"], false);
+        pick(&["fcproj", "prproj"], false, TakeMode::OpenOrImport);
         None
     }));
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).
-    app.hooks.pick_save = Some(Box::new(|name: &str| Some(format!("/projects/{name}"))));
+    app.hooks.pick_save = Some(Box::new(|name: &str, _default_ext: &str| Some(format!("/projects/{name}"))));
     app.hooks.pick_save_as = Some(Box::new(|_filter: &str, _exts: &[&str], name: &str| {
-        let file = std::path::Path::new(name).file_name().map_or(name.into(), std::ffi::OsStr::to_string_lossy);
+        // Prefer `.fcproj` so Save As from an open `.prproj` is not locked to Premiere format.
+        let raw = std::path::Path::new(name).file_name().map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned());
+        let file = if let Some(stem) = raw.strip_suffix(".prproj") { format!("{stem}.fcproj") } else { raw };
         Some(format!("/exports/{file}"))
     }));
     // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: the picker is async, so the
     // hint's command runs once the user has chosen (#111).
     app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], hint: Option<RelinkHint>| {
         if hint.is_some() {
-            pick_then(exts, false, hint);
+            // Mode is unused when a relink hint is present.
+            pick_then(exts, false, hint, TakeMode::ImportOnly);
         }
         None
     }));
