@@ -194,7 +194,7 @@ fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near
                 let file = s.media.follow(path).ok()?;
                 std::path::Path::new(&file).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned())
             }
-            MediaRef::Generator(_) => None,
+            MediaRef::Generator(_) | MediaRef::Components { .. } => None,
         },
         _ => None,
     });

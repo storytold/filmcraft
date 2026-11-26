@@ -393,7 +393,7 @@ fn from_generator(g: &shared::Generator) -> filmcraft_media::Generator {
         shared::Generator::Other { data, .. } => serde_json::from_str(data).unwrap_or(F::BlackVideo),
     }
 }
-fn to_media(m: &film::MediaClip) -> Result<shared::MediaClip, serde_json::Error> {
+fn to_media(m: &film::MediaClip) -> Result<shared::ItemKind, serde_json::Error> {
     use filmcraft_media::MediaKind as F;
     let info = &m.info;
     let kind = match info.kind {
@@ -404,10 +404,14 @@ fn to_media(m: &film::MediaClip) -> Result<shared::MediaClip, serde_json::Error>
         F::Synthetic => shared::MediaKind::Synthetic,
     };
     let media = match &m.media {
+        film::MediaRef::Components { .. } => {
+            let (width, height) = info.video.as_ref().map_or((0, 0), |video| (video.width, video.height));
+            return Ok(shared::ItemKind::Uncarried { what: "multi-file MXF media".into(), width, height, rate: m.frame_rate(), duration: info.duration });
+        }
         film::MediaRef::File { path } => shared::MediaRef::File { path: path.clone() },
         film::MediaRef::Generator(g) => shared::MediaRef::Generator(to_generator(g)?),
     };
-    Ok(shared::MediaClip {
+    Ok(shared::ItemKind::Media(Box::new(shared::MediaClip {
         media,
         info: shared::MediaInfo {
             name: info.name.clone(),
@@ -424,7 +428,7 @@ fn to_media(m: &film::MediaClip) -> Result<shared::MediaClip, serde_json::Error>
         interpret_frame_rate: m.interpret.frame_rate,
         markers: m.markers.iter().map(to_marker).collect::<Result<_, _>>()?,
         offline: m.offline,
-    })
+    })))
 }
 fn from_media(m: &shared::MediaClip, ext: &shared::Ext) -> Result<film::MediaClip, serde_json::Error> {
     let media = match &m.media {
@@ -524,9 +528,7 @@ fn to_project(project: &film::Project, root: film::ItemId) -> Result<shared::Pro
             _ => {}
         }
         let (kind, ext) = match &item.kind {
-            film::ItemKind::Media(m) => {
-                (shared::ItemKind::Media(Box::new(to_media(m)?)), serde_json::json!({"filmcraft_info":m.info,"custom_label_color":item.custom_label_color}))
-            }
+            film::ItemKind::Media(m) => (to_media(m)?, serde_json::json!({"filmcraft_info":m.info,"custom_label_color":item.custom_label_color})),
             film::ItemKind::Sequence(seq) => (
                 shared::ItemKind::Sequence(Box::new(to_sequence(seq)?)),
                 serde_json::json!({"filmcraft_settings":seq.settings,"custom_label_color":item.custom_label_color,"master_volume_db":seq.master_volume_db,"master_effects":seq.master_effects,"custom_colors":project.custom_colors,"custom_color_names":project.custom_color_names}),

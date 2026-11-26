@@ -53,6 +53,7 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 cpu-time = "1"
 
 [dev-dependencies]
+craft-media = { workspace = true, features = ["mxf"] }
 pollster = "1"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-codecs = { workspace = true }

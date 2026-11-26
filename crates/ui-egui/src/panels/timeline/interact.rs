@@ -656,6 +656,7 @@ fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 Drag::Volume(v) if v.changed() => {
                     let _ = app.session.execute("edit.undo", json!({}));
                 }
+                Drag::Volume(_) => {}
                 Drag::Pan { start_scroll, start_v, start_a, .. } => {
                     let v = &mut app.ui.timeline;
                     v.target_scroll = start_scroll;

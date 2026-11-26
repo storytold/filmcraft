@@ -12,10 +12,21 @@
 
 pub mod aaf_omf;
 pub mod autosave;
+pub mod avid_audio;
+mod avid_bin;
+mod avid_bin_import;
+pub mod avid_catalog;
+mod avid_offline;
+mod avid_sequence;
 pub mod captions;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod component_audio;
+mod component_media;
+#[cfg(test)]
+mod component_media_tests;
+pub mod component_relink;
 pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;
@@ -565,6 +576,8 @@ pub struct Session {
     pub shortcuts: shortcuts::Shortcuts,
     /// Missing / offline media found by the last scan (Link Media dialog).
     pub offline: relink::OfflineState,
+    pub avid_bin_preparation: Option<avid_bin_import::Preparation>,
+    pub component_search: Option<component_relink::SearchJob>,
     /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
@@ -677,6 +690,8 @@ impl Session {
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
+            avid_bin_preparation: None,
+            component_search: None,
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
@@ -1563,3 +1578,10 @@ mod private_temp_dir_tests {
         assert_eq!(d, super::private_temp_dir().unwrap());
     }
 }
+#[cfg(test)]
+mod avid_catalog_tests;
+#[cfg(test)]
+mod avid_import_tests;
+
+#[cfg(test)]
+mod component_audio_tests;

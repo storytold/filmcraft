@@ -41,6 +41,9 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: camera raw source settings.
+//! - **v19**: independently identified MXF audio and picture components, stable logical channel
+//!   slots, and pending verification for offline picture bindings. Reads earlier audio-only references.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -184,7 +187,22 @@ mod tests {
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 19);
+    }
+
+    #[test]
+    fn legacy_picture_binding_defaults_to_verified_and_pending_roundtrips() {
+        let legacy = serde_json::json!({"track":1,"file_package":vec![0;32],"path":"/picture.mxf","source_start":0,"length":100});
+        let mut picture: filmcraft_project::PictureComponent = serde_json::from_value(legacy).unwrap();
+        assert!(!picture.format_pending);
+        picture.format_pending = true;
+        let decoded: filmcraft_project::PictureComponent = serde_json::from_slice(&serde_json::to_vec(&picture).unwrap()).unwrap();
+        assert!(decoded.format_pending);
+        let mut doc: Value = serde_json::from_slice(&encode(&Project::new("Legacy 17"), false)).unwrap();
+        doc["schema_version"] = Value::from(17);
+        let loaded = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(loaded.migrated());
+        assert_eq!(loaded.project.name, "Legacy 17");
     }
 
     #[test]

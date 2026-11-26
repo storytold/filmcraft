@@ -668,3 +668,34 @@ fn relative_target_urls_are_percent_decoded() {
     let clip = &p.sequence(imp.sequences[0]).unwrap().video_tracks[0].items[0];
     assert_eq!(media_key(p, clip.item), "/proj/media/Clip A.mov");
 }
+
+#[test]
+fn component_clip_keeps_its_cut_and_reports_missing_media() {
+    let rate = FrameRate::FPS_24;
+    let mut project = Project::new("Components");
+    let seq = sequence(&mut project, "Cut", rate, false);
+    let id = media(&mut project, "interview.mxf", false, true, rate);
+    let m = project.item_mut(id).unwrap().as_media_mut().unwrap();
+    let audio = filmcraft_project::AudioComponent {
+        track: 1,
+        file_package: [7; 32],
+        path: Some("/originals/left-channel.mxf".into()),
+        stream: 0,
+        channel: 0,
+        source_start: Tick::ZERO,
+        length: m.info.duration,
+    };
+    m.media = MediaRef::Components { channels: vec![audio], picture: None };
+    clip(&mut project, seq, TrackKind::Audio, 0, id, 12..36, 4);
+    let (bytes, report) = filmcraft_interchange::export(&project, seq, Format::Otio, &ExportOptions::default()).unwrap();
+    assert!(report.warnings().any(|w| w.message.contains("multi-file MXF media")));
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let audio_track =
+        doc["tracks"]["children"].as_array().unwrap().iter().find(|t| t["kind"] == "Audio" && !t["children"].as_array().unwrap().is_empty()).unwrap();
+    let cut = audio_track["children"].as_array().unwrap().iter().find(|c| c["OTIO_SCHEMA"] == "Clip.2").unwrap();
+    assert_eq!(cut["media_references"]["DEFAULT_MEDIA"]["OTIO_SCHEMA"], "MissingReference.1");
+    let reopened = filmcraft_interchange::import(&bytes, Format::Otio, None).unwrap().0;
+    let tracks = structure(&reopened.project, only_seq(&reopened), TrackKind::Audio);
+    let cut = &tracks[0].clips[0];
+    assert_eq!((cut.start, cut.dur, cut.src), (rate.tick_of(12), rate.tick_of(24), rate.tick_of(4)));
+}
