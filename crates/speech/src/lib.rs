@@ -11,6 +11,9 @@
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
+//! - [`stream`]: live recognition while audio is captured ([`stream::StreamingRecognizer`]): a
+//!   rolling window over any [`Transcriber`] with local agreement, and a scripted recogniser for
+//!   tests. [`resample`] converts captured audio to 16 kHz as it arrives.
 //!
 //! See `docs/transcripts.md` for the user-facing behaviour and accuracy numbers.
 
@@ -19,6 +22,8 @@
 pub mod diarize;
 pub mod mel;
 pub mod models;
+pub mod resample;
+pub mod stream;
 pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
