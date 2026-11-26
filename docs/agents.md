@@ -238,13 +238,14 @@ Notes:
 ## 2b. Command-line interface
 
 Every command is also one shell call away. Options go anywhere; output is JSON; exit status is 0 on
-success, 1 when a command fails and 2 on a usage error. `filmcraft-cli help`, `filmcraft-cli --help`
+success, 1 when a command fails and 2 on a usage error, or 128 plus the signal number when a signal
+ends the process (130 for Ctrl-C). `filmcraft-cli help`, `filmcraft-cli --help`
 and `filmcraft-cli -h` print the reference and exit successfully.
 If the reader of stdout closes the pipe early (`filmcraft-cli commands | head`), the CLI drops the rest
 of its output but still finishes the work, saves included, and the exit status still reports
 failures; any other stdout write error is reported and makes the status 1.
 
-Follows [RFC-0018](https://github.com/storytold/craft-contrib/pull/18). `--version` and `-V` work on
+Follows [RFC-0018](https://github.com/storytold/craft-contrib/blob/main/rfcs/0018-cli-conventions.md). `--version` and `-V` work on
 every subcommand (`filmcraft-cli export --version`), and `filmcraft-cli --launch-profile …` and
 `--profile-root …` (the desktop app's Launcher protocol) are refused with exit 2. The Linux and
 FreeBSD packages install the man pages and shell completions that

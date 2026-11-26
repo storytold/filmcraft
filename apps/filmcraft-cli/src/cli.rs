@@ -35,7 +35,9 @@ const EXIT_STATUS: &str = "\
 Exit status:
   0  success
   1  a command failed, or export/render drew offline media without --allow-offline
-  2  usage error";
+  2  usage error
+
+A process ended by a signal exits 128 + the signal number (130 for Ctrl-C), as in the shell.";
 
 /// Parse the command line (program name first). A bare `--help` or `-h` is help even after a
 /// mistake on the same line (`export o.wav --quality 101 --help`): clap would report the mistake.
