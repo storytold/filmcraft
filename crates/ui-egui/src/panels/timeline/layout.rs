@@ -61,12 +61,22 @@ impl Layout {
     }
 }
 
-/// #483: where a drop at `y` adds a track: the empty space above the top video track (a video
-/// track) or below the last audio track (an audio track). The HIT test is generous -- anywhere
-/// above the video rows or below the audio rows counts, caption strip and Mix row included (the
-/// visible gap is only a third of a track and was finicky to hit) -- while the band it returns is
-/// clamped to the real space for the new row. Never over a track itself.
-pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah: f32) -> Option<(TrackKind, Rect)> {
+/// #483: where a drop adds a track: the empty space above the top video track or below the last
+/// audio track. Vertical overflow is intentional: dragging beyond the Timeline window creates an
+/// outer track, including when the pointer is over an adjacent panel. The new track stays aligned
+/// to the Timeline's content width.
+pub(super) fn new_track_at(
+    seq: &Sequence,
+    layout: &Layout,
+    pointer: egui::Pos2,
+    vh: f32,
+    ah: f32,
+    dragged_kind: Option<TrackKind>,
+) -> Option<(TrackKind, Rect)> {
+    let y = pointer.y;
+    if !pointer.x.is_finite() || !y.is_finite() {
+        return None;
+    }
     if layout.row_at(y).is_some() {
         return None;
     }
@@ -76,16 +86,43 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
         (y0.is_finite() && y1.is_finite() && y1 > y0 && layout.content.max.x > layout.content.min.x)
             .then(|| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1)))
     };
+    // A moved clip keeps its media kind when it is dragged past either vertical edge. This
+    // preserves the outer-track gesture even when, for example, a video clip is below the pane.
+    if let Some(kind) = dragged_kind.filter(|_| y < layout.content.min.y || y >= layout.content.max.y) {
+        return match kind {
+            TrackKind::Video => {
+                let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
+                band(top - vh, top).map(|rect| (kind, rect))
+            }
+            TrackKind::Audio => {
+                let bottom = layout
+                    .rows
+                    .iter()
+                    .filter(|r| r.kind == TrackKind::Audio)
+                    .map(|r| layout.shown(r))
+                    .filter(|r| r.height() > 0.0)
+                    .map(|r| r.max.y)
+                    .fold(layout.split_y + DIVIDER_H, f32::max);
+                band(bottom, bottom + ah).map(|rect| (kind, rect))
+            }
+        };
+    }
     if y < layout.split_y {
         let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
-        // ANYWHERE above the top video row counts -- over the ruler, or outside the Timeline's
-        // own rect entirely (a clip dragged above the window wants a new track too)
+        // Empty space above the top video row, including the ruler, counts.
         if y < top { band((top - vh).max(tracks_top), top).map(|rect| (TrackKind::Video, rect)) } else { None }
     } else {
-        let bottom = layout.rows.iter().filter(|r| r.kind == TrackKind::Audio).map(|r| r.rect.max.y).fold(layout.split_y + DIVIDER_H, f32::max);
-        let mix = layout.content.max.y - MASTER_H;
-        // anywhere below the last audio row counts, Mix row and past the window's edge included
-        if y >= bottom { band(bottom, (bottom + ah).min(mix)).map(|rect| (TrackKind::Audio, rect)) } else { None }
+        let bottom = layout
+            .rows
+            .iter()
+            .filter(|r| r.kind == TrackKind::Audio)
+            .map(|r| layout.shown(r))
+            .filter(|r| r.height() > 0.0)
+            .map(|r| r.max.y)
+            .fold(layout.split_y + DIVIDER_H, f32::max);
+        // Empty space below the last visible audio row counts, including vertical overflow past
+        // the Timeline pane. The engine creates the track; this band only previews its destination.
+        if y >= bottom { band(bottom, bottom + ah).map(|rect| (TrackKind::Audio, rect)) } else { None }
     }
 }
 
@@ -143,6 +180,7 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let ph = app.session.playhead().seconds();
     let v = &mut app.ui.timeline;
     if let Some(scroll) = scroll_to_reveal(ph, v.target_scroll, v.target_pps, f64::from(app.last_timeline_width)) {
+        app.tl.playback_auto_scroll = None;
         v.scroll = scroll;
         v.target_scroll = scroll;
         app.tl.zoom_anchor = None;
@@ -218,7 +256,53 @@ mod track_scroll_tests {
         let layout = Layout { content, ruler: content, rows: vec![row], pps: 100.0, scroll: 0.0, split_y: 250.0, v_scroll: 0.0, a_scroll: 0.0 };
 
         assert!(layout.row_at(100.0).is_none());
-        assert!(new_track_at(sequence, &layout, 100.0, 100.0, 60.0).is_none());
+        assert!(new_track_at(sequence, &layout, pos2(400.0, 100.0), 100.0, 60.0, None).is_none());
+    }
+
+    #[test]
+    fn new_track_targets_allow_vertical_overflow_even_over_adjacent_panels() {
+        let mut project = filmcraft_project::Project::new("track drop bounds");
+        let id = project.new_sequence("Sequence", filmcraft_project::SequenceSettings::default(), 1, 1, None);
+        let sequence = project.sequence(id).expect("the fixture sequence exists");
+        let content = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 600.0));
+        let ruler = Rect::from_min_max(pos2(100.0, 60.0), pos2(900.0, 100.0));
+        let layout = Layout {
+            content,
+            ruler,
+            rows: vec![
+                Row {
+                    track: sequence.video_tracks[0].id,
+                    kind: TrackKind::Video,
+                    index: 0,
+                    rect: Rect::from_min_max(pos2(100.0, 450.0), pos2(900.0, 500.0)),
+                    lane: false,
+                },
+                Row {
+                    track: sequence.audio_tracks[0].id,
+                    kind: TrackKind::Audio,
+                    index: 0,
+                    rect: Rect::from_min_max(pos2(100.0, 505.0), pos2(900.0, 555.0)),
+                    lane: false,
+                },
+            ],
+            pps: 100.0,
+            scroll: 0.0,
+            split_y: 500.0,
+            v_scroll: 0.0,
+            a_scroll: 0.0,
+        };
+
+        assert!(new_track_at(sequence, &layout, pos2(500.0, 70.0), 50.0, 50.0, None).is_some(), "the Timeline ruler remains a valid video drop region");
+        assert!(new_track_at(sequence, &layout, pos2(500.0, 580.0), 50.0, 50.0, None).is_some(), "the Mix row remains a valid audio drop region");
+        assert!(new_track_at(sequence, &layout, pos2(500.0, 20.0), 50.0, 50.0, None).is_some(), "a drop above the Timeline adds a video track");
+        assert!(new_track_at(sequence, &layout, pos2(500.0, 700.0), 50.0, 50.0, None).is_some(), "a drop below the Timeline adds an audio track");
+        assert!(new_track_at(sequence, &layout, pos2(50.0, 20.0), 50.0, 50.0, None).is_some(), "a drop above the Timeline works over the left panel");
+        assert!(new_track_at(sequence, &layout, pos2(950.0, 700.0), 50.0, 50.0, None).is_some(), "a drop below the Timeline works over the right panel");
+        assert_eq!(new_track_at(sequence, &layout, pos2(500.0, 20.0), 50.0, 50.0, Some(TrackKind::Audio)).map(|target| target.0), Some(TrackKind::Audio));
+        assert_eq!(new_track_at(sequence, &layout, pos2(500.0, 700.0), 50.0, 50.0, Some(TrackKind::Video)).map(|target| target.0), Some(TrackKind::Video));
+        for outside in [pos2(50.0, 480.0), pos2(950.0, 480.0)] {
+            assert!(new_track_at(sequence, &layout, outside, 50.0, 50.0, None).is_none(), "outside point {outside:?} cannot add a track");
+        }
     }
 }
 

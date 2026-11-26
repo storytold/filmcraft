@@ -1,7 +1,9 @@
 use super::super::layout::{max_pps, timeline_extent};
 use super::{
-    CursorIcon, Drag, FilmcraftApp, MIN_THUMB_W, Pos2, Rect, Sense, Sequence, Tokens, alternate_down, controls_capturing, family_contains, gesture, pos2,
-    release_slider_cursor, shift_drag_rate, slider_action_triggered, vec2, zoom_trigger_key, zoombar_state_reset,
+    Align2, CONTROLS_FLYOUT_W, Color32, CursorIcon, Drag, FilmcraftApp, HotNumberOptions, MIN_THUMB_W, Pos2, Rect, Sense, Sequence, Tokens, alternate_down,
+    controls_arrow, controls_capturing, family_contains, family_reset, flush_pending_zoombar_view_change, gesture, hot_number_numeric, hover_flyout,
+    last_custom_value, pill_switch, pos2, release_slider_cursor, set_zoombar_hidden, setting_hint, settings_heading, shift_drag_rate, slider_action_triggered,
+    tick_slider, uses_default_gesture, vec2, zoom_trigger_key, zoombar_state_reset,
 };
 
 const ZOOM_SHIFT_THUMB_RATE: f64 = 0.06;
@@ -83,6 +85,334 @@ pub(super) fn zoombar_popup_open_key() -> egui::Id {
 // one section per setting keeps the popup's rows in visual order; splitting the function would
 // scatter the popup's layout over the file
 #[allow(clippy::cognitive_complexity)]
+pub(super) fn zoombar_settings_rows(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    mut track_row: impl FnMut(&mut crate::automation::Registry, &mut egui::Ui, &mut filmcraft_project::TimelineUiSettings, f32, &Tokens) -> bool,
+    mut extra_rows: impl FnMut(&mut crate::automation::Registry, &mut egui::Ui, &mut filmcraft_project::TimelineUiSettings, f32, f32, &Tokens) -> bool,
+) {
+    /// The settings popup's inner content width. Fixed, never derived from the frame's layout, so
+    /// widgets measure identically on the popup's first frame and forever after (a first-frame
+    /// mismatch is what made the popup jitter).
+    const CONTENT_W: f32 = 257.4;
+    ui.set_max_width(CONTENT_W + 16.0);
+    let mut changed = false;
+    family_reset(ui);
+    let content_w = CONTENT_W.min(ui.available_width());
+
+    // The very top row: Hide Slider (red) while the bar is showing -- pressing it hides the bar at
+    // once and takes this popup with it, and the window that follows only tells the user how to
+    // bring the bar back. While the bar is hidden (this popup opened from the Timeline's own menu)
+    // the row is a BLUE Unhide Slider instead; that one never exists in the bar's own popup.
+    // The popup's content right edge (the row spans the whole content width) -- the Minimap flyout
+    // is placed beside the popup, so it needs to know where the popup ends.
+    let hidden = app.session.state.timeline_ui.zoom_bar_hidden;
+    let mut content_right = 0.0f32;
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        let row_w = ui.available_width();
+        let (r, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::click());
+        content_right = r.max.x;
+        let hide_resp =
+            ui.interact(r, egui::Id::unique(if hidden { "timeline-zoombar-unhide-slider" } else { "timeline-zoombar-hide-slider" }), Sense::click());
+        if hide_resp.hovered() {
+            ui.painter().rect_filled(r, 4.0, app.tokens.switch_border.gamma_multiply(0.35));
+        }
+        let (label, color) = if hidden { (tl!("Unhide Slider"), app.tokens.accent) } else { (tl!("Hide Slider"), Color32::from_rgb(0xf8, 0x7e, 0x7a)) };
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), color);
+        app.auto.add(if hidden { "timeline.zoomBar.settings.unhideSlider" } else { "timeline.zoomBar.settings.hideSlider" }, r, label);
+        if hide_resp.clicked() {
+            set_zoombar_hidden(app, ui.ctx(), !hidden);
+            if hidden {
+                app.tl.zoombar_settings_pos = None;
+            } else {
+                app.tl.zoombar_hide_dialog_open = true;
+            }
+            ui.close();
+            ui.ctx().request_repaint();
+        }
+    });
+    // "Controls": not a switch -- a list of the slider's gestures, in a flyout beside the menu
+    // (the Minimap Settings flyout's exact recipe). The text centers like Hide Slider's; the
+    // arrow stays where it was.
+    let full_w = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(egui::vec2(full_w, 30.0), Sense::hover());
+    let label = tl!("Controls");
+    let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), app.tokens.text);
+    ui.painter().galley(pos2(row.center().x - galley.size().x / 2.0, row.center().y - galley.size().y / 2.0), galley, app.tokens.text);
+    // the arrow points at whichever side the flyout fits on, the same distance from that wall
+    app.auto.add("timeline.zoomBar.settings.controls", row, "Controls");
+    let controls_right = hover_flyout(
+        app,
+        ui,
+        egui::Id::unique("timeline-zoombar-advanced-flyout"),
+        row,
+        content_right,
+        CONTROLS_FLYOUT_W,
+        true,
+        super::zoom_controls_profile(),
+        "timeline.zoomBar.settings.controlsFlyout",
+        "Controls",
+        &[
+            (tl!("Center on Playhead:"), "Double Click", 0),
+            (tl!("Explode Slider:"), "Triple Click", 1),
+            (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
+            (tl!("Fast Timeline Scroll:"), "Unbound", 5),
+            (tl!("Zoom Timeline:"), "Alt + Scroll", 7),
+            (tl!("Zoom In:"), "+", 8),
+            (tl!("Zoom Out:"), "-", 10),
+        ],
+    );
+    controls_arrow(ui, row, content_w, content_right, controls_right, app.tokens.text_dim);
+    let settings = &mut app.session.state.timeline_ui;
+
+    // Smooth Animations: a centered pill switch (left) + label group instead of a checkbox
+    let (row, _) = ui.allocate_exact_size(egui::vec2(content_w, 30.0), Sense::hover());
+    let t = &app.tokens;
+    let label = tl!("Smooth Animations");
+    let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), t.text);
+    let sw_w = 34.0;
+    let group_w = sw_w + 10.0 + galley.size().x;
+    let x0 = row.min.x + ((content_w - group_w) / 2.0).max(0.0);
+    let sw = Rect::from_min_size(pos2(x0, row.center().y - 8.0), egui::vec2(sw_w, 16.0));
+    let c = pill_switch(ui, sw, settings.smooth_animations, t, egui::Id::unique("timeline-zoombar-smooth"), tl!("Smooth Animations"));
+    ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, t.text);
+    app.auto.add("timeline.zoomBar.settings.smoothAnimations", c.rect, tl!("Smooth Animations"));
+    setting_hint(ui, row, tl!("The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled."));
+    if c.clicked() {
+        settings.smooth_animations = !settings.smooth_animations;
+        changed = true;
+    }
+    // Inverted Controls: the wheel over the tracks scrolls the Timeline the other way in time,
+    // and the wheel while grabbing the slider's middle zooms the other way
+    let (row, _) = ui.allocate_exact_size(egui::vec2(content_w, 30.0), Sense::hover());
+    let label = tl!("Invert Scrolling");
+    let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), t.text);
+    let group_w = sw_w + 10.0 + galley.size().x;
+    let x0 = row.min.x + ((content_w - group_w) / 2.0).max(0.0);
+    let sw = Rect::from_min_size(pos2(x0, row.center().y - 8.0), egui::vec2(sw_w, 16.0));
+    let c = pill_switch(ui, sw, settings.inverted_controls, t, egui::Id::unique("timeline-zoombar-inverted"), tl!("Invert Scrolling"));
+    ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, t.text);
+    app.auto.add("timeline.zoomBar.settings.invertedControls", c.rect, tl!("Invert Scrolling"));
+    setting_hint(ui, row, tl!("Reverses timeline scrolling and zooming when holding the center of the slider."));
+    if c.clicked() {
+        settings.inverted_controls = !settings.inverted_controls;
+        changed = true;
+    }
+    changed |= track_row(&mut app.auto, ui, settings, content_w, t);
+    // Playhead Centering: same centered pill switch + label group as the row above it
+    let (row, _) = ui.allocate_exact_size(egui::vec2(content_w, 30.0), Sense::hover());
+    let label = tl!("Playhead Centering");
+    let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), t.text);
+    let group_w = sw_w + 10.0 + galley.size().x;
+    let x0 = row.min.x + ((content_w - group_w) / 2.0).max(0.0);
+    let sw = Rect::from_min_size(pos2(x0, row.center().y - 8.0), egui::vec2(sw_w, 16.0));
+    let c = pill_switch(ui, sw, settings.playhead_centering, t, egui::Id::unique("timeline-zoombar-center"), tl!("Playhead Centering"));
+    ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, t.text);
+    app.auto.add("timeline.zoomBar.settings.playheadCentering", c.rect, tl!("Playhead Centering"));
+    setting_hint(ui, row, tl!("When the playhead enters the visible timeline, zooming in gravitates the view toward it."));
+    if c.clicked() {
+        settings.playhead_centering = !settings.playhead_centering;
+        if !settings.playhead_centering {
+            app.tl.playhead_captured = false;
+            app.tl.playhead_capture_vis = 0.0;
+        }
+        changed = true;
+    }
+    // Alternate Slider Position: same centered pill switch + label group as the rows above it
+    let (row, _) = ui.allocate_exact_size(egui::vec2(content_w, 30.0), Sense::hover());
+    let label = tl!("Alternate Slider Position");
+    let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), t.text);
+    let group_w = sw_w + 10.0 + galley.size().x;
+    let x0 = row.min.x + ((content_w - group_w) / 2.0).max(0.0);
+    let sw = Rect::from_min_size(pos2(x0, row.center().y - 8.0), egui::vec2(sw_w, 16.0));
+    let c = pill_switch(ui, sw, settings.alternate_slider_position, t, egui::Id::unique("timeline-zoombar-alternate"), tl!("Alternate Slider Position"));
+    ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, t.text);
+    app.auto.add("timeline.zoomBar.settings.alternateSliderPosition", c.rect, tl!("Alternate Slider Position"));
+    setting_hint(ui, row, tl!("Moves the timeline slider to the top."));
+    if c.clicked() {
+        settings.alternate_slider_position = !settings.alternate_slider_position;
+        changed = true;
+    }
+    ui.separator();
+    // Maximum Zoom Level: the smallest view the zoom bar may collapse to
+    settings_heading(ui, t, tl!("Maximum Zoom Level"), tl!("Sets the maximum amount you can zoom in."));
+    let zoom_presets = [0.1, 0.2, 0.4, 0.8];
+    let mut zoom_choice =
+        if settings.max_zoom_custom { 4 } else { zoom_presets.iter().position(|v| (*v - settings.max_zoom_seconds).abs() < f64::EPSILON).unwrap_or(2) };
+    let zoom_labels = [tl!("Closest"), tl!("Close"), tl!("Default"), tl!("Far"), tl!("Custom")];
+    let (r, moved) = ui
+        .allocate_ui_with_layout(egui::vec2(content_w, 46.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            tick_slider(ui, &mut zoom_choice, &zoom_labels, &app.tokens)
+        })
+        .inner;
+    changed |= moved;
+    app.auto.add("timeline.zoomBar.settings.maxZoomLevel.slider", r.rect, "Maximum zoom level");
+    if moved {
+        match zoom_choice {
+            0..=3 => {
+                settings.max_zoom_seconds = zoom_presets[zoom_choice];
+                settings.max_zoom_custom = false;
+            }
+            _ => {
+                // Custom again: restore the last custom value, never reset it to a default
+                if !settings.max_zoom_custom {
+                    settings.max_zoom_seconds = if settings.max_zoom_last_custom.is_finite() { settings.max_zoom_last_custom.clamp(0.05, 3.0) } else { 0.4 };
+                }
+                settings.max_zoom_custom = true;
+            }
+        }
+    }
+    // A constant, always-visible and editable value row, centered like the sliders. It keeps the
+    // popup's height fixed, so the layout is identical on the popup's first frame and forever after.
+    ui.allocate_ui_with_layout(egui::vec2(content_w, 24.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.add_sized(egui::vec2(46.0, 18.0), egui::Label::new(tl!("Value:")).wrap());
+        let (response, value) = hot_number_numeric(
+            ui,
+            tl!("Maximum zoom level in seconds"),
+            egui::Id::unique("timeline-zoombar-max-zoom"),
+            settings.max_zoom_seconds,
+            HotNumberOptions::new(0.05, (0.05, 3.0), 2, "s", &app.tokens),
+        );
+        app.auto.add("timeline.zoomBar.settings.maxZoomLevel", response.rect, "Maximum zoom level in seconds");
+        if let Some(value) = value {
+            settings.max_zoom_seconds = value;
+            settings.max_zoom_last_custom = value;
+            settings.max_zoom_custom = true;
+            changed = true;
+        }
+    });
+    // `timeline::show` applies the new ceiling after measuring this frame's content width. This
+    // popup runs before that measurement, so clamping here could shrink zoom using stale geometry.
+    ui.separator();
+    // Alternate Drag Speed first
+    // the gesture is part of the heading only while it is still the way to do it: a Controls
+    // rebinding makes it disappear
+    let alt_speed_label = if uses_default_gesture(&settings.control_alternate_drag_speed, "Shift + Drag") {
+        tl!("Alternate Drag Speed (Shift + Drag)")
+    } else {
+        tl!("Alternate Drag Speed")
+    };
+    settings_heading(ui, t, alt_speed_label, tl!("Mimics the feature in Blender. A high multiplier can make it faster than dragging normally."));
+    let speed_presets = [0.25, 0.5, 1.0, 2.0];
+    let mut speed_choice =
+        if settings.shift_drag_custom { 4 } else { speed_presets.iter().position(|v| (*v - settings.shift_drag_speed).abs() < f64::EPSILON).unwrap_or(3) };
+    let speed_labels = [tl!("Very Slow"), tl!("Slow"), tl!("Default"), tl!("Fast"), tl!("Custom")];
+    let (r, moved) = ui
+        .allocate_ui_with_layout(egui::vec2(content_w, 46.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            tick_slider(ui, &mut speed_choice, &speed_labels, &app.tokens)
+        })
+        .inner;
+    changed |= moved;
+    app.auto.add("timeline.zoomBar.settings.shiftDragSpeed.slider", r.rect, "Alternate drag speed");
+    if moved {
+        match speed_choice {
+            0..=3 => {
+                settings.shift_drag_speed = speed_presets[speed_choice];
+                settings.shift_drag_custom = false;
+            }
+            _ => {
+                // Custom again: restore the last custom value, never reset it to a default
+                if !settings.shift_drag_custom {
+                    settings.shift_drag_speed = last_custom_value(settings.shift_drag_last_custom, 50.0);
+                }
+                settings.shift_drag_custom = true;
+            }
+        }
+    }
+    // A constant, always-visible and editable value row, centered like the sliders. It keeps the
+    // popup's height fixed, so the layout is identical on the popup's first frame and forever
+    // after (a first-frame mismatch is what made the popup jitter).
+    ui.allocate_ui_with_layout(egui::vec2(content_w, 24.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.add_sized(egui::vec2(46.0, 18.0), egui::Label::new(tl!("Value:")).wrap());
+        let (response, value) = hot_number_numeric(
+            ui,
+            tl!("Alternate drag speed multiplier"),
+            egui::Id::unique("timeline-zoombar-shift-speed"),
+            settings.shift_drag_speed,
+            HotNumberOptions::new(0.1, (0.1, 50.0), 1, "x", &app.tokens),
+        );
+        app.auto.add("timeline.zoomBar.settings.shiftDragSpeed", response.rect, "Alternate drag speed multiplier");
+        if let Some(value) = value {
+            settings.shift_drag_speed = value;
+            settings.shift_drag_last_custom = value;
+            settings.shift_drag_custom = true;
+            changed = true;
+        }
+    });
+    ui.separator();
+    // Playhead Centering Range second
+    let playhead_range_label = if uses_default_gesture(&settings.control_center_on_playhead, "Double Click") {
+        tl!("Playhead Centering Range (Double Click)")
+    } else {
+        tl!("Playhead Centering Range")
+    };
+    settings_heading(ui, t, playhead_range_label, tl!("Sets how much of the timeline is visible on each side of the playhead."));
+    let mut range_choice = if settings.playhead_side_custom {
+        4
+    } else {
+        [3.0, 5.0, 10.0, 30.0].iter().position(|v| (*v - settings.playhead_side_seconds).abs() < f64::EPSILON).unwrap_or(2)
+    };
+    let range_labels = [tl!("3s"), tl!("5s"), tl!("10s"), tl!("30s"), tl!("Custom")];
+    let (r, moved) = ui
+        .allocate_ui_with_layout(egui::vec2(content_w, 46.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            tick_slider(ui, &mut range_choice, &range_labels, &app.tokens)
+        })
+        .inner;
+    changed |= moved;
+    app.auto.add("timeline.zoomBar.settings.playheadSideSeconds.slider", r.rect, "Playhead centering range");
+    if moved {
+        match range_choice {
+            0..=3 => {
+                settings.playhead_side_seconds = [3.0, 5.0, 10.0, 30.0][range_choice];
+                settings.playhead_side_custom = false;
+            }
+            _ => {
+                // Custom again: restore the last custom value, never reset it to a default
+                if !settings.playhead_side_custom {
+                    settings.playhead_side_seconds = last_custom_value(settings.playhead_side_last_custom, 3600.0);
+                }
+                settings.playhead_side_custom = true;
+            }
+        }
+    }
+    // A constant, always-visible and editable value row, centered like the sliders, so the popup
+    // never resizes.
+    ui.allocate_ui_with_layout(egui::vec2(content_w, 24.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.add_sized(egui::vec2(46.0, 18.0), egui::Label::new(tl!("Value:")).wrap());
+        let (response, value) = hot_number_numeric(
+            ui,
+            tl!("Playhead centering range in seconds"),
+            egui::Id::unique("timeline-zoombar-side"),
+            settings.playhead_side_seconds,
+            HotNumberOptions::new(0.1, (0.1, 3600.0), 1, "s", &app.tokens),
+        );
+        app.auto.add("timeline.zoomBar.settings.playheadSideSeconds", response.rect, "Playhead centering range in seconds");
+        if let Some(value) = value {
+            settings.playhead_side_seconds = value;
+            settings.playhead_side_last_custom = value;
+            settings.playhead_side_custom = true;
+            changed = true;
+        }
+    });
+    changed |= extra_rows(&mut app.auto, ui, settings, content_w, content_right, t);
+    if changed {
+        // the colour wheel and the number fields report every frame of a drag: remember the
+        // change, but bump the (cache-invalidating) revision only once the gesture ends
+        ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-zoombar-view-pending"), true));
+    }
+    flush_pending_zoombar_view_change(app, ui.ctx());
+}
+
+/// A pill on/off switch for the zoom-bar settings popup: red while off, the accent blue while on.
+/// How far a Shift drag on the zoom bar moves the view per point of pointer motion, as a fraction
+/// of an ordinary 1:1 drag. Tuned by feel -- log-interpolated between fixed points: one frame of
+/// footage in view -> 0.00025 (per-pixel nudges at the tightest zoom), one second -> 0.00575,
+/// 10 seconds -> 1/50, one minute -> 0.115, and fitting the whole Timeline -> 0.75. Narrow views get
+/// frame-level precision, wide ones sweep quickly. One curve instead of the old
+/// Auto-percent-times-multiplier stack: the Alternate Drag Speed setting still multiplies on top.
 fn shift_drag_base(visible_seconds: f64, full_view_seconds: f64, frame_seconds: f64) -> f64 {
     /// multiplier of 1:1 at each fixed point (see the function docs)
     const AT_FRAME: f64 = 0.00025;
@@ -611,6 +941,7 @@ pub(in crate::panels::timeline) fn zoom_scrollbar_with_layers(
             ((p.x - circle_l).abs() <= CIRCLE && (p.y - cy).abs() <= CIRCLE) || ((p.x - circle_r).abs() <= CIRCLE && (p.y - cy).abs() <= CIRCLE)
         });
     let edge_grab = matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. }));
+    app.tl.zoombar_resize_cursor = edge_grab;
     /// The ring's outer edge: a 4.5 disc with a 1.5 ring around it. It never grows outwards.
     const RING_OUT: f32 = 6.0;
     // Hovering an edge (circle or edge zone) brings both rings in 1.5x; clicking or dragging an
@@ -766,7 +1097,7 @@ pub(in crate::panels::timeline) fn zoom_scrollbar_with_layers(
         }
     }
     if matches!(app.tl.drag, Some(Drag::ZoomBar { .. }))
-        && ui.input(|input| input.key_pressed(egui::Key::Escape))
+        && crate::framework::escape_pressed(ui.ctx())
         && let Some(Drag::ZoomBar { start, start_pps, .. }) = app.tl.drag.take()
     {
         let v = &mut app.ui.timeline;

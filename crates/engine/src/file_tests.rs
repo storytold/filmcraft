@@ -47,6 +47,64 @@ fn saved_file_is_versioned_and_save_copy_keeps_state() {
 }
 
 #[test]
+fn revert_marks_preserved_sequence_selection_as_a_view_change() {
+    let d = temp_dir("revert-view");
+    let path = d.join("p.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    let sequence_ids: Vec<_> = s.project.sequences().map(|sequence| sequence.id).collect();
+    assert!(sequence_ids.len() > 1, "the demo project needs an alternate sequence");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+
+    let preserved = sequence_ids[1];
+    s.state.active_sequence = Some(preserved);
+    s.state.open_sequences = vec![preserved];
+    s.execute("file.revert", json!({})).unwrap();
+
+    assert_eq!(s.state.active_sequence, Some(preserved));
+    assert!(!s.is_dirty(), "preserving the selected sequence changes only the project view");
+    assert!(s.has_unsaved_changes(), "the preserved sequence selection must advance the saved view epoch");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn saving_only_timeline_slider_settings_survives_close_and_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("view-only.fcproj").to_string_lossy().into_owned();
+    let mut session = demo();
+    session.execute("file.saveAs", json!({"path": path})).unwrap();
+
+    session.state.timeline_ui.alternate_slider_position = !session.state.timeline_ui.alternate_slider_position;
+    let expected = session.state.timeline_ui.clone();
+    session.project_view_changed();
+    assert!(!session.is_dirty(), "changing Timeline slider settings alone leaves project content clean");
+    assert!(session.has_unsaved_changes(), "the changed slider settings still need saving");
+    session.execute("file.save", json!({})).unwrap();
+    assert!(!session.has_unsaved_changes(), "saving acknowledges the slider-only view change");
+    session.execute("file.closeProject", json!({})).unwrap();
+
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(reopened.state.timeline_ui, expected, "the saved slider setting survives closing and reopening the project");
+}
+
+#[test]
+fn timeline_settings_restore_when_open_sequence_restore_is_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("view-preference.fcproj").to_string_lossy().into_owned();
+    let mut session = demo();
+    session.state.timeline_ui.alternate_slider_position = true;
+    let expected = session.state.timeline_ui.clone();
+    session.execute("file.saveAs", json!({"path": path})).unwrap();
+    drop(session);
+
+    let mut reopened = Session::default();
+    reopened.prefs.timeline.restore_open_sequences = false;
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+
+    assert_eq!(reopened.state.timeline_ui, expected, "the slider settings load independently of the open-sequence preference");
+}
+
+#[test]
 fn legacy_project_opens_and_first_save_keeps_a_backup() {
     let d = temp_dir("legacy");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../format/tests/fixtures/v1-edit.fcproj");
@@ -95,6 +153,20 @@ fn oversized_projects_are_rejected_before_open_and_schema_backup_reads() {
     assert!(error.contains("cannot preserve the original project") && error.contains("byte limit"), "{error}");
     assert_eq!(std::fs::metadata(&path).unwrap().len(), limit + 1, "failed backup must not overwrite the oversized original");
     assert!(!d.join("old (schema v1 backup).fcproj").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A bounded read refuses an oversize file before its bytes are read (audit: FilmCraft F1).
+#[test]
+fn bounded_read_refuses_a_file_over_the_limit() {
+    let d = temp_dir("bounded-read");
+    let path = d.join("p.fcproj");
+    std::fs::write(&path, b"12345").unwrap();
+    let path = path.to_string_lossy().to_string();
+    assert_eq!(FsServices.read_file_bounded(&path, 5).unwrap(), b"12345");
+    let e = FsServices.read_file_bounded(&path, 4).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    assert!(e.to_string().contains("over the 4 byte limit"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

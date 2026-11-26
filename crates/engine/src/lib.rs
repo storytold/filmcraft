@@ -528,8 +528,8 @@ pub struct Session {
     pub saved_revision: u64,
     /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
     /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
-    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
-    /// the autosave journal.
+    /// clean project must stay clean. A view change reaches the recovery journal only while
+    /// project content is dirty; clean view changes wait for an explicit save.
     pub view_epoch: u64,
     /// The view counter as of the last successful save: what the project file on disk holds.
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
@@ -764,6 +764,9 @@ impl Session {
     /// Clean shutdown: flush and stop the worker. Unsaved changes stay in the journal (offered on
     /// the next launch); otherwise the session's journal directory is removed.
     pub fn shutdown(&mut self) {
+        if let Some(p) = self.persistence.as_mut() {
+            p.last_view_sent = None;
+        }
         self.sync_persistence();
         if let Some(p) = self.persistence.take() {
             p.close();
@@ -777,6 +780,10 @@ impl Session {
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
+        self.sync_persistence_at(web_time::Instant::now());
+    }
+
+    fn sync_persistence_at(&mut self, now: web_time::Instant) {
         // the worker check and the revision check come first: the project view is a walk over
         // every sequence and it must not repeat on every command while nothing changed (or when
         // there is no worker to send it to at all)
@@ -784,6 +791,7 @@ impl Session {
             return;
         }
         let dirty = self.is_dirty();
+        let view_changed = self.view_epoch != self.saved_view_epoch;
         let cur = autosave::Sent {
             revision: self.revision,
             saved_revision: self.saved_revision,
@@ -794,17 +802,44 @@ impl Session {
         if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
             return;
         }
-        // the view reaches the journal whenever it is newer than what the project file holds
-        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
-        // once a save catches up -- no matter what order the two arrive in
-        let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
+        // A view drag can call this once per frame. Avoid walking every sequence and sending a
+        // full ProjectView that quickly; the frame loop will hand off the newest state shortly,
+        // while shutdown always synchronizes its final state before flushing.
+        if view_changed
+            && self.persistence.as_ref().is_some_and(|p| {
+                p.last_sent.as_ref().is_some_and(|sent| sent.path == cur.path && sent.revision == cur.revision && sent.view_epoch != cur.view_epoch)
+                    && p.last_view_sent.is_some_and(|last| now.duration_since(last) < std::time::Duration::from_millis(100))
+            })
+        {
+            return;
+        }
+        // Content changes use the normal recovery snapshot. A clean project's unsaved view is
+        // journaled separately as compact ProjectView JSON, bound to the saved file fingerprint.
+        let view = (dirty || view_changed).then(|| self.project_view());
         let Some(p) = self.persistence.as_mut() else { return };
         if let Some(view) = view {
-            p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());
+            let fence = self.project_file_fence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let fingerprint = (!dirty).then_some(fence.fingerprint).flatten();
+            if !dirty && (self.path.is_none() || fingerprint.is_none()) {
+                p.send_clean();
+            } else {
+                p.send_dirty(autosave::Snapshot {
+                    project: self.project.clone(),
+                    view,
+                    revision: self.revision,
+                    view_epoch: self.view_epoch,
+                    content_dirty: dirty,
+                    path: self.path.clone(),
+                    project_fingerprint: fingerprint,
+                });
+            }
         } else {
             p.send_clean();
         }
         p.last_sent = Some(cur);
+        if view_changed {
+            p.last_view_sent = Some(now);
+        }
     }
 
     /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
@@ -818,7 +853,7 @@ impl Session {
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
-                autosave::WorkerEvent::SavedProject { path, revision, view_epoch }
+                autosave::WorkerEvent::SavedProject { path, revision, view_epoch, fingerprint }
                     if self.path.as_deref() == Some(path.as_str())
                         && revision <= self.revision
                         && (revision > self.saved_revision || view_epoch > self.saved_view_epoch) =>
@@ -826,6 +861,10 @@ impl Session {
                     self.saved_revision = self.saved_revision.max(revision);
                     if view_epoch <= self.view_epoch {
                         self.saved_view_epoch = self.saved_view_epoch.max(view_epoch);
+                    }
+                    let mut fence = self.project_file_fence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if fence.path.as_deref() == Some(path.as_str()) {
+                        fence.fingerprint = Some(fingerprint);
                     }
                 }
                 autosave::WorkerEvent::Error(m) => {
@@ -882,7 +921,8 @@ impl Session {
 
     /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
     /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
-    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    /// duplicate-marker caches. Dirty content snapshots include the latest view; clean view
+    /// changes remain pending for the Save/Close prompt and wait for an explicit save.
     pub fn view_changed(&mut self) {
         self.view_epoch = self.view_epoch.wrapping_add(1);
     }
@@ -896,7 +936,8 @@ impl Session {
         self.is_dirty() || self.view_epoch != self.saved_view_epoch
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed and synchronize its recovery state when the
+    /// project content is dirty.
     pub fn project_view_changed(&mut self) {
         self.view_changed();
         self.sync_persistence();
@@ -1605,6 +1646,8 @@ mod still_migration_tests;
 #[cfg(test)]
 mod stored_paths_tests;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod timeline_move_tests;
@@ -1628,3 +1671,15 @@ mod source_placement_tests;
 mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
+
+#[cfg(all(test, unix))]
+mod private_temp_dir_tests {
+    #[test]
+    fn the_private_temp_dir_is_new_owner_only_and_stable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = super::private_temp_dir().unwrap();
+        assert!(d.is_dir());
+        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(d, super::private_temp_dir().unwrap());
+    }
+}

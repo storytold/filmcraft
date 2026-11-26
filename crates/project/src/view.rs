@@ -56,14 +56,21 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
-    /// Project-scoped Timeline interaction settings, stored beside the project view.
+    /// Project-scoped Timeline settings, stored beside this view. A malformed or non-object
+    /// `timeline_ui` block falls back to defaults without discarding tabs or playheads; valid
+    /// settings are clamped before they reach controls or geometry.
     #[serde(default, deserialize_with = "lenient_timeline_ui")]
     pub timeline_ui: TimelineUiSettings,
 }
 
+/// Project-scoped Timeline display and interaction settings. These are serialized beside the
+/// project content, not in it. Deserialization tolerates a damaged settings block, and [`Self::checked`]
+/// clamps numbers and normalizes colours before the settings reach the UI.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimelineUiSettings {
+    /// Enables eased motion for Timeline slider interactions, including playhead-centering
+    /// gravity while zooming. When disabled, centering is applied immediately.
     pub smooth_animations: bool,
     /// Inverted controls: the wheel over the tracks scrolls the Timeline the other way in time,
     /// and the wheel while grabbing the zoom slider's middle zooms the other way.
@@ -122,9 +129,9 @@ pub struct TimelineUiSettings {
     /// Hide Slider (track sliders): the side track sliders are gone and the tracks fill their
     /// column. Brought back by right-clicking the Timeline (Unhide Track Slider).
     pub track_slider_hidden: bool,
-    /// Draft rows of the Track Slider Settings menu: stored and shown, but they do not drive the
-    /// sliders yet.
+    /// Ease the track sliders' double-click moves toward their destinations instead of jumping.
     pub track_slider_smooth: bool,
+    /// Move the track-slider column to the left of the track headers.
     pub track_slider_alternate_position: bool,
     /// Snap the dragged track-view edge to clip boundaries when slider edges are decoupled.
     pub track_slider_snap: bool,
@@ -227,6 +234,14 @@ impl Default for TimelineUiSettings {
 
 impl TimelineUiSettings {
     /// Validate settings read from a project file before they reach UI geometry or controls.
+    ///
+    /// Playhead side seconds and its last Custom value are clamped to 0.1–3600 (fallbacks 10 and
+    /// 15); Shift-drag speed and its last Custom value to 0.1–50 (fallback 1); Maximum Zoom and its
+    /// last Custom value to 0.05–3 seconds (fallback 0.4); and track-slider Shift-drag speed and
+    /// its last Custom value to 0.1–10 (fallback 1). Non-finite values use those fallbacks, and a
+    /// non-positive Maximum Zoom value uses 0.4. Track angles are clamped to 30–89 degrees. Colour
+    /// fields accept six-digit `#rrggbb` values; other forms use their defaults. Control bindings are
+    /// limited to 14 entries of at most 64 characters.
     pub fn checked(mut self) -> Self {
         if !self.track_slider_decouple {
             self.track_slider_snap = false;
@@ -253,10 +268,10 @@ impl TimelineUiSettings {
         // the value Custom restores must be bounded like the active one
         self.track_slider_shift_drag_last_custom =
             if self.track_slider_shift_drag_last_custom.is_finite() { self.track_slider_shift_drag_last_custom.clamp(0.1, 10.0) } else { 1.0 };
-        self.position_indicator_color = normalize_hex_color(&self.position_indicator_color).unwrap_or_else(|| "#5895ec".to_string());
-        self.video_indicator_color = normalize_hex_color(&self.video_indicator_color).unwrap_or_else(|| "#64b5f6".to_string());
-        self.audio_indicator_color = normalize_hex_color(&self.audio_indicator_color).unwrap_or_else(|| "#2e7d32".to_string());
-        self.offline_indicator_color = normalize_hex_color(&self.offline_indicator_color).unwrap_or_else(|| "#d32f2f".to_string());
+        self.position_indicator_color = normalize_project_hex_color(&self.position_indicator_color).unwrap_or_else(|| "#5895ec".to_string());
+        self.video_indicator_color = normalize_project_hex_color(&self.video_indicator_color).unwrap_or_else(|| "#64b5f6".to_string());
+        self.audio_indicator_color = normalize_project_hex_color(&self.audio_indicator_color).unwrap_or_else(|| "#2e7d32".to_string());
+        self.offline_indicator_color = normalize_project_hex_color(&self.offline_indicator_color).unwrap_or_else(|| "#d32f2f".to_string());
         self
     }
 
@@ -278,7 +293,8 @@ impl ProjectView {
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
-    Ok(TimelineUiSettings::deserialize(d).map(|s| s.checked()).unwrap_or_default())
+    let value = serde_json::Value::deserialize(d).unwrap_or(serde_json::Value::Null);
+    Ok(TimelineUiSettings::deserialize(value).map(|s| s.checked()).unwrap_or_default())
 }
 
 /// A colour string from a project file or the control channel, normalised to the canonical
@@ -294,6 +310,11 @@ pub fn normalize_hex_color(value: &str) -> Option<String> {
         [r, g, b, a, c, d] if [r, g, b, a, c, d].iter().all(|x| x.is_ascii_hexdigit()) => Some(value.to_ascii_lowercase()),
         _ => None,
     }
+}
+
+fn normalize_project_hex_color(value: &str) -> Option<String> {
+    let hex = value.strip_prefix('#')?;
+    (hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| value.to_ascii_lowercase())
 }
 
 /// A LUT imported into the project (`lut.import`). Color Grading refers to it as `lib:<id>`.
@@ -379,8 +400,8 @@ mod tests {
         assert_eq!(s.max_zoom_secs(), 3.0);
     }
 
-    /// In-range values (and short colour strings) pass through untouched, and the read-time
-    /// helper falls back to the 0.4 s default for anything that cannot be a view width.
+    /// In-range values pass through; project colors must use the six-digit stored form.
+    /// The read-time helper falls back to the 0.4 s default for anything that cannot be a view width.
     #[test]
     fn checked_keeps_sane_values_and_max_zoom_secs_falls_back() {
         let s = TimelineUiSettings {
@@ -388,7 +409,7 @@ mod tests {
             shift_drag_speed: 2.0,
             max_zoom_seconds: 0.2,
             max_zoom_last_custom: 0.05,
-            position_indicator_color: "#aabbcc".to_string(),
+            position_indicator_color: "#AABBCC".to_string(),
             ..TimelineUiSettings::default()
         }
         .checked();
@@ -398,20 +419,128 @@ mod tests {
         assert_eq!(s.max_zoom_last_custom, 0.05);
         assert_eq!(s.position_indicator_color, "#aabbcc");
         assert_eq!(s.max_zoom_secs(), 0.2);
-        // shorthand expands to the stored form; a non-positive zoom is "unset" (0.4), never 0.05
+        // shorthand is not a stored color form; a non-positive zoom is "unset" (0.4), never 0.05
         let s = TimelineUiSettings {
             position_indicator_color: "#abc".to_string(),
+            video_indicator_color: "#def".to_string(),
+            audio_indicator_color: "#123".to_string(),
+            offline_indicator_color: "#456".to_string(),
             max_zoom_seconds: 0.0,
             track_slider_shift_drag_last_custom: -3.0,
             ..TimelineUiSettings::default()
         }
         .checked();
-        assert_eq!(s.position_indicator_color, "#aabbcc");
+        assert_eq!(s.position_indicator_color, "#5895ec");
+        assert_eq!(s.video_indicator_color, "#64b5f6");
+        assert_eq!(s.audio_indicator_color, "#2e7d32");
+        assert_eq!(s.offline_indicator_color, "#d32f2f");
         assert_eq!(s.max_zoom_seconds, 0.4);
         assert_eq!(s.track_slider_shift_drag_last_custom, 0.1);
         let s = TimelineUiSettings { max_zoom_seconds: 0.0, ..TimelineUiSettings::default() };
         assert_eq!(s.max_zoom_secs(), 0.4);
         let s = TimelineUiSettings { max_zoom_seconds: f64::NAN, ..TimelineUiSettings::default() };
         assert_eq!(s.max_zoom_secs(), 0.4);
+    }
+
+    #[test]
+    fn checked_keeps_each_documented_slider_range_boundary_and_clamps_outside_values() {
+        let min = TimelineUiSettings {
+            playhead_side_seconds: 0.1,
+            playhead_side_last_custom: 0.1,
+            shift_drag_speed: 0.1,
+            shift_drag_last_custom: 0.1,
+            max_zoom_seconds: 0.05,
+            max_zoom_last_custom: 0.05,
+            track_slider_shift_drag_speed: 0.1,
+            track_slider_shift_drag_last_custom: 0.1,
+            ..Default::default()
+        }
+        .checked();
+        assert_eq!(min.playhead_side_seconds, 0.1);
+        assert_eq!(min.playhead_side_last_custom, 0.1);
+        assert_eq!(min.shift_drag_speed, 0.1);
+        assert_eq!(min.shift_drag_last_custom, 0.1);
+        assert_eq!(min.max_zoom_seconds, 0.05);
+        assert_eq!(min.max_zoom_last_custom, 0.05);
+        assert_eq!(min.track_slider_shift_drag_speed, 0.1);
+        assert_eq!(min.track_slider_shift_drag_last_custom, 0.1);
+
+        let max = TimelineUiSettings {
+            playhead_side_seconds: 3600.0,
+            playhead_side_last_custom: 3600.0,
+            shift_drag_speed: 50.0,
+            shift_drag_last_custom: 50.0,
+            max_zoom_seconds: 3.0,
+            max_zoom_last_custom: 3.0,
+            track_slider_shift_drag_speed: 10.0,
+            track_slider_shift_drag_last_custom: 10.0,
+            ..Default::default()
+        }
+        .checked();
+        assert_eq!(max.playhead_side_seconds, 3600.0);
+        assert_eq!(max.playhead_side_last_custom, 3600.0);
+        assert_eq!(max.shift_drag_speed, 50.0);
+        assert_eq!(max.shift_drag_last_custom, 50.0);
+        assert_eq!(max.max_zoom_seconds, 3.0);
+        assert_eq!(max.max_zoom_last_custom, 3.0);
+        assert_eq!(max.track_slider_shift_drag_speed, 10.0);
+        assert_eq!(max.track_slider_shift_drag_last_custom, 10.0);
+
+        let outside = TimelineUiSettings {
+            playhead_side_seconds: 0.09,
+            playhead_side_last_custom: 3600.1,
+            shift_drag_speed: 0.09,
+            shift_drag_last_custom: 50.1,
+            max_zoom_seconds: 0.049,
+            max_zoom_last_custom: 3.01,
+            track_slider_shift_drag_speed: 0.09,
+            track_slider_shift_drag_last_custom: 10.1,
+            ..Default::default()
+        }
+        .checked();
+        assert_eq!(outside.playhead_side_seconds, 0.1);
+        assert_eq!(outside.playhead_side_last_custom, 3600.0);
+        assert_eq!(outside.shift_drag_speed, 0.1);
+        assert_eq!(outside.shift_drag_last_custom, 50.0);
+        assert_eq!(outside.max_zoom_seconds, 0.05);
+        assert_eq!(outside.max_zoom_last_custom, 3.0);
+        assert_eq!(outside.track_slider_shift_drag_speed, 0.1);
+        assert_eq!(outside.track_slider_shift_drag_last_custom, 10.0);
+    }
+
+    #[test]
+    fn timeline_ui_deserialization_defaults_wrong_types_and_keeps_partial_objects() {
+        for malformed in [serde_json::json!("settings"), serde_json::json!(7), serde_json::json!([])] {
+            let view: ProjectView = serde_json::from_value(serde_json::json!({"timeline_ui": malformed})).unwrap();
+            assert_eq!(view.timeline_ui, TimelineUiSettings::default());
+        }
+
+        let view: ProjectView = serde_json::from_value(serde_json::json!({"timeline_ui": {"smooth_animations": true}})).unwrap();
+        assert!(view.timeline_ui.smooth_animations);
+        assert_eq!(view.timeline_ui.playhead_side_last_custom, 15.0);
+        assert_eq!(view.timeline_ui.shift_drag_last_custom, 1.0);
+        assert_eq!(view.timeline_ui.max_zoom_last_custom, 0.4);
+        assert_eq!(view.timeline_ui.track_slider_shift_drag_last_custom, 1.0);
+        assert_eq!(view.timeline_ui.playhead_side_seconds, 10.0);
+    }
+
+    #[test]
+    fn malformed_timeline_ui_keeps_sibling_project_view_fields() {
+        let view: ProjectView =
+            serde_json::from_str(r#"{"timeline_ui":{"smooth_animations":true,"playhead_side_seconds":"private"},"open_sequences":[7],"active_sequence":7}"#)
+                .unwrap();
+
+        assert_eq!(view.timeline_ui, TimelineUiSettings::default(), "the malformed settings block falls back as a unit");
+        assert_eq!(view.open_sequences, vec![ItemId(7)], "the parser continues after buffering the malformed settings block");
+        assert_eq!(view.active_sequence, Some(ItemId(7)));
+    }
+
+    #[test]
+    fn normalize_hex_color_accepts_uppercase_and_rejects_malformed_forms() {
+        assert_eq!(normalize_hex_color("#AABBCC").as_deref(), Some("#aabbcc"));
+        assert_eq!(normalize_hex_color("#ABC").as_deref(), Some("#aabbcc"));
+        for malformed in ["", "#", "aabbcc", "#abcd", "#abcde", "#1234567", "#12g456"] {
+            assert_eq!(normalize_hex_color(malformed), None, "{malformed:?}");
+        }
     }
 }
