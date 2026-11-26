@@ -38,6 +38,7 @@ jobs:
       app-name: filmcraft
       app-title: FilmCraft
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      web-craft-fonts: true
       version: ${{ inputs.version }}
       contributors-artifact: ${{ needs.credits.outputs.artifact-name }}
     secrets:
@@ -56,3 +57,4 @@ jobs:
       AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
       AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
       LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}
+      ARTCRAFT_SERVICES_DISPATCH_TOKEN: ${{ secrets.ARTCRAFT_SERVICES_DISPATCH_TOKEN }}

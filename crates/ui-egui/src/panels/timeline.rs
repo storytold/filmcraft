@@ -202,7 +202,11 @@ pub enum Drag {
     },
     Slip {
         clip: ClipId,
+        /// The media delta `timeline.slip` gets on release (it clamps it at the media's ends).
         delta: Tick,
+        /// What the Slip Monitor shows for `delta` (`timeline.slipPreview`), worked out when the
+        /// delta changes; `None` when it can't be (the Program monitor then stays as it is).
+        preview: Option<Arc<Value>>,
     },
     Slide {
         clip: ClipId,
@@ -983,6 +987,32 @@ mod trim_preview_tests {
         let (mut out, mut edited) = (HashMap::new(), HashMap::new());
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert!(edited.is_empty() && out.contains_key(&left.id));
+    }
+
+    #[test]
+    fn a_slip_draws_the_clip_and_its_partners_from_the_slipped_media_in_place() {
+        let (mut app, seq) = demo();
+        let clip = seq.video_tracks[0].items.iter().find(|i| i.link.is_some()).unwrap().clone();
+        let delta = Tick(filmcraft_time::TICKS_PER_SECOND / 5);
+        let preview = crate::panels::slip_monitor::preview(&app, clip.id, delta);
+        let applied = Tick(preview.as_ref().unwrap()["delta"].as_i64().unwrap());
+        assert_ne!(applied, Tick::ZERO, "the demo clip has media to slip into");
+        app.tl.drag = Some(Drag::Slip { clip: clip.id, delta, preview });
+        let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+        preview_drag(&app, &seq, &mut out, &mut edited);
+        assert!(out.is_empty(), "nothing moves or changes length");
+        let partners = filmcraft_engine::commands::with_links(&app.session, &[clip.id]);
+        let sound: Vec<ClipId> = partners.iter().copied().filter(|c| seq.audio_tracks.iter().any(|t| t.item(*c).is_some())).collect();
+        assert!(!sound.is_empty(), "the demo clip has linked sound");
+        for c in &sound {
+            let was = seq.find_item(*c).unwrap().1;
+            let shown = &edited[c];
+            assert_eq!((shown.start, shown.duration), (was.start, was.duration));
+            assert_eq!(shown.source_in, was.source_in + applied, "the sound's waveform follows the slip");
+        }
+        // the picture's thumbnails would be a decode per position: they keep the clip's media
+        assert!(!edited.contains_key(&clip.id));
+        assert_eq!(edited.len(), sound.len());
     }
 }
 
