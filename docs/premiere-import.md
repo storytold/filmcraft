@@ -14,7 +14,9 @@ patches mapped fields (clip Start/End, InPoint/OutPoint, media paths, sequence n
 writes gzip or plain XML to match how the file was opened. Unmodeled Premiere elements are
 retained in the XML and listed in the command result’s `warnings`. Sequences or clips added
 in FilmCraft (no Premiere ObjectUID/ObjectID binding) are not written into the `.prproj`; Save
-names each skipped sequence or clip in `warnings`. `.fcproj` remains the
+names each skipped sequence or clip in `warnings`. When several timeline items share one
+Premiere Clip object and their source ranges disagree, Save leaves that object’s InPoint/OutPoint
+unchanged and warns instead of last-wins overwrite. `.fcproj` remains the
 native FilmCraft format; Save As to `.fcproj` clears the Premiere XML sidecar. When
 **Auto Save also saves the current project** is on, the original-path write uses that same
 native Premiere writer (recovery / Auto-Save ring copies stay `.fcproj`).

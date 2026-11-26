@@ -1,7 +1,7 @@
 //! Native `.prproj` open/save: keep the expanded Premiere XML for round-trip, patch mapped fields, gzip on write.
 //! Clean-room from user-owned / hand-written XML and the FilmCraft Premiere reader. MIT OR Apache-2.0.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use filmcraft_project::{ClipId, ItemId, ItemKind, MediaRef, Project};
@@ -55,6 +55,9 @@ pub fn encode(source: &NativeSource, gzip: bool) -> Result<Vec<u8>> {
 /// Patch mapped timeline and media fields from `project` into `source`. Unmapped Premiere data is left alone and listed in `report`.
 pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, project: &Project, report: &mut Report) -> Result<()> {
     let mut patched = 0usize;
+    // Shared VideoClip/AudioClip ObjectIDs with disagreeing FilmCraft source ranges: skip In/Out writes (last-wins would discard an edit).
+    let conflicting_clips = conflicting_shared_clip_oids(bindings, project);
+    let mut warned_shared = BTreeSet::<String>::new();
     for (clip_id, object_id) in &bindings.track_items {
         let Some(clip) = find_clip(project, *clip_id) else {
             warning(report, format!("Premiere track item {object_id}: FilmCraft clip gone; left unchanged in the project file"));
@@ -68,6 +71,19 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
             patched += 1;
         }
         if let Some(clip_oid) = bindings.clips.get(clip_id) {
+            if conflicting_clips.contains(clip_oid) {
+                if warned_shared.insert(clip_oid.clone()) {
+                    let names = shared_clip_labels(bindings, project, clip_oid);
+                    warning(
+                        report,
+                        format!(
+                            "{}: shared Premiere clip object {clip_oid} has disagreeing source ranges; InPoint/OutPoint left unchanged",
+                            names.join(", ")
+                        ),
+                    );
+                }
+                continue;
+            }
             let source_out = source_out_ticks(clip);
             if set_field(&mut source.xml, "ObjectID", clip_oid, "InPoint", &clip.source_in.0.to_string())? {
                 patched += 1;
@@ -189,6 +205,37 @@ fn find_clip(project: &Project, id: ClipId) -> Option<&filmcraft_project::TrackI
 fn source_out_ticks(clip: &filmcraft_project::TrackItem) -> Tick {
     let span = (clip.duration.0 as f64 * clip.speed.abs()).round() as i64;
     Tick(clip.source_in.0.saturating_add(span.max(0)))
+}
+
+/// Premiere Clip ObjectIDs bound to more than one timeline item with different source ranges.
+fn conflicting_shared_clip_oids(bindings: &NativeBindings, project: &Project) -> BTreeSet<String> {
+    let mut ranges: BTreeMap<&str, Vec<(Tick, Tick)>> = BTreeMap::new();
+    for (clip_id, oid) in &bindings.clips {
+        let Some(clip) = find_clip(project, *clip_id) else { continue };
+        ranges.entry(oid.as_str()).or_default().push((clip.source_in, source_out_ticks(clip)));
+    }
+    ranges
+        .into_iter()
+        .filter_map(|(oid, rs)| {
+            let disagree = rs.len() > 1 && rs.windows(2).any(|w| w[0] != w[1]);
+            disagree.then(|| oid.to_string())
+        })
+        .collect()
+}
+
+/// Display names for FilmCraft clips that share `clip_oid` (for save warnings).
+fn shared_clip_labels(bindings: &NativeBindings, project: &Project, clip_oid: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for (clip_id, oid) in &bindings.clips {
+        if oid != clip_oid {
+            continue;
+        }
+        let label = find_clip(project, *clip_id).map(|c| if c.name.is_empty() { "unnamed clip".into() } else { c.name.clone() }).unwrap_or_else(|| "missing clip".into());
+        if !names.contains(&label) {
+            names.push(label);
+        }
+    }
+    names
 }
 
 /// Replace the text of the first descendant element named `field` under the object with `attr`=`id`.
@@ -351,6 +398,44 @@ mod tests {
         assert_eq!(doc.sequences[0].tracks[0].items[0].start, Tick(50));
         assert_eq!(doc.sequences[0].tracks[0].items[0].end, Tick(200));
         assert!(again.xml.contains("OrphanCustom"));
+    }
+
+    #[test]
+    fn sync_skips_conflicting_shared_clip_source_ranges() {
+        // Two track items share one VideoClip; disagreeing FilmCraft source ranges must not last-win overwrite.
+        let xml = r#"<PremiereData>
+<Sequence ObjectUID="parent"><Name>Parent</Name><TrackGroups><TrackGroup><Second ObjectRef="group"/></TrackGroup></TrackGroups></Sequence>
+<VideoTrackGroup ObjectID="group"><TrackGroup><FrameRate>8467200000</FrameRate><Tracks><Track ObjectURef="track"/></Tracks></TrackGroup></VideoTrackGroup>
+<VideoClipTrack ObjectUID="track"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="one"/><TrackItem ObjectRef="two"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack>
+<VideoClipTrackItem ObjectID="one"><ClipTrackItem><TrackItem><Start>0</Start><End>100</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem>
+<VideoClipTrackItem ObjectID="two"><ClipTrackItem><TrackItem><Start>200</Start><End>300</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="sub"><Name>shared.mov</Name><Clip ObjectRef="clip"/></SubClip>
+<VideoClip ObjectID="clip"><Clip><InPoint>0</InPoint><OutPoint>100</OutPoint><PlaybackSpeed>1</PlaybackSpeed><Source ObjectRef="source"/></Clip></VideoClip>
+<VideoMediaSource ObjectID="source"><MediaSource><Media ObjectURef="media"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="media"><Title>shared.mov</Title><FilePath>shared.mov</FilePath></Media>
+</PremiereData>"#;
+        let mut bindings = NativeBindings::default();
+        let (fragment, _, _) = import_into(xml.as_bytes(), &ImportOptions::default(), None, Some(&mut bindings)).unwrap();
+        let mut project = fragment.project;
+        let seq_id = fragment.sequences[0];
+        {
+            let seq = project.sequence_mut(seq_id).unwrap();
+            assert_eq!(seq.video_tracks[0].items.len(), 2);
+            seq.video_tracks[0].items[0].source_in = Tick(10);
+            seq.video_tracks[0].items[0].duration = Tick(50);
+            seq.video_tracks[0].items[1].source_in = Tick(80);
+            seq.video_tracks[0].items[1].duration = Tick(40);
+        }
+        let mut source = expand(xml.as_bytes()).unwrap();
+        let mut report = Report::default();
+        sync_from_project(&mut source, &bindings, &project, &mut report).unwrap();
+        assert!(
+            report.entries.iter().any(|e| e.message.contains("shared Premiere clip object") && e.message.contains("disagreeing source ranges")),
+            "{:?}",
+            report.entries
+        );
+        assert!(source.xml.contains("<InPoint>0</InPoint>") && source.xml.contains("<OutPoint>100</OutPoint>"), "shared clip range left unchanged: {}", source.xml);
+        assert!(!source.xml.contains("<InPoint>10</InPoint>") && !source.xml.contains("<InPoint>80</InPoint>"));
     }
 
     #[test]
