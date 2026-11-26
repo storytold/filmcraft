@@ -253,6 +253,13 @@ pub trait MediaSource: Send + Sync {
     }
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
+    /// The EXIF Orientation the decoder applied to this source's still picture, as the
+    /// `image` crate reports it: the mapping from the file's stored pixel coordinates
+    /// to the upright picture [`video_frame`](Self::video_frame) returns. Anything
+    /// that is not a turned still reports `NoTransforms`.
+    fn still_orientation(&self) -> image::metadata::Orientation {
+        image::metadata::Orientation::NoTransforms
+    }
     /// Like [`audio`](Self::audio) for audio stream `stream` (an index into
     /// [`MediaInfo::audio_streams`]). Sources with a single audio stream need not override this:
     /// stream 0 is `audio`, any other index is [`MediaError::NoStream`].
@@ -296,7 +303,7 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>, extra: &[Opener]) -> Result<Shar
         return Ok(Arc::new(wav::WavSource::parse(name, bytes)?));
     }
     // APNG, animated GIF, and animated WebP play as movies (#402); single-frame files fall through to the stills
-    if let Some(r) = animated::open(name, &bytes) {
+    if let Some(r) = animated::from_bytes(name, bytes.clone()) {
         return Ok(Arc::new(r?));
     }
     if still::sniff(name, &bytes) {

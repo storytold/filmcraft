@@ -132,7 +132,8 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         });
     });
     // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580)
-    open && (!r.should_close() || ctx.input(|i| i.pointer.any_down()))
+    // The runtime takes Escape from egui as the window's cancel, so the modal does not see it.
+    open && (!(r.should_close() || crate::framework::escape_pressed(ctx)) || ctx.input(|i| i.pointer.any_down()))
 }
 
 /// "“cut.fcproj” already exists in “edits”. Do you want to replace it?" for a save dialog's answer
@@ -164,7 +165,7 @@ pub fn show_overwrite(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
     });
     // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580)
-    if answer.is_none() && r.should_close() && !ctx.input(|i| i.pointer.any_down()) {
+    if answer.is_none() && (r.should_close() || crate::framework::escape_pressed(ctx)) && !ctx.input(|i| i.pointer.any_down()) {
         answer = Some(false);
     }
     if let Some(replace) = answer {

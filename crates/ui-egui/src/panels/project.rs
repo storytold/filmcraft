@@ -605,16 +605,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
     // a drag ended by Escape goes back to the size it started from (#580)
     let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
-    if resp.drag_started() {
-        ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
-    }
-    let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-    if resp.drag_stopped()
-        && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
-        && escaped
-    {
-        sz = before;
-    }
+    let escaped = crate::framework::escape_cancels_drag(ui.ctx(), &resp, orig_id, v.icon_size, &mut sz);
     if sz != v.icon_size {
         match v.inst {
             Inst::Main => app.ui.project_panel.icon_size_drag = Some(sz),

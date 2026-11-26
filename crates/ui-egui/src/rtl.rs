@@ -233,7 +233,7 @@ mod tests {
             eprintln!("SKIPPED: no craft-fonts or installed Arabic font");
             return;
         }
-        ctx.set_fonts(fonts);
+        craft_ui::fonts::load(&ctx, fonts);
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         let painter = Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
         let font = FontId::proportional(13.0);

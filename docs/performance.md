@@ -160,7 +160,7 @@ from another thread and exports again created 6 and invalidated 12.
 ## Results (CPU compositor: layer rectangles, an opaque bottom layer and recycled images, before → after)
 
 The CPU compositor is what export runs. In a profile of a 9:29 export it took about a third of the
-busy CPU with the built-in H.264 encoder (the encoder took the other two thirds), and a faster
+busy CPU with the software H.264 encoder (the encoder took the other two thirds), and a faster
 encoder leaves it as the largest cost of an export. It works on premultiplied linear `f32` images,
 33 MB each at 1080p, and every layer was one of them: a banner that is transparent except for its
 bottom 100 rows still cost a full conversion and a full mix, and the bottom layer paid for a
@@ -372,7 +372,7 @@ and an outro.
 
 | encoder | wall time | frames/s | vs real time | file |
 |---|---|---|---|---|
-| built-in (`filmcraft-h264enc`) | 793 s | 17.9 | 1.4× slower | 1445 MB, 20.0 Mb/s |
+| FilmCraft software encoder (pre-cutover local implementation) | 793 s | 17.9 | 1.4× slower | 1445 MB, 20.0 Mb/s |
 | hardware (VideoToolbox) | **311 s** | **45.7** | 1.8× faster | 1417 MB, 19.6 Mb/s |
 
 2.5× faster. The first 134 s of the same timeline, where the overlays are densest (intro, a banner, a
@@ -380,7 +380,7 @@ subscribe bar and the outro in 134 s):
 
 | encoder | wall time | frames/s | vs real time | file |
 |---|---|---|---|---|
-| built-in (`filmcraft-h264enc`) | 395 s | 8.5 | 2.9× slower | 340 MB, 20.0 Mb/s |
+| FilmCraft software encoder (pre-cutover local implementation) | 395 s | 8.5 | 2.9× slower | 340 MB, 20.0 Mb/s |
 | hardware (VideoToolbox) | **84 s** | **39.9** | 1.6× faster | 312 MB, 18.3 Mb/s |
 
 4.7× faster there. The gain depends on what else an export spends its time on: with the encoder
@@ -668,9 +668,19 @@ software either way and show the run-to-run spread. The decoded pictures are ide
 
 What is left on the CPU per H.264 frame is the host side of stateless decoding (parsing, DPB,
 filling the VA buffers) and the read-back: `vaGetImage` into an NV12 image and the copy into
-planar Y'CbCr. One picture is decoded at a time and read back as soon as the DPB outputs it, so
+planar Y'CbCr (since then `vaDeriveImage`, below). One picture is decoded at a time and read back as soon as the DPB outputs it, so
 4K throughput (56 fps) is bound by that round trip, not by the video engine; overlapping decode
 and read-back, or zero-copy into wgpu, would raise it.
+
+### VA-API read-back through `vaDeriveImage`
+
+The read-back maps the decoded surface's own NV12 / P010 memory (`vaDeriveImage`) instead of
+copying it into a second image with `vaGetImage` first; a driver that cannot derive a surface
+switches the session back to `vaGetImage` (logged once). Sequential decode of a 4K50 HEVC Main 10
+file on an AMD Radeon RX 9070 XT (Mesa 26.2.5, radeonsi), before and after the change: 35 →
+66–68 fps, pictures bit-identical to the software decoder. *Measured during development; the load
+average was not recorded and it was not run through `cargo xtask bench`*, so treat it as an
+indication until the bench table is re-measured.
 
 ### HEVC through VA-API (HW5 follow-up)
 

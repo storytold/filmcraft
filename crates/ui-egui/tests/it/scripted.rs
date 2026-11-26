@@ -8,18 +8,10 @@
 //! into the next frame's `RawInput` through the app's own `raw_input_hook`, exactly as eframe does.
 //! Screenshots (`ui.screenshot`) need a real viewport and are not covered here.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, first_media_item, reveal_in_effect_controls};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The app with the demo project open, after its first frames (theme and fonts installed).
@@ -29,63 +21,8 @@ impl Driver {
 
     /// `render`: with a wgpu renderer so `Harness::render` can take screenshots (needs a GPU).
     fn demo_with(render: bool) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if render {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    /// Run `n` frames, feeding queued synthetic input like eframe's `raw_input_hook`.
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    /// Run frames until `done` holds, for at most two minutes of wall-clock time.
-    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let t0 = std::time::Instant::now();
-        while !done(self) {
-            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    /// Send a control request and run frames until it is answered.
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    /// `call` that must succeed; returns `result`.
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let b = builder();
+        Self::open(demo_session(), if render { b.wgpu() } else { b })
     }
 
     fn sequence(&mut self) -> Value {
@@ -160,22 +97,6 @@ fn insert_from_source_ripples_the_sequence() {
     let dur1 = d.sequence()["duration"].as_i64().unwrap();
     assert!(dur1 > dur0, "insert lengthens the sequence: {dur0} → {dur1}");
     d.frames(2);
-}
-
-/// First movie item id anywhere in `project.inspect` JSON.
-fn first_media_item(v: &Value) -> Option<u64> {
-    match v {
-        Value::Object(m) => {
-            if let Some(id) = m.get("item").and_then(Value::as_u64)
-                && m.get("type").and_then(Value::as_str).is_some_and(|t| t == "Movie")
-            {
-                return Some(id);
-            }
-            m.values().find_map(first_media_item)
-        }
-        Value::Array(a) => a.iter().find_map(first_media_item),
-        _ => None,
-    }
 }
 
 #[test]
@@ -394,6 +315,17 @@ fn trim_monitor_buttons_and_dynamic_jkl_trimming() {
 }
 
 impl Driver {
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        self.expect_rect(id)
+    }
+
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits in
+    /// the panel's upper part, where the user sees it: next's dock gives a panel a shorter body
+    /// than the old dock did. Stops when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str) {
+        reveal_in_effect_controls(self, id, Self::rect);
+    }
+
     /// Let background frame workers deliver, then render the window to `<tmp>/<name>.png`.
     fn screenshot(&mut self, name: &str) -> std::path::PathBuf {
         for _ in 0..30 {
@@ -603,9 +535,123 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
         seq["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "color_key").unwrap()["params"]["color"]["value"].clone()
     };
     let before = color(&mut d);
+    d.reveal("effectControls.color_key.color.eyedropper");
     d.ok("ui.click", json!({"id": "effectControls.color_key.color.eyedropper"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "program.picture"}));
     d.wait_until("the eyedropper to fill Key Color", |d| color(d) != before);
     assert_ne!(color(&mut d), before, "the eyedropper filled Key Color from the Program picture");
+}
+
+/// #1540: over the control channel, `engine.execute` of a command whose menu form asks for its
+/// parameters in a dialog never opens one (an agent cannot see or close it). Sequence Settings…
+/// answers the settings instead; the other commands run the engine command with what was given.
+/// `ui.menu.invoke` keeps opening the dialog, as the menu does.
+#[test]
+fn engine_execute_never_opens_a_parameter_dialog() {
+    let mut d = Driver::demo();
+    let r = d.exec("sequence.settings", json!({}));
+    assert!(r["settings"]["width"].is_u64() && r["settings"]["frame_rate"].is_object(), "the settings, not a dialog: {r}");
+    assert!(d.inspect()["dialog"].is_null(), "no dialog opened");
+    // malformed parameters are the engine's to refuse, not a request for the settings
+    let v = d.call("engine.execute", json!({"command": "sequence.settings", "params": []}));
+    assert_eq!(v["ok"], json!(false), "{v}");
+    // a command that needs a parameter fails as the engine command, instead of asking in a dialog
+    let v = d.call("engine.execute", json!({"command": "clip.audioGain", "params": {}}));
+    assert_eq!(v["ok"], json!(false), "{v}");
+    assert!(d.inspect()["dialog"].is_null(), "no dialog opened: {v}");
+    // with parameters it applies, as before
+    let r = d.exec("sequence.settings", json!({"maxRenderQuality": true}));
+    assert!(r["scaledClips"].is_u64(), "{r}");
+    assert_eq!(d.sequence()["settings"]["max_render_quality"], json!(true));
+    // the menu form still opens the dialog
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    assert_eq!(r["dialog"], json!("sequenceSettings"), "{r}");
+    d.frames(2);
+    assert_eq!(d.inspect()["dialog"], json!("SequenceSettings"));
+}
+
+/// #1540, every dialog route: each command whose menu form opens a dialog, sent with `{}` through
+/// `engine.execute`, leaves the UI exactly as it was (no dialog, no draft, only the status line may
+/// change) and answers the engine command's own result or error. Keeps the guarantee true when a
+/// dialog command is added to `menu_dialogs::dialog_command` or `media_dialogs::route`.
+#[test]
+fn engine_execute_leaves_the_ui_alone_for_every_dialog_command() {
+    let mut d = Driver::demo();
+    let ids = [
+        "file.projectSettings.general",
+        "file.projectSettings.scratchDisks",
+        "project.ingestSettings",
+        "edit.find",
+        "file.newSearchBin",
+        "file.mediaProperties",
+        "clip.editOffline",
+        "clip.sourceSettings",
+        "clip.updateMetadata",
+        "clip.automateToSequence",
+        "clip.sceneEditDetection",
+        "sequence.normalizeMixTrack",
+        "sequence.simplify",
+        "sequence.transcribe",
+        "file.saveAsTemplate",
+        "markers.addFlashCue",
+        "file.newColorMatte",
+        "project.matteColor",
+        "file.projectManager",
+        "file.exportSelectionProject",
+        "file.exportAle",
+        "file.mediaPropertiesFile",
+        "lumetri.exportCube",
+        "media.createProxies",
+        "media.linkMedia",
+        "media.makeOffline",
+        // (not `file.exportFrame`: without a dialog it exports, to a file in the working directory)
+        "file.newOfflineFile",
+        "clip.speedDuration",
+        "clip.rename",
+        "clip.nest",
+        "file.exportAaf",
+        "file.exportOmf",
+        "captions.export",
+        "file.exportMedia",
+        "file.open",
+        "file.import",
+        "file.saveAs",
+        "captions.import",
+    ];
+    let snapshot = |d: &mut Driver| {
+        let mut v = d.inspect();
+        v["ui"]["status"] = Value::Null;
+        v["fps"] = Value::Null;
+        v
+    };
+    for id in ids {
+        let before = snapshot(&mut d);
+        let v = d.call("engine.execute", json!({"command": id, "params": {}}));
+        d.frames(2);
+        let after = snapshot(&mut d);
+        assert!(after["dialog"].is_null(), "{id}: a dialog opened: {}", after["dialog"]);
+        assert_eq!(after["ui"], before["ui"], "{id}: the UI changed (answer was {v})");
+        assert!(v.get("ok").is_some(), "{id}: no answer: {v}");
+    }
+    // Voice-Over Record Settings keeps its draft in egui memory, outside `ui`: its window's
+    // elements show whether it opened
+    let vo = |d: &mut Driver| d.ok("ui.elements", json!({"prefix": "voiceover."})).as_array().map_or(0, Vec::len);
+    let r = d.exec("voiceover.settingsDialog", json!({}));
+    assert!(r.is_object(), "the voice-over settings, not a dialog: {r}");
+    d.frames(4);
+    assert_eq!(vo(&mut d), 0, "no Voice-Over Record Settings window");
+    d.ok("ui.menu.invoke", json!({"id": "voiceover.settingsDialog"}));
+    d.frames(4);
+    assert!(vo(&mut d) > 0, "the menu form opens it");
+    d.ok("ui.click", json!({"id": "voiceover.cancel"}));
+    d.frames(2);
+    assert_eq!(vo(&mut d), 0, "Cancel closes it");
+    // the menu form of one of them still opens its dialog
+    let r = d.ok("ui.menu.invoke", json!({"id": "edit.find"}));
+    assert_eq!(r["dialog"], json!("find"), "{r}");
+    // the UI commands the same route carries still answer `engine.execute`
+    let r = d.exec("view.dynamicAudioWaveforms", json!({"on": false}));
+    assert_eq!(r["dynamicAudioWaveforms"], json!(false), "{r}");
+    assert_eq!(d.inspect()["ui"]["extras"]["dynamic_waveforms"], json!(false));
 }

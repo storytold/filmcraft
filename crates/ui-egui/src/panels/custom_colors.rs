@@ -113,7 +113,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             cancel = response.clicked();
         });
     });
-    if cancel || modal.should_close() {
+    // The runtime takes Escape from egui as the window's cancel, so the modal does not see it.
+    if cancel || modal.should_close() || crate::framework::escape_pressed(&modal.response.ctx) {
         return;
     }
     if apply && let Some(color) = draft.color.value() {
