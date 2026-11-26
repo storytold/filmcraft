@@ -826,48 +826,60 @@ fn export_shared(
 /// craft-libs fix without jumping hundreds of commits. Scan the document here so the
 /// already-landed interchange test, and a lossy import, see the warning.
 fn report_unusable_fcpxml_lanes(text: &str, report: &mut crate::Report) {
-    let mut search_from = 0;
-    while let Some(rel) = text[search_from..].find("lane=") {
-        let attr_at = search_from + rel;
-        search_from = attr_at + 5;
-        let before = &text[..attr_at];
-        let Some(lt) = before.rfind('<') else {
-            continue;
-        };
-        if before[lt + 1..].contains('>') {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut tag_start: Option<usize> = None;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            tag_start = Some(i + 1);
+            i += 1;
             continue;
         }
-        // `plane="` / `foo-lane="` should not count as the `lane` attribute.
-        if attr_at > 0 {
-            let prev = text[..attr_at].chars().next_back();
-            if prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':') {
-                continue;
+        let Some(start) = tag_start else {
+            i += 1;
+            continue;
+        };
+        if bytes[i] == b'>' {
+            tag_start = None;
+            i += 1;
+            continue;
+        }
+        // An attribute value cannot hold the `lane` attribute, and skipping it keeps the pass
+        // linear when the value is long.
+        if (bytes[i] == b'"' || bytes[i] == b'\'') && i > start {
+            let q = bytes[i];
+            match bytes[i + 1..].iter().position(|&b| b == q) {
+                Some(rel) => i += 1 + rel + 1,
+                None => i += 1,
+            }
+            continue;
+        }
+        // `plane=` / `foo-lane=` should not count as the `lane` attribute.
+        if bytes[i] == b'l'
+            && bytes[i..].starts_with(b"lane=")
+            && (i == 0 || !matches!(bytes[i - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b':'))
+        {
+            let body = &text[start..];
+            let first = body.chars().next().unwrap_or('\0');
+            if first != '!' && first != '?' && first != '/' {
+                let tag = body.split(|c: char| c.is_whitespace() || c == '>').next().unwrap_or("");
+                if !tag.is_empty()
+                    && let Some(after) = bytes.get(i + 5..)
+                    && let Some(&q) = after.first()
+                    && (q == b'"' || q == b'\'')
+                    && let Some(rel) = after[1..].iter().position(|&b| b == q)
+                {
+                    let lane = &text[i + 6..i + 6 + rel];
+                    let end = i + 6 + rel;
+                    if lane.parse::<i32>().is_err() {
+                        report.warn(format!("<{tag}> has lane \"{lane}\", which is not a lane a sequence can have; skipped"));
+                    }
+                    i = end + 1;
+                    continue;
+                }
             }
         }
-        let tag_body = &before[lt + 1..];
-        if tag_body.starts_with('!') || tag_body.starts_with('?') || tag_body.starts_with('/') {
-            continue;
-        }
-        let tag = tag_body.split(|c: char| c.is_whitespace() || c == '>').next().unwrap_or("");
-        if tag.is_empty() {
-            continue;
-        }
-        let after = &text[search_from..];
-        let Some(&q) = after.as_bytes().first() else {
-            continue;
-        };
-        if q != b'"' && q != b'\'' {
-            continue;
-        }
-        let Some(end) = after[1..].find(q as char) else {
-            continue;
-        };
-        let lane_attr = &after[1..1 + end];
-        search_from += 1 + end + 1;
-        if lane_attr.parse::<i32>().is_ok() {
-            continue;
-        }
-        report.warn(format!("<{tag}> has lane \"{lane_attr}\", which is not a lane a sequence can have; skipped"));
+        i += 1;
     }
 }
 
@@ -1113,6 +1125,27 @@ mod tests {
         let mut report = crate::Report::default();
         report_unusable_fcpxml_lanes(r#"<title name="lane=x"/><!-- lane="x" --><clip foo-lane="x"/>"#, &mut report);
         assert!(!report.has_warnings(), "{report}");
+    }
+
+    /// A comment (or any text node) can hold many `lane=` tokens with no tag start nearby. Walking
+    /// back from each one to the comment's start is quadratic; the pass now carries the tag state.
+    #[test]
+    fn many_lane_tokens_in_a_comment_are_scanned_once() {
+        let mut report = crate::Report::default();
+        let text = format!("<fcpxml><!--{}--></fcpxml>", "lane=".repeat(50_000));
+        report_unusable_fcpxml_lanes(&text, &mut report);
+        assert!(!report.has_warnings(), "{report}");
+    }
+
+    /// A tag whose attributes push `lane` past any fixed back-scan bound still gets its warning:
+    /// the pass knows where the tag started, so it does not need to search back for it.
+    #[test]
+    fn a_lane_after_a_long_attribute_list_is_still_reported() {
+        let mut report = crate::Report::default();
+        let long = format!("<asset-clip name=\"{}\" lane=\"x\"/>", "a".repeat(4_096));
+        report_unusable_fcpxml_lanes(&long, &mut report);
+        let msgs: Vec<_> = report.warnings().map(|w| w.message.as_str()).collect();
+        assert_eq!(msgs, [r#"<asset-clip> has lane "x", which is not a lane a sequence can have; skipped"#]);
     }
 
     #[test]
