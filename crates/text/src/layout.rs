@@ -431,6 +431,9 @@ struct Para<'a> {
     items: Vec<Item>,
     /// Advance per char byte (at its cluster start).
     char_adv: Vec<f32>,
+    /// Running sum of `char_adv`: `prefix[i]` is the width before byte `i`, so a range's width is
+    /// a subtraction. Summing the slice per range was quadratic over a long line's break points.
+    prefix: Vec<f32>,
 }
 
 /// Lay out one paragraph (no newlines) whose text starts at byte `base` of the whole string.
@@ -461,7 +464,14 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
             char_adv[g.cluster.min(text.len())] += g.adv;
         }
     }
-    let p = Para { text, base, sty, style: para, bidi, chars, items, char_adv };
+    let mut prefix = Vec::with_capacity(char_adv.len() + 1);
+    prefix.push(0.0);
+    let mut acc = 0.0f32;
+    for &a in &char_adv {
+        acc += a;
+        prefix.push(acc);
+    }
+    let p = Para { text, base, sty, style: para, bidi, chars, items, char_adv, prefix };
     let ranges = p.line_ranges();
     let nlines = ranges.len();
     ranges.into_iter().enumerate().map(|(li, r)| p.line(li, nlines, r)).collect()
@@ -519,7 +529,9 @@ fn shape_items(text: &str, chars: &[CharInfo], sty: &Styles, para: &ParagraphSty
 
 impl Para<'_> {
     fn range_w(&self, r: Range<usize>) -> f32 {
-        self.char_adv[r].iter().sum()
+        let end = r.end.min(self.char_adv.len());
+        let start = r.start.min(end);
+        self.prefix[end] - self.prefix[start]
     }
 
     /// End of `r` without its trailing whitespace, and that whitespace's width.
@@ -1119,6 +1131,18 @@ mod hostile_layout_tests {
         // alternating directions: one visual run per word, one shaping item per run
         let mixed = "a \u{5d0} ".repeat(4_000);
         let _ = layout_uncached(&mixed, &TextStyle::default(), &ParagraphStyle { width: Some(300.0), ..Default::default() });
+        assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
+    }
+
+    /// Each break opportunity used to re-sum the line from its start, so a long line with many
+    /// spaces was quadratic in the text length: 300,000 spaces take about a minute before and well
+    /// under a second with the prefix sum.
+    #[test]
+    fn a_long_line_with_many_break_opportunities_stays_fast() {
+        let text = "a ".repeat(300_000);
+        let t = Instant::now();
+        let out = layout_uncached(&text, &TextStyle::default(), &ParagraphStyle { width: Some(1e9), ..Default::default() });
+        assert_eq!(out.lines.len(), 1);
         assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
     }
 }
