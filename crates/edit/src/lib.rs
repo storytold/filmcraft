@@ -794,6 +794,20 @@ pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
     }
 }
 
+/// A ripple trim moved later material by `shift` from `cut` (the edited edge's old position): the
+/// sync-locked caption tracks follow it, as they do for insert, extract and ripple delete. A longer
+/// clip opens a gap at the cut; a shorter one extracts the stretch that closes.
+fn captions_follow_ripple(seq: &mut Sequence, edge: Edge, cut: Tick, shift: Tick, ctx: &mut EditCtx) {
+    for ct in seq.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+        if shift > Tick::ZERO {
+            captions::insert_gap(ct, cut, shift, ctx);
+        } else if shift < Tick::ZERO {
+            let closing = if edge == Edge::In { TimeRange::new(cut, -shift) } else { TimeRange::new(cut + shift, -shift) };
+            captions::extract_range(ct, closing);
+        }
+    }
+}
+
 /// Trim one edge of an item (Selection-tool edge drag = Regular; Ripple tool = Ripple).
 /// Linked partners should be trimmed by the caller with the same delta.
 pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
@@ -838,6 +852,7 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
                 tr.sort();
             }
         }
+        captions_follow_ripple(&mut work, edge, if edge == Edge::In { old_start } else { old_end }, shift, ctx);
         transitions_follow_cuts(seq, &mut work);
     } else {
         let frame = work.settings.frame_rate.frame_duration();
@@ -955,6 +970,7 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
             return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
         }
     }
+    captions_follow_ripple(&mut work, edge, if edge == Edge::In { main_from - Tick(1) } else { main_from }, shift, ctx);
     transitions_follow_cuts(seq, &mut work);
     work.check().map_err(EditError::Other)?;
     *seq = work;

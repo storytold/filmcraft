@@ -590,6 +590,54 @@ fn ripple_trim_shifts_following() {
 }
 
 #[test]
+fn ripple_trim_moves_sync_locked_caption_tracks() {
+    // V1: a [0,10), b [10,20). C1 has a caption over b and one before the cut; C_Locked and C_Unsynced stay put.
+    let setup = || {
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let a = fx.put(v1, 0, 10, 0);
+        let b = fx.put(v1, 10, 10, 0);
+        let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+        fx.add_caption(c1, 2, 4, "before");
+        fx.add_caption(c1, 12, 4, "over b");
+        let locked = fx.add_caption_track("C_Locked", CaptionFormat::Subtitle);
+        fx.add_caption(locked, 12, 4, "locked");
+        fx.seq.caption_track_mut(locked).unwrap().locked = true;
+        let unsynced = fx.add_caption_track("C_Unsynced", CaptionFormat::Subtitle);
+        fx.add_caption(unsynced, 12, 4, "unsynced");
+        fx.seq.caption_track_mut(unsynced).unwrap().sync_lock = false;
+        (fx, a, b, c1, locked, unsynced)
+    };
+    let untouched = |fx: &Fx, locked, unsynced| {
+        assert_eq!(fx.caption_spans(locked), vec![(12, 4, "locked".into())]);
+        assert_eq!(fx.caption_spans(unsynced), vec![(12, 4, "unsynced".into())]);
+    };
+
+    // trim(): a longer tail opens a gap, a shorter tail closes it, and the head edge does the same
+    let (mut fx, a, b, c1, locked, unsynced) = setup();
+    let mut n = fx.next;
+    trim(&mut fx.seq, a, Edge::Out, TrimMode::Ripple, f(4), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(2, 4, "before".into()), (16, 4, "over b".into())], "longer tail");
+    trim(&mut fx.seq, a, Edge::Out, TrimMode::Ripple, -f(6), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(2, 4, "before".into()), (10, 4, "over b".into())], "shorter tail");
+    trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, f(2), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(2, 4, "before".into()), (8, 4, "over b".into())], "shorter head");
+    trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, -f(1), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(2, 4, "before".into()), (9, 4, "over b".into())], "longer head");
+    untouched(&fx, locked, unsynced);
+
+    // ripple_trim_group(): the same, for one clip and for a group
+    let (mut fx, a, _b, c1, locked, unsynced) = setup();
+    let mut n = fx.next;
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(2, 4, "before".into()), (15, 4, "over b".into())], "longer tail");
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, -f(5), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(2, 4, "before".into()), (10, 4, "over b".into())], "shorter tail");
+    untouched(&fx, locked, unsynced);
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn ripple_trim_group_takes_a_split_edit_along() {
     // V1: a [0,10) then b [10,20). b's linked sound leads it by 4 on sync-locked A1: [6,20).
     let mut fx = Fx::new();
