@@ -446,6 +446,22 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
     panic.downcast_ref::<String>().map(String::as_str).or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("no message")
 }
 
+/// `--recover`: recover the first project waiting, if any. The error of a recovery that failed,
+/// which can be after it opened the project.
+fn recover_first(session: &mut Session) -> Option<String> {
+    let id = session.recovery_candidates().first()?.id.clone();
+    match session.execute("file.recover", json!({"id": id})) {
+        Ok(r) => {
+            log::info!("recovered {r}");
+            None
+        }
+        Err(e) => {
+            log::error!("recovery failed: {e}");
+            Some(e.to_string())
+        }
+    }
+}
+
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
 fn native_options(agent: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
@@ -557,17 +573,7 @@ fn app_creator(
             let _ = session.execute("file.import", json!({"paths": media}));
         }
         let before_recovery = session.document_epoch;
-        let mut recovery_error = None;
-        if recover == Some(true) && !session.recovery_candidates().is_empty() {
-            let id = session.recovery_candidates()[0].id.clone();
-            match session.execute("file.recover", json!({"id": id})) {
-                Ok(r) => log::info!("recovered {r}"),
-                Err(e) => {
-                    log::error!("recovery failed: {e}");
-                    recovery_error = Some(e.to_string());
-                }
-            }
-        }
+        let recovery_error = if recover == Some(true) { recover_first(&mut session) } else { None };
         // a project the recovery installed, also when it then failed to confirm its new copy or
         // to remove the old one
         let recovered = session.document_epoch != before_recovery;
