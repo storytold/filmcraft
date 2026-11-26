@@ -4,6 +4,8 @@ use crate::icons::{self, Icon};
 use crate::widgets::{HotNumberOptions, hot_number_numeric};
 use filmcraft_project::Sequence;
 
+mod zoom_bar;
+
 /// The narrowest the zoom scroll bar's thumb gets: room for its two handles and a part between
 /// them to grab.
 const MIN_THUMB_W: f32 = 34.0;
@@ -3046,8 +3048,17 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
 
 // the zoom bar's gestures are one state machine (modes, cursor pin, settings popups, minimap);
 // splitting it would separate state that must stay in sync within a single frame
-#[allow(clippy::cognitive_complexity)]
 pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, view_w: f32, seq: &Sequence, frame_seconds: f64, t: &Tokens) {
+    if app.session.state.timeline_ui.slider_minimap {
+        zoom_scrollbar_with_minimap_legacy(app, ui, bar, view_w, seq, frame_seconds, t);
+    } else {
+        zoom_bar::zoom_scrollbar(app, ui, bar, view_w, seq, frame_seconds, t);
+    }
+}
+
+// Keep the existing layered drawing path together until the dedicated minimap layer is extracted.
+#[allow(clippy::cognitive_complexity)]
+fn zoom_scrollbar_with_minimap_legacy(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, view_w: f32, seq: &Sequence, frame_seconds: f64, t: &Tokens) {
     let seq_seconds = seq.duration().seconds();
     let p = ui.painter();
     let resp = ui.interact(bar, egui::Id::unique("tl-zoombar"), Sense::click_and_drag());
@@ -3304,7 +3315,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // the slider can run away from the cursor while it zooms. Shift drags hide the cursor (it is
     // pinned), so it stays hidden there.
     app.tl.zoombar_point_cursor = app.tl.zoombar_cursor_lock.is_none() && (on_circle || edge_grab);
-    if app.tl.zoombar_point_cursor {
+    if app.tl.zoombar_point_cursor && on_circle && !edge_grab {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    } else if edge_grab {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
     }
     // The "you are here" marker on the fixed minimap: the true visible window in the plain linear
@@ -3824,6 +3837,11 @@ fn release_zoombar_cursor(ctx: &egui::Context, viewport: Option<egui::ViewportId
 fn cursor_release_target(acquired: Option<egui::ViewportId>, current: egui::ViewportId) -> egui::ViewportId {
     acquired.unwrap_or(current)
 }
+
+fn release_slider_cursor(ctx: &egui::Context, viewport: Option<egui::ViewportId>) {
+    release_zoombar_cursor(ctx, viewport);
+}
+
 
 /// Close the zoom bar's own settings popup (the one opened by right-clicking the bar). The two
 /// sliders' settings menus are mutually exclusive: opening one takes the other with it.

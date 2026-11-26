@@ -417,16 +417,16 @@ fn zoom_bar_at_start(d: &mut Driver) -> ([f32; 4], [f32; 4], f32) {
     (thumb, track, thumb[1] + thumb[3] / 2.0)
 }
 
-/// The zoom bar's circular end handles zoom, so the pointer over one shows the horizontal resize
-/// arrow; the middle of the thumb scrolls and the bar beside it jumps, which keep the normal pointer.
+/// The zoom bar's circular end handles are clickable controls, so the pointer over one shows a
+/// hand; the middle of the thumb scrolls and the bar beside it jumps, which keep the normal pointer.
 #[test]
-fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
+fn zoom_bar_handles_show_a_pointer_cursor_on_hover() {
     let mut d = Driver::tall();
     let (thumb, track, y) = zoom_bar_at_start(&mut d);
     d.move_to(thumb[0] + 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "left handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "left handle");
     d.move_to(thumb[0] + thumb[2] - 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "right handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "right handle");
     d.move_to(thumb[0] + thumb[2] / 2.0, y);
     assert_eq!(d.cursor(), CursorIcon::Default, "middle of the thumb");
     let beside = track[0] + track[2] - 20.0;
