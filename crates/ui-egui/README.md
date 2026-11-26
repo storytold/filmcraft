@@ -234,19 +234,25 @@ Voice-Over Record Settings has a checkbox, "Full-screen Program while recording"
 of `audio.voiceover.settings` (get and set; persisted with the other `voiceOver` preferences, and
 an older preferences file without it loads with it off). The engine only stores it; entering and
 leaving go through the UI command `view.fullScreenProgram`, so the panel does nothing the
-automation interface cannot. `voiceover.recordToggle` honours it as the track header's microphone
-does.
+automation interface cannot. `voiceover.recordToggle` honours it, as the track header's microphone
+does; they are the entry points. A bare `audio.voiceover.start` sent over the control channel only
+arms the engine's capture: the panel's `toggle` is also what moves the playhead to the capture
+start and starts playback (so the pre-roll, the countdown cues and the overlay), and the full-screen
+step is part of it, so a direct start changes no layout and nothing is given back at its end.
 
 Behaviour decisions:
 
-- With it on, a take that has started (the engine accepted `audio.voiceover.start`) enters the
-  full-screen Program view. A start that fails never changes the layout.
+- With it on, a take that has started through `voiceover.recordToggle` (the engine accepted
+  `audio.voiceover.start`) enters the full-screen Program view. A start that fails never changes the layout.
 - `UiState::voiceover_cinema` says "the full-screen view now showing is the take's to give back".
   It is set only when the take entered the view, so a view that was already full screen stays full
   screen. `panels::voiceover::tick` runs every frame, also in the full-screen view (which draws no
   dialogs, so it is called from `app/frame.rs` there), and gives the view back once no take is
-  recording: stopped, played out to the punch-out plus post-roll, input error, discarded from the
-  settings dialog or by `audio.voiceover.stop {discard}`, or the project replaced. Detecting the end
+  recording or its capture has stopped and waits for a save: stopped, played out to the punch-out plus post-roll, input error, discarded from the
+  settings dialog or by `audio.voiceover.stop {discard}`, or the project replaced. When saving the
+  file fails (the recordings folder cannot be written), the take is kept for another stop, and the
+  view is given back at once so the error and the way to retry (the microphone, `voiceover.recordToggle`,
+  Discard take in the settings dialog) are visible; the retry does not re-enter the view. Detecting the end
   from the engine's state rather than hooking each ending keeps it right for all of them.
 - Leaving by hand during the take (Esc or the command) does not stop the recording. The flag is
   dropped as soon as the view is seen to be off, so the take's end does not re-enter or touch the
@@ -260,7 +266,7 @@ Behaviour decisions:
   polite live region, so each countdown number and "Recording" is announced.
 
 Tests: `tests/it/voiceover_fullscreen_ui.rs` (off by default; on: enter, stop restores layout and
-focus; already full screen stays; Esc and the command mid-take leave the take running and its end
+focus, also when the file cannot be saved and the take stays for a retry; already full screen stays; Esc and the command mid-take leave the take running and its end
 changes nothing; a view re-entered by hand stays; discard, punch-out plus post-roll, an input error
 restore; a refused start leaves the layout; the dialog checkbox saves the preference) and, in the
 engine, `voiceover_tests::{full_screen_program_is_off_by_default_and_round_trips_through_the_settings,

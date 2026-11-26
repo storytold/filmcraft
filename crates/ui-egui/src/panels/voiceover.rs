@@ -16,7 +16,10 @@
 //! same way. `UiState::voiceover_cinema` says the view now showing is the take's to give back; it is
 //! set only when the take entered it, and [`tick`] (every frame, also in the full-screen view)
 //! clears it once the view is left by hand and gives the view back once the take is gone, however
-//! it went: stopped, played out to the punch-out and post-roll, an input error, discarded.
+//! it went: stopped (also when saving the file failed and the take waits for a retry), played out
+//! to the punch-out and post-roll, an input error, discarded. Only `voiceover.recordToggle` and the
+//! track header's microphone (this panel's `toggle`) enter it; a bare `audio.voiceover.start` over the
+//! control channel arms the engine and changes no layout, as it starts no playback either.
 
 use crate::widgets::CenteredDialog as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -141,14 +144,16 @@ fn enter_full_screen(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
 /// Settle the full-screen view the take entered: forget it when the user has left the view by
 /// hand (the take goes on, and its end must not touch the layout), give it back once no take is
-/// recording.
+/// recording or its capture has stopped awaiting a save.
 fn give_back_layout(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if !app.ui.voiceover_cinema {
         return;
     }
     if !app.ui.fullscreen_program {
         app.ui.voiceover_cinema = false;
-    } else if !app.session.voiceover.recording() {
+    } else if !app.session.voiceover.recording() || app.session.voiceover.awaiting_save() {
+        // no take, or a stopped one whose file could not be saved yet: the error and the retry
+        // controls must not stay hidden behind the full-screen view (the take stays for a retry)
         app.ui.voiceover_cinema = false;
         let _ = crate::panels::keyboard::route(app, ctx, "view.fullScreenProgram", &json!({}));
     }

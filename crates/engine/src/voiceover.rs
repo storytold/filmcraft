@@ -209,6 +209,11 @@ impl VoiceOver {
     pub fn recording(&self) -> bool {
         self.rec.is_some()
     }
+    /// The take's capture has stopped and its file is not saved yet (a failed save keeps the take
+    /// for another `audio.voiceover.stop`).
+    pub fn awaiting_save(&self) -> bool {
+        self.rec.is_some() && self.pending_stop.is_some()
+    }
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
     }

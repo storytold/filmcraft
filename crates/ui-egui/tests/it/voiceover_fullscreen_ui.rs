@@ -193,6 +193,46 @@ fn a_take_that_plays_out_past_the_punch_out_and_post_roll_gives_the_layout_back(
 }
 
 #[test]
+fn a_take_that_cannot_be_saved_gives_the_layout_back_and_stays_available_for_retry() {
+    let (mut d, dir) = Driver::with_pref(true, "save-fails");
+    d.start_take();
+    assert!(d.full());
+    // the recordings folder cannot be written: a file stands where the folder should be
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::write(&dir, b"not a folder").unwrap();
+    d.exec("playhead.set", json!({"seconds": 3.0}));
+    d.ok("ui.playback", json!({"action": "stop"}));
+    d.frames(3);
+    assert!(d.recording(), "the stopped take is kept for another try");
+    assert!(!d.full(), "the error and the recovery controls are not hidden behind the full-screen view");
+    assert!(!d.harness.state().ui.voiceover_cinema);
+    // fix the folder and retry with the same control: the take is saved, and the view stays as it is
+    std::fs::remove_file(&dir).unwrap();
+    d.ok("ui.menu.invoke", json!({"id": "voiceover.recordToggle", "params": {"track": "A1"}}));
+    d.frames(3);
+    assert!(!d.recording(), "the retry saved the take");
+    assert!(!d.full());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_full_screen_view_the_take_did_not_enter_stays_when_its_save_fails() {
+    let (mut d, dir) = Driver::with_pref(true, "save-fails-kept");
+    d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
+    d.start_take();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::write(&dir, b"not a folder").unwrap();
+    d.exec("playhead.set", json!({"seconds": 3.0}));
+    d.ok("ui.playback", json!({"action": "stop"}));
+    d.frames(3);
+    assert!(d.recording());
+    assert!(d.full(), "the user's own full-screen view is not the take's to give back");
+    let _ = std::fs::remove_file(&dir);
+    d.discard_take();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn an_input_error_ends_the_take_and_gives_the_layout_back() {
     let (mut d, dir) = Driver::with_pref(true, "error");
     d.harness.state_mut().session.voiceover.input = Some(Box::new(FailedInput));
