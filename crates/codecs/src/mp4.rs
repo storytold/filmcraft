@@ -81,13 +81,18 @@ struct Mp4Audio {
 
 pub struct Mp4Source {
     info: MediaInfo,
-    bytes: crate::Src,
-    file: Mp4File,
-    vtrack: Option<usize>,
+    pub(crate) bytes: crate::Src,
+    pub(crate) file: Mp4File,
+    pub(crate) vtrack: Option<usize>,
+    /// Every playable video track in file order, the primary (`vtrack`) first: dual-lens
+    /// containers (Insta360 INSV) have two, ordinary files one.
+    pub(crate) vtracks: Vec<usize>,
     video: GopCache,
     /// Look frames up by the start of their frame: the video track's timestamp unit is half a frame
     /// or longer and its samples sit on the nominal frame grid ([`crate::gop::snap_coarse_units`]).
     snap: bool,
+    /// Colour signalled by the container (see [`GopCache::new`]), for extra video tracks.
+    pub(crate) explicit_color: Option<ColorInfo>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<Mp4Audio>,
 }
@@ -273,7 +278,8 @@ impl Mp4Source {
         // A track needs samples, a sample description and a timescale to be playable (damaged
         // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
         let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
-        let vtrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Video));
+        let vtracks: Vec<usize> = file.tracks.iter().enumerate().filter(|(_, t)| playable(t, TrackKind::Video)).map(|(i, _)| i).take(8).collect();
+        let vtrack = vtracks.first().copied();
         // every audio track is a stream (the track count comes from the file: capped)
         let atracks: Vec<usize> =
             file.tracks.iter().enumerate().filter(|(_, t)| playable(t, TrackKind::Audio)).map(|(i, _)| i).take(filmcraft_media::MAX_AUDIO_STREAMS).collect();
@@ -401,20 +407,65 @@ impl Mp4Source {
                 Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
             .collect();
-        snap_to_frame_grid(&mut file, vtrack);
-        rebase_unedited_video(&mut file, vtrack, &mut audios);
+        for &ti in &vtracks {
+            snap_to_frame_grid(&mut file, Some(ti));
+        }
+        rebase_unedited_video(&mut file, vtrack, &vtracks, &mut audios);
         let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
             let t = &file.tracks[i];
             crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts.saturating_add(t.edit_offset)), 1, i64::from(t.timescale), v.frame_rate)
         });
-        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), snap, audios })
+        Ok(Self {
+            info,
+            bytes,
+            file,
+            vtrack,
+            vtracks,
+            video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture),
+            snap,
+            explicit_color,
+            audios,
+        })
     }
 
-    fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
+    /// The video stream of track `ti` described as a [`VideoStreamInfo`] (a second video
+    /// track of a dual-lens container; the primary one is in [`MediaInfo::video`]).
+    pub(crate) fn track_video_size(&self, ti: usize) -> Option<VideoStreamInfo> {
+        let t = self.file.tracks.get(ti)?;
+        let entry = t.entries.first()?;
+        let vp = entry.video.clone().unwrap_or_default();
+        let (w, h) = (if vp.width > 0 { vp.width as u32 } else { t.width }, if vp.height > 0 { vp.height as u32 } else { t.height });
+        let (w, h) = match crate::hw::NalStreamInfo::from_entry(entry) {
+            Some(Ok(n)) if n.crop.2 > 0 && n.crop.3 > 0 => (n.crop.2, n.crop.3),
+            _ => (w, h),
+        };
+        let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
+        durs.sort_unstable();
+        let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
+        let rate = FrameRate::from_f64(t.timescale as f64 / f64::from(d));
+        let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
+        let bitrate = (t.samples.iter().map(|s| s.size as u64).sum::<u64>() * 8 * u64::from(t.timescale)).checked_div(t.duration);
+        let (color, assumed) = color_from(entry, w, h);
+        Some(VideoStreamInfo {
+            width: w,
+            height: h,
+            frame_rate: rate,
+            par: vp.pixel_aspect.unwrap_or((1, 1)),
+            codec: codec_label(&entry.codec),
+            pixel_format: pixfmt_label(&entry.codec),
+            color,
+            has_alpha: false,
+            bitrate,
+            hdr: None,
+            color_assumed: Some(assumed),
+        })
+    }
+
+    pub(crate) fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
         self.file.read_sample(&self.bytes, track, i).map_err(|e| CodecError::Container(e.to_string()))
     }
 
-    fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
+    pub(crate) fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
         let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
         let ts = self.file.tracks[ti].timescale as i64;
         let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
@@ -471,9 +522,9 @@ impl Mp4Source {
 }
 
 /// The MP4 video track as a [`VideoSamples`] table.
-struct Mp4Video<'a> {
-    src: &'a Mp4Source,
-    track: usize,
+pub(crate) struct Mp4Video<'a> {
+    pub(crate) src: &'a Mp4Source,
+    pub(crate) track: usize,
 }
 
 impl VideoSamples for Mp4Video<'_> {
@@ -862,7 +913,7 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
 /// Every track moves back by the earliest start among them, video and audio alike, so the streams
 /// stay in sync and a delay between them keeps its meaning; a track with an edit list is never
 /// rebased on its own.
-fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
+fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, vtracks: &[usize], audios: &mut [Mp4Audio]) {
     let Some(vi) = vtrack else { return };
     let Some(t) = file.tracks.get(vi).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
     let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
@@ -878,9 +929,16 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
         let d = shift.to_rational_round(1, audio_ts(a));
         a.offset = a.offset.saturating_sub(d);
     }
-    let v = if shift == video_start { first } else { shift.to_rational_round(1, vts) };
-    if let Some(t) = file.tracks.get_mut(vi) {
-        t.edit_offset = t.edit_offset.saturating_sub(v);
+    // every unedited video track shifts by the same real-time amount, converted
+    // into its own timescale (as the audio tracks above), so the streams stay
+    // aligned even when they do not share a media timescale; the track whose
+    // own start set the shift keeps the exact sample count, unrounded.
+    for &ti in vtracks {
+        if let Some(t) = file.tracks.get_mut(ti).filter(|t| t.edits.is_empty()) {
+            let ts = i64::from(t.timescale.max(1));
+            let d = if ti == vi && shift == video_start { first } else { shift.to_rational_round(1, ts) };
+            t.edit_offset = t.edit_offset.saturating_sub(d);
+        }
     }
 }
 
