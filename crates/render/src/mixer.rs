@@ -611,6 +611,32 @@ pub fn graph_latency(seq: &Sequence) -> usize {
     build_state(&plan, seq.settings.sample_rate).map_or(0, |st| st.latency)
 }
 
+/// The audio tracks whose sound reaches the Mix in an export (no live overrides). A track is heard
+/// when it is not solo-muted and one of its routes carries sound to a strip that is heard. A static
+/// mute stops the strip's output and post-fader sends, not its pre-fader sends, and a muted send
+/// carries nothing. A mute that is automated counts as not muted. Fader levels are not looked at.
+pub fn heard_tracks(seq: &Sequence) -> HashSet<TrackId> {
+    let none = HashMap::new();
+    let plan = Plan::build(seq, &none);
+    let mut heard = vec![false; plan.strips.len()];
+    // every route goes to a later strip (tracks, then submixes, then the Mix), so one pass back from the Mix settles them all
+    for (i, s) in plan.strips.iter().enumerate().rev() {
+        if s.silent {
+            continue;
+        }
+        if s.kind == Kind::Master {
+            heard[i] = true;
+            continue;
+        }
+        let muted = Lane::new(&s.track, s.track.id, LANE_MUTE, &none).constant().is_some_and(|m| m >= 0.5);
+        heard[i] = plan.routes.iter().filter(|r| r.src == i).any(|r| {
+            let sends = r.send.and_then(|k| s.track.mixer.sends.get(k)).is_none_or(|snd| !snd.muted);
+            sends && (r.tap == Tap::Pre || !muted) && heard.get(r.target).copied().unwrap_or(false)
+        });
+    }
+    plan.strips.iter().zip(heard).filter(|(s, h)| *h && s.kind == Kind::Track).map(|(s, _)| s.track.id).collect()
+}
+
 // ------------------------------------------------------------------------------------- processing
 
 /// Planar bus signal (2 or 6 channels).

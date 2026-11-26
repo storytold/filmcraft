@@ -216,6 +216,15 @@ Notes:
   nearest frame.
 - `sequence.inspect` reports `durationFrames` as the number of frames export renders: a sequence
   that ends partway through a frame counts that frame.
+- `sequence.check {"item":id?,"minFrames":3,"checks":[...]?}` lists what an editor would see on the
+  first playback and no command result reports: `shortClip` (flash frames), `pictureHole` (sound
+  with no picture), `soundHole`, `emptyStretch` (nothing seen or heard; it names the captions over
+  it and, with `atEnd`, the clips keeping the sequence running) and `jumpCut` (a skip inside one
+  shot). It
+  decides what is seen and heard as the renderer does (a disabled clip, a clip on a video track
+  whose output is off, an adjustment layer, or a track the Mix does not hear through the
+  mixer's mute, solo and routing gives nothing), reports frames as
+  `sequence.inspect` does and changes nothing. Run it after an edit, through `command_run`.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,
   `window.workspace.color`, `window.panel.<name>`).
 - A command that works on the selection is disabled ("no clips selected", "select a clip in the
