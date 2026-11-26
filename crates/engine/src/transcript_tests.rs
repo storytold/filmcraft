@@ -128,6 +128,20 @@ fn remove_fillers_pauses_and_create_captions() {
     q.check().unwrap();
 }
 
+/// The Text panel's word-by-word action: the command, not just the edit layer, honours the field.
+#[test]
+fn create_captions_word_by_word() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+    let all = words(&mut s);
+    let r = s.execute("transcript.createCaptions", json!({"wordsPerCaption": 1, "lines": 1})).unwrap();
+    assert_eq!(r["captions"], all.len(), "one caption per word: {r}");
+    let q = s.active_sequence().unwrap();
+    let texts: Vec<&str> = q.caption_tracks[0].captions.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, all);
+    q.check().unwrap();
+}
+
 #[test]
 fn set_delete_and_models() {
     let (mut s, item, _) = session();
