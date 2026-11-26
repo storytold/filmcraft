@@ -123,7 +123,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true, back)
     } else {
         let recent = playing_recent(app, key, dir);
-        cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display, back)
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, false, back)
     };
     let exact = on_screen == Some(key);
     if which == Which::Program {
@@ -171,7 +171,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
                 crate::frames::Lookback::backward(6),
             )
         } else {
-            cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite, crate::frames::Lookback::backward(6))
+            cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite)
         };
         if let Some(tex) = reference {
             ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -601,7 +601,7 @@ const ASKED_KEYS: usize = 64;
 /// is, and showing it keeps the picture one pass behind the mouse instead of frozen until the
 /// mouse rests. Playback has its own schedule and remembers nothing (what was on screen before
 /// Play is no stand-in for where it stopped).
-fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
+pub(crate) fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
     let asked = app.monitor_asked.entry(prefix.to_string()).or_default();
     if playing {
         asked.clear();
@@ -628,12 +628,11 @@ fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option
     dir.and_then(|dir| app.frames.recent(key, dir, 6, crate::frames::PLAYING_REVISION_LAG))
 }
 
-/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one within
-/// `back` (the GPU path's look-back while playing, in the play direction), else the newest ready
-/// one of `asked` (see [`asked_before`]), else `recent` (while playing), with the display mode's
-/// channel mapping. Returns the texture and the frame it shows.
-#[allow(clippy::too_many_arguments)]
-fn cpu_texture(
+/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
+/// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
+/// with the display mode's channel mapping. Returns the texture and the frame it shows. The monitor
+/// itself calls [`cpu_texture_as`] with the GPU path's look-back while playing.
+pub(crate) fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     name: &str,
@@ -641,12 +640,12 @@ fn cpu_texture(
     asked: &[FrameKey],
     recent: Option<FrameKey>,
     mode: DisplayMode,
-    back: crate::frames::Lookback,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
-    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false, back)
+    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false, crate::frames::Lookback::backward(6))
 }
 
-/// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+/// [`cpu_texture`], looking back `back` frames (in the play direction) instead of six earlier
+/// ones, and keeping the frame's alpha when `alpha` is set (the Transparency Grid).
 #[allow(clippy::too_many_arguments)]
 fn cpu_texture_as(
     app: &mut FilmcraftApp,
