@@ -120,6 +120,7 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Editing",
             "Effects",
             "Learning",
+            "Lined Script",
             "Review",
             "Vertical",
             "Reset to Saved Layout",
