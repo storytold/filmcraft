@@ -96,6 +96,41 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+### Measuring what you can't watch
+
+An agent can't play the footage, so these read-only commands turn what an editor sees and hears
+into numbers. Run them before deciding what to cut and again after editing; none of them changes
+the project or adds an undo step.
+
+| Command | What it reports |
+|---|---|
+| `transcript.inspect` | the words, with their times and speakers (see [transcripts.md](transcripts.md)) |
+| `audio.levels {startSeconds?, endSeconds?, windowSeconds=0.5, quietDb=-45, minQuietSeconds=1, loudest=5}` | the mix's RMS and peak level (dBFS) per window, rendered like playback; `quiet` stretches (pauses, dead air without a transcript) and the `loudest` moments (music hits, applause). Not LUFS |
+| `clip.sceneEditDetection {report: true}` | the shots in the selected (or `clips`) video clips: `shots[].shots` with timeline start, end and length and the media start and end (`mediaStart`, `mediaEnd`). Nothing is cut, marked or added, and the call doesn't apply other finished scene detection jobs (those wait for the next poll). Finished mask tracking is applied before any command, a report included |
+| `sequence.pacing {longSeconds=5}` | the shots the viewer sees (topmost enabled video clip; titles and adjustment layers don't start a shot, through edits aren't cuts), `cutsPerMinute`, shot length mean/median/min/max, the `longest` shot, `longShots` and black `gaps` |
+
+`audio.levels` and a report run decode media while the command runs, so measure a range, not
+hours at once.
+
+**Before saying an edit is done**, run `sequence.review {againstUndo?: n, flashFrames=3,
+longSeconds=5, wordMarginSeconds=0.04, popDb=-30}`. It lists `issues` with `severity`, `seconds`,
+`clip`, `detail` and a `fix`:
+
+| kind | severity | meaning |
+|---|---|---|
+| `gap` | error | black inside the picture |
+| `flashFrame` | error | a shot shorter than `flashFrames` frames |
+| `offlineMedia` | error | a clip whose media is offline, also inside a nested sequence where the nest shows it |
+| `offlineMedia` | info | the check of nested sequences stopped at its clip limit (`offlineCheckComplete` is false): offline footage deeper in nests may be missing; review those sequences on their own |
+| `midWord` | warning | an audio edge inside a spoken word; the fix names the word edge to trim to |
+| `audioPop` | warning | a hard audio cut where the mix is loud: add a short crossfade |
+| `jumpCut` | info | the next shot continues the same media further on |
+| `longHold` | info | a shot longer than `longSeconds` |
+
+With `againstUndo: n`, `before` and `after` compare the picture with the state n undo steps ago
+(duration, picture seconds, shots, cuts per minute, longest shot). The checks find likely
+mistakes; a clean report doesn't mean a good edit.
+
 ### Conventions
 
 The server follows a few conventions that make it predictable for agents. They are not
