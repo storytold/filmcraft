@@ -1490,12 +1490,18 @@ pub(crate) fn graph_rows(
         && let Some(pos) = plot.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
-        // `to_media` already applied speed, so the timeline time is the clip fraction of `dur`.
-        let timeline = it.start.0.saturating_add((f * dur) as i64);
-        let sampled = graph_components(&param.value_at(to_media(f)));
-        let mut body = json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline});
-        if sampled.len() <= 1 {
-            body["value"] = json!(v_of(pos.y));
+        // On a frame, so the keyframe navigator (which moves the playhead, kept on frames) can
+        // reach the new keyframe; and inside the clip.
+        let rate = app.session.active_sequence().map(|q| q.settings.frame_rate).unwrap_or_default();
+        let mut timeline = rate.snap_nearest(Tick(it.start.0.saturating_add((f * dur) as i64)));
+        if timeline >= it.end() {
+            timeline = rate.snap((it.end() - Tick(1)).max(it.start));
+        }
+        // Sampled where the command stores the keyframe (a reversed clip runs backwards from its
+        // out point, which `to_media` doesn't model).
+        let sampled = graph_components(&param.value_at(it.effect_time_at(timeline)));
+        let value = if sampled.len() <= 1 {
+            Some(json!(v_of(pos.y)))
         } else if sampled.iter().all(|v| v.is_finite()) {
             // A point is one keyframe. The curve nearer the pointer takes the pointer's value;
             // the other coordinate keeps the value sampled at that time.
@@ -1510,9 +1516,26 @@ pub(crate) fn graph_rows(
             {
                 *slot = v_of(pos.y);
             }
-            body["value"] = json!(moved);
+            Some(json!(moved))
+        } else {
+            // An automatic (NaN) coordinate has no JSON form: the keyframe takes the sampled point.
+            None
+        };
+        let body = json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline.0});
+        match value {
+            // Insert or update: a double-click on the plot never removes a keyframe (the diamond's
+            // click does), and the value goes through `setParam`'s hard-range check.
+            Some(v) => {
+                let mut body = body;
+                body["value"] = v;
+                body["keyframe"] = json!(true);
+                actions.push(("effects.setParam".into(), with_mask(body)));
+            }
+            None if !param.keyframes.iter().any(|k| k.time == it.effect_time_at(timeline)) => {
+                actions.push(("effects.addKeyframe".into(), with_mask(body)));
+            }
+            None => {}
         }
-        actions.push(("effects.addKeyframe".into(), with_mask(body)));
     }
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);

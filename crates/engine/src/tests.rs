@@ -392,6 +392,11 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     let p = &it.effect("motion").unwrap().params["position"];
     let kf = p.keyframes.iter().find(|k| k.time == it.source_time_at(at)).expect("position keyframe");
     assert_eq!(kf.value, filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(120.0, 80.0)));
+    // A value outside the parameter's hard range is refused, as `effects.setParam` refuses it.
+    let out = filmcraft_time::Tick::from_seconds_f64(0.5);
+    assert!(s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": out.0, "value": 10001.0})).is_err());
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    assert!(it.effect("motion").unwrap().params["scale"].keyframes.iter().all(|k| k.time != it.source_time_at(out)));
     let bad = filmcraft_time::Tick::from_seconds_f64(2.0);
     assert!(s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "position", "time": bad.0, "value": 40.0})).is_err());
     let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
