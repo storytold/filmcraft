@@ -271,6 +271,14 @@ A missing or unreadable preferences file uses defaults, as in the desktop app. L
 does not start auto-save or scan recovery journals. Bridge mode uses the running app's preferences.
 `probe` and `bench-decode` do not create an engine session and do not load these preferences.
 
+Opening or saving a project updates only `general.recentProjects` in the latest preferences file,
+preserving settings saved by another session without applying them to the current session.
+Preference saves and recent-project updates use a shared `.preferences.json.lock` sidecar around
+the write (and the read for recent projects). Explicit preference saves still replace the snapshot.
+A busy or unsupported lock refuses the write instead of blocking the UI or saving without a lock:
+`prefs.set`/`prefs.reset` report an error; recent projects remain in memory and the Events log records
+the failed update. An unreadable or malformed preferences file is not replaced by a recent-project update.
+
 Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
 holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
 the next one says so on stderr, waits, and then edits what the first one saved. A crash releases the

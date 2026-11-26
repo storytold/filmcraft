@@ -456,6 +456,70 @@ fn recent_projects_are_remembered() {
 }
 
 #[test]
+fn recent_projects_preserve_preferences_saved_by_another_handle() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preferences.json");
+    let project = dir.path().join("current.fcproj").to_string_lossy().into_owned();
+    let mut s = Session { prefs_path: Some(path.clone()), path: Some(project.clone()), ..Session::default() };
+    s.prefs.save(&path).unwrap();
+
+    // Another handle saves after this session loaded, before it opens or saves a project.
+    let mut other = Preferences::load(&path);
+    other.playback.hardware_decoding = "off".into();
+    other.general.interface_language = "fr".into();
+    other.note_recent("other.fcproj");
+    other.save(&path).unwrap();
+    let mut expected = other.to_value();
+    expected["general"]["futureSetting"] = json!({"enabled": true});
+    std::fs::write(&path, serde_json::to_vec(&expected).unwrap()).unwrap();
+
+    s.note_recent_project();
+    other.note_recent(&project);
+    expected["general"]["recentProjects"] = json!(other.general.recent_projects);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved, expected, "only the latest document's recent-project field may change");
+    assert_eq!(s.prefs.general.recent_projects, other.general.recent_projects);
+    assert_eq!(s.prefs.playback.hardware_decoding, "auto", "opening a project must not reconfigure the running session");
+}
+
+#[test]
+fn recent_projects_leave_unreadable_preferences_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), path: Some("current.fcproj".into()), ..Session::default() };
+    for invalid in ["{truncated", "[]", r#"{"general":false}"#] {
+        std::fs::write(&path, invalid).unwrap();
+        s.note_recent_project();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        assert_eq!(s.prefs.general.recent_projects, ["current.fcproj"]);
+    }
+}
+
+#[test]
+fn recent_projects_and_preference_saves_share_a_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), path: Some("current.fcproj".into()), ..Session::default() };
+    let mut other = s.prefs.clone();
+    other.playback.hardware_decoding = "off".into();
+    other.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let lock = std::fs::File::options().read(true).write(true).open(dir.path().join(".preferences.json.lock")).unwrap();
+    lock.lock().unwrap();
+
+    assert_eq!(s.prefs.save(&path).unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(s.prefs.save_recent_project(&path, "current.fcproj").unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    s.note_recent_project();
+    assert_eq!(std::fs::read(&path).unwrap(), before, "a busy lock must never fall back to an unlocked write");
+    drop(lock);
+
+    s.note_recent_project();
+    let saved = Preferences::load(&path);
+    assert_eq!(saved.playback.hardware_decoding, other.playback.hardware_decoding);
+    assert_eq!(saved.general.recent_projects, ["current.fcproj"], "retry even when already first in memory");
+}
+
+#[test]
 fn media_cache_location_policy_and_clean() {
     let dir = tmp_dir("prefs-cache");
     let mut s = Session::default();
