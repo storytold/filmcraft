@@ -513,7 +513,7 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
     if let Some(rn) = app.ui.project_panel.rename.as_mut() {
         rn.text = text;
     }
-    let done = if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    let done = if crate::framework::escape_pressed(ui.ctx()) {
         app.ui.project_panel.rename = None;
         true
     } else if resp.lost_focus() {
@@ -739,7 +739,7 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
         ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, current.clone(), add)));
     }
     let Some((anchor, before, add)) = ui.data(|d| d.get_temp::<Drag>(key)) else { return };
-    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let cancel = crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx());
     if cancel || !(bg.dragged_by(primary) || bg.drag_stopped_by(primary)) {
         ui.data_mut(|d| d.remove::<Drag>(key));
         if cancel && before != current {
@@ -1242,7 +1242,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             );
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
-            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let escape = crate::framework::escape_pressed(ui.ctx());
             // only the primary button moves cards: a middle-button drag pans the canvas (#579)
             let (dragged, stopped) = (resp.dragged_by(egui::PointerButton::Primary), resp.drag_stopped_by(egui::PointerButton::Primary));
             if (dragged || stopped) && (escape || crate::panels::drag_cancelled(ui)) {

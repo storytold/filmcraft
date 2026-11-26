@@ -7,7 +7,7 @@
 #   $DIST/filmcraft-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
 #   $DIST/filmcraft-<version>-linux-<arch>.tar.gz    plain FHS-style tree (bin/, share/)
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--arch-tar-dir DIRECTORY]
 #
 # Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
@@ -25,10 +25,16 @@ APP_ID=ai.storyteller.filmcraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
+ARCH_TAR_DIR=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
+    --arch-tar-dir)
+      [[ -n "${2:-}" ]] || { echo "error: --arch-tar-dir needs a directory" >&2; exit 2; }
+      ARCH_TAR_DIR="$2"
+      shift 2
+      ;;
     -h | --help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -42,9 +48,33 @@ case "$ARCH" in
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
 export FILMCRAFT_MAINTAINER="${FILMCRAFT_MAINTAINER:-FilmCraft maintainers <filmcraft@storyteller.ai>}"
+IS_NIGHTLY=0
+if [[ "${FILMCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
+  IS_NIGHTLY=1
+  # The binary compiles the exact prepared identity (build.rs refuses anything else), so a
+  # Nightly package never invents a version: two different nights must never share one.
+  if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+\.[0-9]+\.g[0-9a-f]{12}$ ]]; then
+    echo "error: a Nightly package requires the prepared version identity" >&2
+    echo "       (X.Y.Z-nightly.YYYYMMDD.RUN.ATTEMPT.gSHA12; set FILMCRAFT_VERSION and FILMCRAFT_BUILD_CHANNEL=nightly-v1)" >&2
+    exit 2
+  fi
+  export FILMCRAFT_BUILD_CHANNEL=nightly-v1
+  export FILMCRAFT_VERSION="$VERSION"
+fi
+# The Nightly channel's own icon; stable keeps the hicolor tree.
+NIGHTLY_ICON="$ROOT/assets/app-icon/filmcraft-nightly.png"
+if [[ "$IS_NIGHTLY" = 1 && ! -f "$NIGHTLY_ICON" ]]; then
+  echo "error: the Nightly icon $NIGHTLY_ICON is missing" >&2
+  exit 2
+fi
 BASENAME="filmcraft-$VERSION-linux-$ARCH"
 
-echo "==> FilmCraft $VERSION for Linux $ARCH ($FORMATS)"
+if [[ -n "$ARCH_TAR_DIR" && "$IS_NIGHTLY" != 1 ]]; then
+  echo "error: --arch-tar-dir is only for Nightly builds" >&2
+  exit 2
+fi
+
+echo "==> FilmCraft $VERSION for Linux $ARCH ($FORMATS, channel=${FILMCRAFT_BUILD_CHANNEL:-stable})"
 
 if [[ "$SKIP_BUILD" = 0 ]]; then
   if [[ -n "${CROSS_TARGET:-}" ]]; then
@@ -67,6 +97,11 @@ install -Dm755 "$BIN/filmcraft" "$STAGE/usr/bin/filmcraft"
 install -Dm755 "$BIN/filmcraft-cli" "$STAGE/usr/bin/filmcraft-cli"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/filmcraft" "$STAGE/usr/bin/filmcraft-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
+if [[ "$IS_NIGHTLY" = 1 ]]; then
+  sed -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.filmcraft.nightly-v1|' \
+      "$STAGE/usr/share/applications/$APP_ID.desktop" >"$STAGE/usr/share/applications/$APP_ID.desktop.tmp"
+  mv "$STAGE/usr/share/applications/$APP_ID.desktop.tmp" "$STAGE/usr/share/applications/$APP_ID.desktop"
+fi
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$FILMCRAFT_BUILD_DATE/g" \
@@ -89,9 +124,26 @@ has() { local fmt="$1"; case " $FORMATS " in *" $fmt "*) return 0 ;; *) return 1
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    # A Nightly binary only starts with its private profile, so an unpacked tarball gets the same
+    # launcher the other Nightly formats install: `filmcraft` starts `filmcraft-bin`.
+    mv "$WORK/tar/$BASENAME/bin/filmcraft" "$WORK/tar/$BASENAME/bin/filmcraft-bin"
+    install -Dm755 "$HERE/nightly-package-launch.sh" "$WORK/tar/$BASENAME/bin/filmcraft"
+  fi
   install -m755 "$HERE/install.sh" "$WORK/tar/$BASENAME/install.sh"
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
+fi
+
+# The Arch handoff keeps the same basename as the plain tarball in a separate directory.
+# Flatpak, OCI and direct tar consumers still get the original binary, not this launcher.
+if [[ -n "$ARCH_TAR_DIR" ]]; then
+  mkdir -p "$ARCH_TAR_DIR"
+  if [[ "$(cd "$ARCH_TAR_DIR" && pwd -P)" == "$(cd "$DIST" && pwd -P)" ]]; then
+    echo "error: the Arch tar directory must differ from the release directory" >&2
+    exit 2
+  fi
+  bash "$HERE/nightly-arch-tar.sh" "$STAGE/usr" "$WORK/arch-tar" "$ARCH_TAR_DIR" "$BASENAME"
 fi
 
 # ---- .deb / .rpm --------------------------------------------------------------------------------
@@ -99,8 +151,68 @@ if has deb || has rpm; then
   command -v nfpm >/dev/null || { echo "error: nfpm not found (https://nfpm.goreleaser.com/install/)" >&2; exit 1; }
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
+  NFPM_STAGE="$STAGE"
+  export NFPM_NAME="filmcraft"
+  export NFPM_BIN="filmcraft"
+  export NFPM_CLI="filmcraft-cli"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    NIGHTLY_DESK_ID="$APP_ID.nightly-v1"
+    export NFPM_NAME="filmcraft-nightly"
+    export NFPM_BIN="filmcraft-nightly"
+    export NFPM_CLI="filmcraft-nightly-cli"
+    NFPM_STAGE="$WORK/nfpm-root"
+    rm -rf "$NFPM_STAGE"
+    cp -R "$STAGE" "$NFPM_STAGE"
+    # The GUI lives off PATH, outside the desktop entry and the icon lookup: /usr/bin/filmcraft-nightly
+    # is the launcher that starts it with the Launcher's private profile, as on every other format.
+    install -Dm755 "$NFPM_STAGE/usr/bin/filmcraft" "$NFPM_STAGE/usr/lib/filmcraft-nightly/filmcraft"
+    cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
+#!/bin/sh
+# FilmCraft Nightly: the GUI runs with the Launcher's private profile, which holds every per-user
+# file (preferences, recovery autosaves, media cache, presets, logs, downloaded models).
+set -eu
+bin=/usr/lib/filmcraft-nightly/filmcraft
+profile="${XDG_DATA_HOME:-${HOME:-}/.local/share}/filmcraft-nightly/profile"
+# The Launcher's protocol, a bare version query and the usage screen pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V | --help | -h) exec "$bin" "$@" ;;
+esac
+# A caller-written `--` already separates the files from the options: drop it, so the launcher's
+# own separator never arrives as a file name.
+if [ "${1-}" = -- ]; then shift; fi
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
+WRAPPER
+    chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
+    rm -f "$NFPM_STAGE/usr/bin/filmcraft"
+    mv "$NFPM_STAGE/usr/bin/filmcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
+    mv "$NFPM_STAGE/usr/share/doc/filmcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
+    sed -e "s#^Exec=filmcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
+        -e "s|^TryExec=filmcraft$|TryExec=$NFPM_BIN|" \
+        -e "s|^Icon=$APP_ID$|Icon=$NIGHTLY_DESK_ID|" \
+        -e "s|^Name=FilmCraft$|Name=FilmCraft Nightly|" \
+        -e '/^MimeType=/d' \
+        "$NFPM_STAGE/usr/share/applications/$APP_ID.desktop" >"$NFPM_STAGE/usr/share/applications/$NIGHTLY_DESK_ID.desktop"
+    rm -f "$NFPM_STAGE/usr/share/applications/$APP_ID.desktop"
+    sed -e "s|<id>$APP_ID</id>|<id>$NIGHTLY_DESK_ID</id>|g" \
+        -e "s|<name>FilmCraft</name>|<name>FilmCraft Nightly</name>|g" \
+        -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$NIGHTLY_DESK_ID.desktop</launchable>|g" \
+        -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$NIGHTLY_DESK_ID</icon>|g" \
+        -e "s|<binary>filmcraft</binary>|<binary>$NFPM_BIN</binary>|g" \
+        -e '/<mediatype>/d' \
+        "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml" >"$NFPM_STAGE/usr/share/metainfo/$NIGHTLY_DESK_ID.metainfo.xml"
+    rm -f "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
+    rm -rf "$NFPM_STAGE/usr/share/mime"
+    # The Nightly claims no associations, so it registers none and ships its own icon.
+    rm -rf "$NFPM_STAGE/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" "$NFPM_STAGE/usr/share/icons/hicolor/256x256/apps/$NIGHTLY_DESK_ID.png"
+  fi
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
-  sed "s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  DROP_LIB_TREE=
+  # shellcheck disable=SC2016
+  [[ -d "$NFPM_STAGE/usr/lib" ]] || DROP_LIB_TREE='\|^  - src: \${STAGE}/usr/lib/|,+2d;'
+  # The drop commands are a prefix of the first expression: with `-e` sed would read them as a file.
+  # shellcheck disable=SC2016
+  sed "${DROP_LIB_TREE}s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
@@ -124,10 +236,50 @@ if has appimage; then
   esac
   APPDIR="$WORK/FilmCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  ln -s usr/bin/filmcraft "$APPDIR/AppRun"
-  cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
-  cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
-  ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    APPIMAGE_ID="$APP_ID.nightly-v1"
+    # AppRun is a script here, not a symlink: it registers the Nightly's .desktop entry and icons
+    # in $XDG_DATA_HOME before launching, so Wayland compositors resolve the window's app_id to our
+    # icon (logic in packaging/linux/apprun-test.sh). Stable keeps its plain symlink below and, as
+    # before, installs nothing on start. The desktop id and the channel line below follow: a
+    # Nightly AppImage must start the app with the Launcher's private profile, not stable's folders
+    # (AppRun's tail does the exec).
+    install -Dm755 "$HERE/AppRun" "$APPDIR/AppRun"
+    awk -v old_id="$APP_ID" -v new_id="$APPIMAGE_ID" '
+      $0 == "DESK_ID=" old_id { print "DESK_ID=" new_id; next }
+      $0 == "CHANNEL=stable" { print "CHANNEL=nightly-v1"; next }
+      { print }
+    ' "$APPDIR/AppRun" >"$APPDIR/AppRun.tmp"
+    grep -qx 'CHANNEL=nightly-v1' "$APPDIR/AppRun.tmp" || {
+      echo "error: AppRun has no CHANNEL=stable line to switch for Nightly" >&2
+      exit 1
+    }
+    mv "$APPDIR/AppRun.tmp" "$APPDIR/AppRun"
+    chmod 755 "$APPDIR/AppRun"
+    sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \
+        -e "s|^Name=FilmCraft$|Name=FilmCraft Nightly|" \
+        -e '/^MimeType=/d' \
+        "$APPDIR/usr/share/applications/$APP_ID.desktop" >"$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop"
+    rm -f "$APPDIR/usr/share/applications/$APP_ID.desktop"
+    cp "$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop" "$APPDIR/$APPIMAGE_ID.desktop"
+    # The Nightly claims no associations, so its metainfo must not advertise any either.
+    sed -e "s|<id>$APP_ID</id>|<id>$APPIMAGE_ID</id>|g" \
+        -e "s|<name>FilmCraft</name>|<name>FilmCraft Nightly</name>|g" \
+        -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$APPIMAGE_ID.desktop</launchable>|g" \
+        -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$APPIMAGE_ID</icon>|g" \
+        -e '/<mediatype>/d' \
+        "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml" >"$APPDIR/usr/share/metainfo/$APPIMAGE_ID.metainfo.xml"
+    rm -f "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
+    rm -rf "$APPDIR/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APPIMAGE_ID.png"
+    cp "$NIGHTLY_ICON" "$APPDIR/$APPIMAGE_ID.png"
+    ln -s "$APPIMAGE_ID.png" "$APPDIR/.DirIcon"
+  else
+    ln -s usr/bin/filmcraft "$APPDIR/AppRun"
+    cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
+    cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
+    ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
+  fi
 
   if [[ -z "$RUNTIME_SHA256" ]]; then
     echo "no pinned AppImage runtime for $ARCH" >&2
@@ -173,11 +325,20 @@ if has appimage; then
   # each AppImage on GitHub Releases. `latest` is the newest published release that is not a
   # pre-release. A fork's builds point at its own releases through GITHUB_REPOSITORY.
   REPO="${GITHUB_REPOSITORY:-storytold/filmcraft}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|filmcraft-*-linux-$ARCH.AppImage.zsync"
+  UPDATE_ARGS=()
+  if [[ "$IS_NIGHTLY" = 0 ]]; then
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|filmcraft-*-linux-$ARCH.AppImage.zsync"
+    UPDATE_ARGS=(-u "$UPDATE_INFO")
+  else
+    # Nightly releases are GitHub pre-releases (`latest` only selects stable releases), so point
+    # zsync update metadata at pre-release tags matching `-nightly` rather than stable `latest`.
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest-pre|filmcraft-*-nightly*-linux-$ARCH.AppImage.zsync"
+    UPDATE_ARGS=(-u "$UPDATE_INFO")
+  fi
   # Extract-and-run: works without FUSE (containers, CI). The output embeds the static runtime,
   # so users don't need libfuse2 either. With zsyncmake on the host (CI installs the zsync
   # package) appimagetool also writes the .zsync, into its working directory, hence the cd.
-  (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream --runtime-file "$RUNTIME" -u "$UPDATE_INFO" "$APPDIR" "$OUT")
+  (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream --runtime-file "$RUNTIME" "${UPDATE_ARGS[@]}" "$APPDIR" "$OUT")
   echo "wrote $OUT"
   if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"
