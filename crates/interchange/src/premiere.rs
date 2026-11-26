@@ -302,6 +302,12 @@ fn spend(work_left: &mut usize, node: Node<'_, '_>) -> Result<()> {
     Ok(())
 }
 
+/// Charge retaining a cloned media/sequence reference string (at least one unit), then clone it.
+fn charge_retained_ref(work_left: &mut usize, value: &str) -> Result<String> {
+    *work_left = work_left.checked_sub((value.len() / 64).max(1)).ok_or_else(|| error("media reference work limit exceeded"))?;
+    Ok(value.to_string())
+}
+
 /// A Premiere parse error.
 fn error(message: impl Into<String>) -> Error {
     Error::Parse { format: "Premiere", message: message.into() }
@@ -1154,7 +1160,10 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
         }
         let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, self.base_dir));
         let mut media_uid = target.filter(|n| n.has_tag_name("Media")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
-        let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
+        let mut nested_sequence = match target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")) {
+            Some(uid) => Some(charge_retained_ref(self.work, uid)?),
+            None => None,
+        };
         if adjustment_layer.is_some() {
             media_path = None;
             media_uid = None;
@@ -1178,7 +1187,7 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
             && !parts.graphic
             && parts.text.is_none()
         {
-            (media_path, nested_sequence) = self.title_fallback(label);
+            (media_path, nested_sequence) = self.title_fallback(label)?;
             // Title fallback has no ObjectUID; Save cannot patch that media by uid.
             media_uid = None;
         }
@@ -1191,18 +1200,23 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
 
     /// The media path or nested sequence an unresolved source reference names by its title. A
     /// title several sources share, or both media and a sequence use, is refused.
-    fn title_fallback(&mut self, label: &str) -> (Option<String>, Option<String>) {
+    fn title_fallback(&mut self, label: &str) -> Result<(Option<String>, Option<String>)> {
         let objects = self.objects;
         let named_sequence = objects.names.get(label).copied().flatten();
         let named_media = objects.media.get(label);
         if objects.ambiguous.contains(label) || objects.names.get(label) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
             warning(self.report, format!("{label}: unresolved source reference; ambiguous title fallback refused; left offline"));
-            (None, None)
+            Ok((None, None))
         } else if named_sequence.is_some() || named_media.is_some() {
             warning(self.report, format!("{label}: unresolved source reference; using title fallback"));
-            (named_media.cloned(), named_sequence.map(str::to_string))
+            let nested = match named_sequence {
+                // Charge before cloning: repeated title→sequence fallbacks must not retain unbounded UID copies.
+                Some(uid) => Some(charge_retained_ref(self.work, uid)?),
+                None => None,
+            };
+            Ok((named_media.cloned(), nested))
         } else {
-            (None, None)
+            Ok((None, None))
         }
     }
 
@@ -1974,6 +1988,33 @@ mod tests {
                 "blank ActualMediaFilePath {blank:?}"
             );
         }
+    }
+
+    #[test]
+    fn title_fallback_sequence_uid_charges_work_budget() {
+        // Import work starts at max(descendants×64, 5_000_000); a long UID must cost enough per clone to exhaust it.
+        let uid = "U".repeat(64 * 100_000);
+        let mut items = String::new();
+        let mut subs = String::new();
+        for i in 0..80 {
+            items.push_str(&format!(r#"<TrackItem ObjectRef="item{i}"/>"#));
+            subs.push_str(&format!(
+                r#"<VideoClipTrackItem ObjectID="item{i}"><ClipTrackItem><TrackItem><Start>0</Start><End>{TPS}</End></TrackItem><SubClip ObjectRef="sub{i}"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="sub{i}"><Name>NestMe</Name></SubClip>"#
+            ));
+        }
+        let xml = format!(
+            r#"<PremiereData>
+<Sequence ObjectUID="timeline"><Name>Timeline</Name><TrackGroups><TrackGroup><Second ObjectRef="group"/></TrackGroup></TrackGroups></Sequence>
+<Sequence ObjectUID="{uid}"><Name>NestMe</Name><TrackGroups><TrackGroup><Second ObjectRef="empty-group"/></TrackGroup></TrackGroups></Sequence>
+<VideoTrackGroup ObjectID="group"><TrackGroup><FrameRate>8467200000</FrameRate><Tracks><Track ObjectURef="track"/></Tracks></TrackGroup></VideoTrackGroup>
+<VideoTrackGroup ObjectID="empty-group"><TrackGroup><FrameRate>8467200000</FrameRate><Tracks/></TrackGroup></VideoTrackGroup>
+<VideoClipTrack ObjectUID="track"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems>{items}</TrackItems></ClipItems></ClipTrack></VideoClipTrack>
+{subs}
+</PremiereData>"#
+        );
+        let err = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap_err().to_string();
+        assert!(err.contains("media reference work limit") || err.contains("import work limit"), "{}", &err[..err.len().min(200)]);
     }
 
     #[test]
