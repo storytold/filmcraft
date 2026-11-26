@@ -183,6 +183,7 @@ pub(crate) fn reset_frame_renderers_for_tests() {
     release_idle_renderers();
     GPU_FRAMES.store(0, Ordering::Relaxed);
     GPU_FALLBACKS.store(0, Ordering::Relaxed);
+    *crate::stats::gpu_disabled().lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Pick the first registered factory that can build a renderer for this host.
