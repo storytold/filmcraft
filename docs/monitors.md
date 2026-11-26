@@ -20,6 +20,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
 | `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
+| `view.prompter` | Program wrench menu ▸ Prompter | the [Prompter](#prompter) along the bottom of the Program picture; off by default, Program monitor only, also shown in full-screen Program; takes `{"enabled": bool}` |
 | `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
 | `view.guideTemplates.save`, `.manage`, `.apply`, `.delete` | Guide Templates ▸ Save Guides as Template… / Manage Guides… | templates are stored in the user preferences (`guides.templates`) |
 
@@ -27,10 +28,55 @@ Guides are in frame pixels. Drag out of the top ruler for a horizontal guide or 
 a vertical one; drag a guide to move it (unless locked) and drop it outside the picture to remove it.
 
 Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.settings.<command suffix>`
-(wrench menu items, e.g. `program.settings.display.alpha`), `<monitor>.ruler.top|left`,
+(wrench menu items, e.g. `program.settings.display.alpha`), `program.prompter`, `<monitor>.ruler.top|left`,
 `<monitor>.guide.<n>`, `program.compare.reference|prev|next|set`, `source.waveform`, and in the
 dialogs `guides.add.vertical|horizontal|position|ok|cancel`, `guides.save.name|ok|cancel`,
 `guides.manage.row.<n>|apply|delete|close`.
+
+## Prompter
+
+For narration recorded to picture (voice-over recording) and for rehearsing it with normal
+playback, the Program monitor can show a prompter along the bottom of the picture: Program wrench
+menu ▸ Prompter, or `view.prompter`. It is off by default. It only reads the sequence: it does not
+change playback, recording or the project, it is drawn by the monitor and never rendered or
+exported, and it stays on in full-screen Program (`view.fullScreenProgram`), where the other
+overlays are turned off.
+
+**Sections are range markers.** A marker with a duration is a section: its name is the section's
+name and its range is the section. Point markers are not sections. Where range markers overlap,
+the one that started last is shown while it lasts, so a marker inside another interrupts it and
+the outer one comes back after it; of markers starting together, the shorter is shown first.
+
+**The marker's comment is the section's text.**
+
+- A line starting with `-`, `*` or `•` and a space is a talking point. It can end in a duration in
+  brackets, `[m:ss]` or `[h:mm:ss]`: `- Third line of the graph [0:30]`. Points without a duration
+  share the time the others leave, equally. A bracket that is not such a duration stays part of the
+  point's text.
+- Every other line is script. It runs from the start of the section to its end, in proportion to
+  its characters, so it finishes when the section does.
+
+**What it shows** at the playhead: the section's name, the time elapsed and the section's length
+with a progress bar; up to four talking points, the current one on a highlight in bold with ▶,
+finished ones dimmed with ✓, later ones with •, and how many more follow; the script scrolled to
+the current position, with what is already read dimmed and a bar marking the reading line; the
+next section's name and how soon it starts, in the last 10 seconds of a section (the second half
+of a section shorter than 20 seconds) and between sections; the caption at the playhead, from the
+top caption track that is turned on; and a warning when the talking points' durations add up to
+more than the section, or leave no time for the points without one. Between sections it says so,
+and a sequence without range markers says how to make sections. Only the first 64 KiB of a
+comment and its first 100 talking points are read; the overlay says when a comment was cut.
+
+**Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
+node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`
+returns the same content for the active sequence at any time (default: the playhead): `section`
+(marker, name, start, duration, elapsed, remaining, progress, `points` with their text, written
+duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
+characters, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
+`sections` (the number of range markers). It is disabled when no sequence is open. Code:
+`crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`
+(drawing). Tests: `cargo test -p filmcraft-engine prompter_tests::` and
+`cargo test -p filmcraft-ui-egui --test it prompter_ui::`.
 
 ## Source playback
 

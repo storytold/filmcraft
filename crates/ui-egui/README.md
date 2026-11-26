@@ -98,6 +98,82 @@ Source range handles use transient gesture previews and the engine's integer-fra
 `source_monitor::adjust_range`; release dispatches one mark edit. Monitor command routing
 keeps Source navigation, markers and marked-range playback separate from Program.
 
+## Prompter overlay
+
+`panels/prompter.rs` draws the Program monitor's Prompter (`view.prompter`, Program wrench menu,
+off by default; [monitor documentation](../../docs/monitors.md#prompter)). It draws only what
+`filmcraft_engine::prompter::prompt_at` returns for the playhead; `prompter.inspect` returns the
+same result over automation. The model's decisions (in `crates/engine/src/prompter.rs`):
+
+- **Sections** are range markers; point markers are not. Where range markers overlap, the one that
+  started last is shown while it lasts, so a nested marker interrupts its parent and the parent
+  comes back after it; of markers starting together the shorter is shown first, then the first
+  listed. "Next" is what is shown after the current section: a section starting inside it, a parent
+  that resumes, or the next one after a gap.
+- **Talking points** are lines starting with `-`, `*` or `•` and a space, optionally ending in
+  `[m:ss]` or `[h:mm:ss]`; a bracket that is not such a duration stays in the text. Points without
+  a duration share what the others leave equally and end with the section.
+- **Overrun** is reported when the written durations exceed the section, or fill it and leave the
+  untimed points no time. Points keep their written lengths; they are not squeezed.
+- **Script** is every other line. Its position is linear in characters over the whole section.
+- **Caption** is the one at the playhead on the top caption track that is turned on.
+- **Next section** is announced in the last 10 s of a section (the second half of a shorter one)
+  and always between sections.
+- **Limits:** only the first 64 KiB of a comment and its first 100 points are read, and a point is
+  cut at 500 characters; the overlay and the query say so (`truncated`).
+
+The overlay's decisions:
+
+- **Edge and height:** a band along the bottom of the visible picture, at most 45% of its height.
+  The voice-over countdown at the top of the window stays clear, and the band repeats the caption
+  line, so the burned-in captions it covers are not lost. It is drawn with the monitor's painter
+  only (never rendered or exported) and stays on in full-screen Program.
+- **Rows shown:** up to four talking points (the one before the current point, the current one, the
+  next ones), with "N more" when the list goes on; three script lines; then the next section, the
+  caption and any warnings.
+- **Script scrolling:** smooth, so the narrator's position sits on a reading line marked by a bar;
+  what is already read is dimmed.
+- **Signals:** the current point is bold on `row_selected` with ▶, finished points are dimmed with
+  ✓, later ones have •; warnings start with ⚠ and are bold. Colour is never the only signal.
+- **Colours** are theme tokens (`panel_bg` at 92% opacity, `text`, `text_dim`, `row_selected`).
+  The `danger` and `accent` tokens fall below 3:1 on the band over some pictures or themes, so the
+  progress bar uses `text` with a `text_dim` outline.
+- **Times:** lengths and countdowns round up to whole seconds, elapsed time rounds down.
+- **Accessibility:** the automation element `program.prompter` and one `Label` node carry the
+  overlay's text in reading order (a label node keeps its text in its value).
+
+Tests:
+
+- Engine, `crates/engine/src/prompter_tests.rs`:
+  `list_lines_are_talking_points_with_their_durations_and_the_rest_is_script`,
+  `points_without_a_duration_share_what_the_timed_ones_leave_and_end_with_the_section`,
+  `points_that_need_more_time_than_the_section_are_reported`,
+  `the_current_point_and_the_script_position_follow_the_time`,
+  `a_nested_section_interrupts_its_parent_and_next_names_what_is_shown_after`,
+  `the_next_section_is_announced_near_the_end_and_between_sections`,
+  `the_caption_line_comes_from_the_top_enabled_track_with_a_caption_there`,
+  `prompter_inspect_reports_the_section_at_a_time_and_changes_nothing`,
+  `hostile_comments_markers_and_times_never_panic`.
+- Unit, `panels::prompter::tests`:
+  `the_prompter_text_keeps_its_contrast_over_any_picture_in_every_theme` (4.5:1 for text, dimmed
+  text and the current point's highlight, 3:1 for the progress bar, over black, white, red and
+  blue pictures in all three themes).
+- Headless UI, `tests/it/prompter_ui.rs`:
+  `the_prompter_is_off_by_default_and_the_view_command_toggles_it`,
+  `the_prompter_follows_the_playhead_through_points_and_sections`,
+  `the_prompter_runs_along_the_bottom_of_the_picture_and_stays_in_full_screen_program`,
+  `points_longer_than_their_section_are_reported_on_the_overlay`.
+
+Results on Linux (2026-11-25): all 9 engine and 5 UI prompter tests pass, and the 4 headless tests
+fail with the overlay's draw call removed. In the full UI suite, 1205 of 1207 passed under heavy
+load; the two that failed are timing tests outside the prompter and pass alone.
+
+Limitations: changes on the overlay, and turning it on or off by shortcut, are not announced
+through a live region (no shared helper yet). The script scrolls smoothly, and the app has no
+reduced-motion setting for it to follow. The band's text size follows the picture's height, not the
+system text size. Right after a seek, the monitor shows the nearest cached picture until the new
+frame renders, while the prompter already shows the new time.
+
 ## Pane layout controls
 
 The panels use `craft-ui::docking` with its split-tree settings: craft-ui draws the frames, tab

@@ -372,6 +372,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             &mv,
             PictureCtx { target, frame_size, rate, time, duration, drop_frame, time_display, compare, ref_area, pic, video_area, prefix },
         );
+        // the Prompter stays on in cinema mode; its time is the playhead
+        crate::panels::prompter::monitor_overlay(app, ui, which, &mv, pic.intersect(video_area), time);
     }
     drop_indicator(app, ui, video_area, which, &t);
     if cinema {
