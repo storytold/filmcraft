@@ -1616,6 +1616,8 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             crate::masks::discard_jobs(s);
+            // Drop any open `.prproj` sidecar so Save As cannot patch the previous Premiere XML.
+            s.premiere_native = None;
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1633,6 +1635,8 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
+            // Drop any open `.prproj` sidecar so Save As cannot patch the previous Premiere XML.
+            s.premiere_native = None;
             s.project = std::sync::Arc::new(p);
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);

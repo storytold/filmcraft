@@ -129,6 +129,29 @@ fn autosave_also_saves_current_prproj_via_native_writer() {
 }
 
 #[test]
+fn new_and_demo_clear_premiere_native_sidecar() {
+    // Replacing the project must drop the previous `.prproj` sidecar so Save As cannot patch old XML.
+    let dir = filmcraft_testkit::workspace_root().join("target/premiere-native-new-demo").join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let prproj = dir.join("src.prproj");
+    std::fs::write(&prproj, fixture_xml()).unwrap();
+
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": prproj.to_string_lossy()})).unwrap();
+    assert!(s.premiere_native.is_some());
+    s.execute("file.newProject", json!({"name": "Blank"})).unwrap();
+    assert!(s.premiere_native.is_none(), "New must clear the Premiere sidecar");
+
+    s.execute("file.open", json!({"path": prproj.to_string_lossy()})).unwrap();
+    assert!(s.premiere_native.is_some());
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    assert!(s.premiere_native.is_none(), "Demo must clear the Premiere sidecar");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn failed_save_as_fcproj_keeps_premiere_native() {
     // A refused `.fcproj` write must not drop the sidecar while the session still points at `.prproj`.
     struct RefuseFcproj;
