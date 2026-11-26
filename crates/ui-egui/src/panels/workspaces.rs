@@ -161,7 +161,7 @@ fn splice(items: &mut Vec<MenuItem>, prefs: &dock::WorkspacePrefs, session: &fil
         .map(|n| {
             let id = format!("window.workspace.{}", slug(&n));
             MenuItem {
-                label: tr(&n),
+                label: tr(crate::menus::UI_COMMANDS.iter().find(|cmd| cmd.id == id).map_or(n.as_str(), |cmd| cmd.label)),
                 path: vec!["Window".into(), "Workspaces".into()],
                 shortcut: session.shortcuts.primary(&id),
                 enabled: true,
@@ -170,6 +170,7 @@ fn splice(items: &mut Vec<MenuItem>, prefs: &dock::WorkspacePrefs, session: &fil
             }
         })
         .collect();
+    sub.sort_by_cached_key(|item| item.label.to_lowercase());
     sub.extend(actions);
     items.splice(at..at, sub);
 }

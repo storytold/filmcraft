@@ -28,6 +28,7 @@ pub fn item_icon(k: &ItemKind) -> Icon {
         },
         ItemKind::Sequence(_) => Icon::Sequence,
         ItemKind::Subclip { .. } => Icon::Film,
+        ItemKind::Script(_) => Icon::Captions,
         ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => Icon::Adjust,
     }
 }
@@ -270,6 +271,8 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
             // like Premiere: double-clicking a Color Matte opens its color picker
             actions.push(("project.select".into(), json!({"items": [id.0]})));
             actions.push(("project.matteColor".into(), json!({})));
+        } else if matches!(kind, ItemKind::Script(_)) {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
         } else {
             let cmd = if matches!(kind, ItemKind::Sequence(_)) { "sequence.open" } else { "source.open" };
             actions.push((cmd.into(), json!({"item": id.0})));
@@ -283,16 +286,29 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
     }
 }
 
+fn script_and_source_menu(ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Open in Source Monitor")).clicked() {
+        actions.push(("source.open".into(), json!({"item": id.0})));
+        ui.close();
+    }
+    if matches!(kind, ItemKind::Script(_)) {
+        if ui.button(tl!("Open Script")).clicked() {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
+            ui.close();
+        }
+    } else if ui.button(tl!("Find in Script")).clicked() {
+        actions.push(("script.findInScript".into(), json!({"item": id.0})));
+        ui.close();
+    }
+}
+
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button(tl!("Open in Source Monitor")).clicked() {
-        actions.push(("source.open".into(), json!({"item": id.0})));
-        ui.close();
-    }
+    script_and_source_menu(ui, id, kind, actions);
     if matches!(kind, ItemKind::Sequence(_)) && ui.button(tl!("Open in Timeline")).clicked() {
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
@@ -307,7 +323,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
             ui.close();
         }
     }
-    if ui.button(tl!("New Sequence From Clip")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("New Sequence From Clip")).clicked() {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
@@ -316,19 +332,21 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("edit.duplicate".into(), json!({})));
         ui.close();
     }
-    if ui.button(tl!("Set Poster Frame")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Set Poster Frame")).clicked() {
         // the hover-scrubbed time when there is one
         let h = app.ui.project_panel.hover.filter(|h| h.item == id.0);
         actions.push(("project.select".into(), sel()));
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    let b = ui.button(tl!("Interpret Footage…"));
-    app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
-    if b.clicked() {
-        let items = menu_targets(&app.session.state.project_selection, id);
-        actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
-        ui.close();
+    if !matches!(kind, ItemKind::Script(_)) {
+        let b = ui.button(tl!("Interpret Footage…"));
+        app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
+        if b.clicked() {
+            let items = menu_targets(&app.session.state.project_selection, id);
+            actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
+            ui.close();
+        }
     }
     // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
     let subclip_items: Vec<(&str, &str, &str)> = match kind {
