@@ -4,6 +4,7 @@
 use crate::{Dialog, FilmcraftApp};
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    crate::panels::project_links::show(app, ctx);
     crate::panels::marker_properties::show(app, ctx);
     crate::panels::custom_colors::show(app, ctx);
     crate::panels::palette_manager::show(app, ctx);
