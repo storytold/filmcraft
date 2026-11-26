@@ -21,11 +21,10 @@
 //! Every map is baked once per output size (source coordinates + blend weight per output
 //! pixel, per plane at its own subsampling); [`Stitch::apply`] only samples and blends.
 
-use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
-
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use rayon::prelude::*;
+use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
 
 /// Longitude band (deg) around each seam where both lenses see the scene and the stitch
 /// crossfades them.
@@ -259,15 +258,24 @@ impl Stitch {
         }
         let (w, h) = (self.w, self.h);
         let m = &self.maps[0];
-        // per-lens luma means over the overlap band (F39): the colorAdjustMap gain
-        let (mut s0, mut s1, mut n) = (0f64, 0f64, 0usize);
-        for k in 0..w * h {
-            if self.overlap[k] {
-                s0 += f64::from(sample(&l0.p[0], m[0].idx[k], m[0].wgt[k], m[0].sw));
-                s1 += f64::from(sample(&l1.p[0], m[1].idx[k], m[1].wgt[k], m[1].sw));
-                n += 1;
-            }
-        }
+        // per-lens luma means over the overlap band (F39): the colorAdjustMap gain.
+        // Folded over rows, which is exact: the terms are integer samples widened
+        // to f64, so any summation order (or none) gives the same sums.
+        let (s0, s1, n) = (0..h)
+            .into_par_iter()
+            .map(|row| {
+                let (k0, k1) = (row * w, (row + 1) * w);
+                let mut acc = (0f64, 0f64, 0usize);
+                for (k, o) in (k0..k1).zip(&self.overlap[k0..k1]) {
+                    if *o {
+                        acc.0 += f64::from(sample(&l0.p[0], m[0].idx[k], m[0].wgt[k], m[0].sw));
+                        acc.1 += f64::from(sample(&l1.p[0], m[1].idx[k], m[1].wgt[k], m[1].sw));
+                        acc.2 += 1;
+                    }
+                }
+                acc
+            })
+            .reduce(|| (0f64, 0f64, 0usize), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
         let (g0, g1) = if n > 0 { lens_gains(s0 / n as f64, s1 / n as f64) } else { (1.0, 1.0) };
         // Per-frame seam alignment (F40): flow + DP seam per band, temporally
         // smoothed. Each source owns its history (`seam`), so a seek self-corrects
@@ -774,7 +782,7 @@ fn local_gain_map(f: &[u8], r: &[u8], bw: usize, h: usize) -> (Vec<f32>, Vec<f32
     // vignetting we want to measure, not an object's parallax).
     let mut front = vec![1f32; gw * gh];
     let mut rear = vec![1f32; gw * gh];
-    (0..gh).for_each(|by| {
+    front.par_chunks_mut(gw).zip(rear.par_chunks_mut(gw)).enumerate().for_each(|(by, (frow, rrow))| {
         for bx in 0..gw {
             let x = (bx * GAIN_BLOCK + GAIN_BLOCK / 2).min(bw - 1);
             let (mut s0, mut s1, mut n) = (0f64, 0f64, 0u64);
@@ -786,13 +794,14 @@ fn local_gain_map(f: &[u8], r: &[u8], bw: usize, h: usize) -> (Vec<f32>, Vec<f32
                     n += 1;
                 }
             }
+            let (fcell, rcell) = (&mut frow[bx], &mut rrow[bx]);
             if n >= 8 && s0 > 0.0 {
                 // Split the ratio geometrically so the local mean is preserved: the
                 // brighter lens is cut by sqrt(ratio), the dimmer boosted by its
                 // reciprocal, so both land on the geometric mean.
                 let rho = (s1 / s0).clamp(lo * lo, hi * hi).sqrt();
-                front[by * gw + bx] = rho.clamp(lo, hi) as f32;
-                rear[by * gw + bx] = (1.0 / rho).clamp(lo, hi) as f32;
+                *fcell = rho.clamp(lo, hi) as f32;
+                *rcell = (1.0 / rho).clamp(lo, hi) as f32;
             }
         }
     });
@@ -807,19 +816,19 @@ fn bilinear_up(g: &[f32], gw: usize, gh: usize, bw: usize, bh: usize) -> Vec<f32
     }
     let sx = if gw > 1 { (gw - 1) as f64 / (bw - 1).max(1) as f64 } else { 0.0 };
     let sy = if gh > 1 { (gh - 1) as f64 / (bh - 1).max(1) as f64 } else { 0.0 };
-    for y in 0..bh {
+    o.par_chunks_mut(bw).enumerate().for_each(|(y, orow)| {
         let gy = (y as f64 * sy).clamp(0.0, (gh - 1) as f64);
         let (y0, fy) = (gy.floor() as usize, gy - gy.floor());
         let y1 = (y0 + 1).min(gh - 1);
-        for x in 0..bw {
+        for (x, cell) in orow.iter_mut().enumerate() {
             let gx = (x as f64 * sx).clamp(0.0, (gw - 1) as f64);
             let (x0, fx) = (gx.floor() as usize, gx - gx.floor());
             let x1 = (x0 + 1).min(gw - 1);
             let (fx, fy) = (fx as f32, fy as f32);
             let (a, b, c, d) = (g[y0 * gw + x0], g[y0 * gw + x1], g[y1 * gw + x0], g[y1 * gw + x1]);
-            o[y * bw + x] = a * (1.0 - fx) * (1.0 - fy) + b * fx * (1.0 - fy) + c * (1.0 - fx) * fy + d * fx * fy;
+            *cell = a * (1.0 - fx) * (1.0 - fy) + b * fx * (1.0 - fy) + c * (1.0 - fx) * fy + d * fx * fy;
         }
-    }
+    });
     o
 }
 
@@ -2170,12 +2179,14 @@ fn seam_cut_intervals(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_
 
 /// Table value types for the interval DP: saturating costs with the
 /// unreachable sentinel, as unsigned so min and add vectorize.
-trait DpVal: Copy + Ord + std::ops::Sub<Output = Self> {
+trait DpVal: Copy + Ord + Send + Sync + std::ops::Sub<Output = Self> {
+    /// TEMP debug projection.
     const INF: Self;
     fn z() -> Self;
     fn cap64(i: i64) -> Self;
     fn add_sat(self, rhs: Self) -> Self;
 }
+
 impl DpVal for u32 {
     const INF: Self = (1 << 31) - 1;
     fn z() -> Self {
@@ -2188,6 +2199,7 @@ impl DpVal for u32 {
         self.saturating_add(rhs)
     }
 }
+
 impl DpVal for u64 {
     const INF: Self = (1 << 62) - 1;
     fn z() -> Self {
@@ -2234,69 +2246,115 @@ fn seam_cut_intervals_t<T: DpVal>(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: 
             p
         })
         .collect();
-    // Backward sweep, bottom-up: the step tables (cummin'd, transposed — the
-    // transition values of the row below) are exactly what the second forward
-    // sweep sums against to recognise optimal states, so they are stored in
-    // place instead of being rebuilt. The bottom row's table starts as zeros:
-    // below the last node row any pair can still be crossed at no cost.
-    let mut btab = vec![T::z(); square * nodes];
-    let mut raw = vec![T::z(); square];
-    let mut aux = vec![T::z(); square];
-    for ni in (0..nodes).rev() {
-        let (head, _) = btab.split_at_mut((ni + 1) * square);
-        let gtab = &mut head[ni * square..];
-        dp_step(&mut raw, &mut aux, gtab, cols, &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: None, opt: T::INF });
-    }
-    // Forward twice: the optimum (last row's least cell, which the reference
-    // reads off its final table), then, on the second sweep, each row's
-    // optimal states — flagged during the same fill. The cut's smallest
-    // source side owns a column's `out` under every optimal cut iff sa <=
-    // it in every one — so out in S iff c < min sa over opt states and,
-    // dually, in in S iff c <= min b — labelling the rows exactly as the
-    // reference max-flow's residual reachable set does, cell for cell.
-    let mut labels = vec![1u8; cells];
-    let mut opt = T::INF;
-    let mut dts = vec![T::z(); square];
-    raw.fill(T::z()); // above the top row, like below the bottom: nothing crossed yet
-    for pass in 0..2u8 {
-        if pass == 1 {
-            raw.fill(T::z());
-        }
-        for ni in 0..nodes {
-            let last = ni + 1 == nodes;
-            let (rmin, msa, mb) = if pass == 1 {
-                dp_step(
-                    &mut raw,
-                    &mut aux,
-                    &mut dts,
-                    cols,
-                    &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: Some(&btab[ni * square..(ni + 1) * square]), opt },
-                )
-            } else {
-                dp_step(&mut raw, &mut aux, &mut dts, cols, &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: None, opt: T::INF })
-            };
-            if pass == 0 && last {
-                opt = rmin;
+    // Both chained sweeps run on their own thread and store their per-row
+    // step tables: the backward's tables are what the labelling pass sums
+    // the forward's against, cell by cell, so no third chain is ever run.
+    let square_nodes = square * nodes;
+    let swept = std::thread::scope(|sc| {
+        let bwd = sc.spawn(|| {
+            let mut btab = vec![T::z(); square_nodes];
+            let mut raw = vec![T::z(); square];
+            let mut aux = vec![T::z(); square];
+            for ni in (0..nodes).rev() {
+                let (head, _) = btab.split_at_mut((ni + 1) * square);
+                let gtab = &mut head[ni * square..];
+                dp_step(&mut raw, &mut aux, gtab, cols, &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: None, opt: T::INF });
             }
-            if pass == 1 {
-                if msa == usize::MAX {
-                    return None; // opt finite implies a state; belt & braces
-                }
-                for ci in 0..cols {
-                    let c = can(ci);
-                    labels[ni * cols + ci] = if c < msa {
-                        0
-                    } else if c <= mb {
-                        2
-                    } else {
-                        1
-                    };
-                }
+            btab
+        });
+        let fwd = sc.spawn(|| {
+            let mut ftab = vec![T::z(); square_nodes];
+            let mut raw = vec![T::z(); square];
+            let mut aux = vec![T::z(); square];
+            for ni in 0..nodes {
+                let (head, _) = ftab.split_at_mut((ni + 1) * square);
+                let gtab = &mut head[ni * square..];
+                dp_step(&mut raw, &mut aux, gtab, cols, &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: None, opt: T::INF });
+            }
+            ftab
+        });
+        match (fwd.join(), bwd.join()) {
+            (Ok(ftab), Ok(btab)) => Some((ftab, btab)),
+            // A sweep thread can only fail by panicking inside its own
+            // arithmetic; degrade to the 1-D cut like a band with no plan.
+            _ => None,
+        }
+    });
+    let (ftab, btab) = swept?;
+    // The optimum: the least complete forward value over the sweep's last
+    // row, reconstructed from the stored table exactly as the fill step
+    // would (cell (sa, b) takes row (b+1) of the stored transition table,
+    // shifted by one, plus that interval's prefix cost).
+    let nr = nodes - 1;
+    let pcr = &pref[nr];
+    let smaxr = sa_max[nr].min(cols - 1);
+    let mut opt = T::INF;
+    {
+        let ft = &ftab[nr * square..][..square];
+        for bv in 0..cols {
+            let lim = if bv < b_min[nr] { 0 } else { bv.min(smaxr) + 1 };
+            if lim == 0 {
+                continue;
+            }
+            let src = &ft[(bv + 1).min(cols - 1) * cols..][..cols];
+            opt = opt.min(src[0].add_sat(pcr[bv + 1] - pcr[0]).min(T::INF));
+            for sa in 1..lim {
+                opt = opt.min(src[sa - 1].add_sat(pcr[bv + 1] - pcr[sa]).min(T::INF));
             }
         }
     }
     if opt >= T::INF {
         return None; // no finite cut at all: keep the 1-D DP
+    }
+    // The labelling sweep, cell by cell and band row by band row, with no
+    // chain left to run: a state (sa, b) of row ni lies on an optimal cut
+    // when the forward value the fill step would form at it - the stored
+    // row-table entry at [srow + sa - 1] plus the interval's prefix cost -
+    // sums with the backward table's same-indexed entry to the optimum. The
+    // cut's smallest source side owns a column's `out` under every optimal
+    // cut iff sa <= it in every one - so out in S iff c < min sa over opt
+    // states and, dually, in in S iff c <= min b - labelling the rows
+    // exactly as the reference max-flow's residual reachable set does.
+    let mut labels = vec![1u8; cells];
+    let none = std::sync::atomic::AtomicBool::new(false);
+    labels.par_chunks_mut(cols).enumerate().for_each(|(ni, lrow)| {
+        let (ft, bt, pc) = (&ftab[ni * square..][..square], &btab[ni * square..][..square], &pref[ni]);
+        let smax = sa_max[ni].min(cols - 1);
+        let (mut msa, mut mb) = (usize::MAX, usize::MAX);
+        for bv in 0..cols {
+            let lim = if bv < b_min[ni] { 0 } else { bv.min(smax) + 1 };
+            let (src, bg) = (&ft[(bv + 1).min(cols - 1) * cols..][..cols], &bt[(bv + 1).min(cols - 1) * cols..][..cols]);
+            if lim == 0 {
+                continue;
+            }
+            let v0 = src[0].add_sat(pc[bv + 1] - pc[0]).min(T::INF);
+            if v0 < T::INF && v0.add_sat(bg[0]) == opt {
+                (msa, mb) = (0, mb.min(bv));
+            }
+            for sa in 1..lim {
+                let v = src[sa - 1].add_sat(pc[bv + 1] - pc[sa]).min(T::INF);
+                if v < T::INF && v.add_sat(bg[sa - 1]) == opt {
+                    msa = msa.min(sa);
+                    mb = mb.min(bv);
+                }
+            }
+        }
+        if msa == usize::MAX {
+            none.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        for (ci, cell) in lrow.iter_mut().enumerate() {
+            let c = can(ci);
+            *cell = if c < msa {
+                0
+            } else if c <= mb {
+                2
+            } else {
+                1
+            };
+        }
+    });
+    if none.load(std::sync::atomic::Ordering::Relaxed) {
+        return None; // opt finite implies a state; belt & braces
     }
     Some(labels)
 }
@@ -2324,43 +2382,53 @@ struct DpRow<'a, T> {
 }
 
 fn dp_step<T: DpVal>(raw: &mut [T], aux: &mut [T], gtab: &mut [T], cols: usize, row: &DpRow<'_, T>) -> (T, usize, usize) {
-    // The cumulative minimum's two stages, as vectorizable out-of-place
-    // scans ([`seam_cut_intervals_ref`] does the same math scalar and in
-    // place; in-place shift-scans cannot SIMD, out-of-place rounds are
-    // full-row vector minima). A table row is a b value here, so the
-    // within-row prefix covers `sa' <= bound` and the row-wise suffix
-    // merge `b' >= bound`.
-    // The cumulative minimum's column scan, sixteen row chains interleaved
-    // (one chain alone is load-forward dependency bound at ~one element per
-    // two cycles; sixteen mutually independent chains pipeline to under one
-    // per cycle, which a same-array Hillis-Steele round does not). The row
-    // suffix stage below is pairwise-vectorised already.
-    aux.copy_from_slice(raw);
+    // The cumulative minimum's two stages on the states' lower triangle
+    // ([`seam_cut_intervals_ref`] does the same math scalar and in place,
+    // without bounds). Cells past a row's diagonal (sa > b) hold plateau and
+    // INF: the prefix is sixteen independent register-chained scans streaming
+    // from `raw` (reading a cell one store ago stalls on store-to-forwarding;
+    // accumulators do not, and plateau writes past the chain's frontier are
+    // free stores of one value), the suffix merge min-streaks only the strict
+    // upper triangle - exactly the cells the transpose carries to a row's
+    // transition reads (dst row `b` + 1, columns up to `b`).
     {
         let n = cols.min(16);
         for rg in (0..cols).step_by(n) {
             let re = (rg + n).min(cols);
             let blk = &mut aux[rg * cols..re * cols];
+            let mut acc = [T::z(); 16];
+            for r in 0..re - rg {
+                acc[r] = raw[(rg + r) * cols];
+            }
             for c in 1..cols {
                 for r in 0..re - rg {
-                    let m = blk[r * cols + c - 1];
-                    let x = &mut blk[r * cols + c];
-                    if m < *x {
-                        *x = m;
+                    let v = raw[(rg + r) * cols + c];
+                    if v < acc[r] {
+                        acc[r] = v;
                     }
+                    blk[r * cols + c] = acc[r];
                 }
             }
         }
     }
-    for q in (0..cols - 1).rev() {
-        let (_, tail) = aux.split_at_mut(q * cols);
-        let (rowq, below) = tail.split_at_mut(cols);
-        let rownext = &below[..cols];
-        for c in 0..cols {
-            rowq[c] = rowq[c].min(rownext[c]);
+    {
+        for q in (0..cols - 1).rev() {
+            let (_, tail) = aux.split_at_mut(q * cols);
+            let (rowq, below) = tail.split_at_mut(cols);
+            let below = &*below;
+            // whole rows: a column needs its full chain to the bottom row, and
+            // the transpose reads plateau cells (row < column) whose value
+            // carries that chain; only the transpose's own bound is triangular.
+            for (o, &v) in rowq.iter_mut().zip(below) {
+                if v < *o {
+                    *o = v;
+                }
+            }
         }
     }
-    transpose_sq(aux, gtab, cols);
+    {
+        transpose_sq_lower(aux, gtab, cols);
+    }
     let samax = row.sa_max[row.ni].min(cols - 1);
     let (mut msa, mut mb, mut low) = (usize::MAX, usize::MAX, T::INF);
     // The fill, per b row: the transition row shifted by one (its column 0
@@ -2414,10 +2482,43 @@ fn dp_step<T: DpVal>(raw: &mut [T], aux: &mut [T], gtab: &mut [T], cols: usize, 
     (low, msa, mb)
 }
 
+/// The transpose of a triangular table's half that matters: only
+/// `dst[i][j] = src[j][i]` for j < i, the cells a row's transition reads
+/// (the rest of the square holds the triangle's INF plateau). Full blocks
+/// below the diagonal transpose as whole 32x32 tiles; the diagonal band
+/// keeps its per-cell bound.
+fn transpose_sq_lower<T: DpVal>(src: &[T], dst: &mut [T], cols: usize) {
+    const BL: usize = 32;
+    let mut blk = [[T::z(); BL]; BL];
+    for br in (0..cols).step_by(BL) {
+        let re = (br + BL).min(cols);
+        // whole tiles: dst rows [br, re) (the larger index) read src rows [bc, ce)
+        for bc in (0..br).step_by(BL) {
+            let ce = (bc + BL).min(cols);
+            for j in 0..ce - bc {
+                blk[j][..re - br].copy_from_slice(&src[(bc + j) * cols + br..(bc + j) * cols + re]);
+            }
+            for k in 0..re - br {
+                let d = &mut dst[(br + k) * cols + bc..(br + k) * cols + ce];
+                for j in 0..ce - bc {
+                    d[j] = blk[j][k];
+                }
+            }
+        }
+        // the diagonal band: cells dst[I][J] = src[J][I] with br <= J < I < re
+        for j in br..re {
+            for i in j + 1..re {
+                dst[i * cols + j] = src[j * cols + i];
+            }
+        }
+    }
+}
+
 /// A square table's transpose, in 32-cell blocks: a block's rows are
 /// consecutive cells (one L1-resident scratch block), its writes span two
 /// cache lines per destination row, and each destination line is touched
 /// exactly once per transpose.
+#[allow(dead_code)]
 fn transpose_sq<T: DpVal>(src: &[T], dst: &mut [T], cols: usize) {
     const BL: usize = 32;
     let mut blk = [[T::z(); BL]; BL];
@@ -2747,12 +2848,12 @@ fn ownership_field(g: &SeamGrid, labels: &[u8], ramp: &[f64], path: &[f64], d: f
         return label_alpha(g, labels, ramp, bw, h);
     }
     let mut v = vec![0.5; bw * h];
-    for y in 0..h {
+    v.par_chunks_mut(bw).enumerate().for_each(|(y, row)| {
         let rm = ramp[y].max(1.0);
-        for i in 0..bw {
-            v[y * bw + i] = (0.5 + d * (i as f64 - path[y]) / rm).clamp(0.0, 1.0);
+        for (i, cell) in row.iter_mut().enumerate() {
+            *cell = (0.5 + d * (i as f64 - path[y]) / rm).clamp(0.0, 1.0);
         }
-    }
+    });
     v
 }
 
@@ -2801,30 +2902,39 @@ fn label_alpha(g: &SeamGrid, labels: &[u8], ramp: &[f64], bw: usize, h: usize) -
             _ => 0.5,
         }
     };
-    for ni in 0..nodes {
-        let row = &labels[ni * cols..(ni + 1) * cols];
+    // Chunked per node row (exactly its DP_ROW_STRIDE output rows), so the
+    // writes are disjoint: the row prefix and its two-lookup integrals are
+    // row-local computation.
+    alpha.par_chunks_mut(bw * DP_ROW_STRIDE).enumerate().for_each(|(ni, blocks)| {
+        // chunks past the last node row repeat its labels (h need not divide
+        // by the stride); the y guard below already drops their extra rows
+        let row = &labels[ni.min(nodes - 1) * cols..(ni.min(nodes - 1) + 1) * cols];
         let mut pref = vec![0f64; cols + 1];
         for ci in 0..cols {
             pref[ci + 1] = pref[ci] + val(row[ci]) * stride as f64;
         }
-        // The integral of the (piecewise-constant) label up to pixel `x`.
         let integral = |x: f64| -> f64 {
             let xc = x.clamp(0.0, (cols * stride) as f64);
             let ci = ((xc as usize) / stride).min(cols - 1);
             pref[ci] + val(row[ci]) * (xc - ci as f64 * stride as f64)
         };
-        for y in (ni * DP_ROW_STRIDE).min(h)..((ni + 1) * DP_ROW_STRIDE).min(h) {
+        for (j, blk) in blocks.chunks_mut(bw).enumerate() {
+            let y = ni * DP_ROW_STRIDE + j;
+            if y >= h {
+                break;
+            }
             let rm = ramp[y].max(1.0);
-            for i in 0..bw {
+            for (i, cell) in blk.iter_mut().enumerate() {
+                let xx = i as f64;
                 // The window, clipped to the band: outside it the label field is
                 // unknown, and averaging only the in-band part keeps the edge
                 // pixels fully owned by the lens their edge cell says (the 1-D
                 // ramp's clamp), rather than diluted toward half.
-                let (a, b) = ((i as f64 - rm / 2.0).clamp(0.0, bw as f64), (i as f64 + rm / 2.0).clamp(0.0, bw as f64));
-                alpha[y * bw + i] = if b > a { ((integral(b) - integral(a)) / (b - a)).clamp(0.0, 1.0) } else { 0.5 };
+                let (a, b) = ((xx - rm / 2.0).clamp(0.0, bw as f64), (xx + rm / 2.0).clamp(0.0, bw as f64));
+                *cell = if b > a { ((integral(b) - integral(a)) / (b - a)).clamp(0.0, 1.0) } else { 0.5 };
             }
         }
-    }
+    });
     alpha
 }
 
