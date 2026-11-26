@@ -111,11 +111,16 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     // ---- the new project
     let mut proj = (*s.project).clone();
     if exclude_unused {
+        // Scripts are project items too: a take can be the only user of a clip. Keep the
+        // source's complete dependency chain, including parents of linked subclips.
+        let scripts: Vec<ItemId> = proj.items.values().filter(|item| matches!(item.kind, ItemKind::Script(_))).map(|item| item.id).collect();
+        let script_used = crate::project_tools::closure(&proj, &scripts);
         let keep: BTreeSet<ItemId> = proj
             .items
             .values()
             .filter(|i| {
                 used.contains(&i.id)
+                    || script_used.contains(&i.id)
                     || matches!(i.kind, ItemKind::Graphic { .. })
                     || (!matches!(i.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_)))
             })

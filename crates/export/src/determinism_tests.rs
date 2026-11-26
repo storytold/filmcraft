@@ -376,6 +376,59 @@ fn max_threads_does_not_change_the_file() {
 }
 
 #[test]
+fn own_threads_are_a_pool_of_their_own() {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let (n, name) = on_own_threads(0, || (rayon::current_num_threads(), std::thread::current().name().map(str::to_owned)));
+    assert_eq!(n, cores, "one thread per core unless asked");
+    assert!(name.as_deref().is_some_and(|n| n.starts_with("filmcraft-export-")), "{name:?}");
+    assert_eq!(on_own_threads(2, rayon::current_num_threads), 2.min(cores));
+    assert_eq!(on_own_threads(u32::MAX, rayon::current_num_threads), cores, "never more threads than cores");
+}
+
+/// Two background jobs at once (an export and Render Previews) split the cores: each made a pool of
+/// one thread per core, so together they ran twice as many threads as there are cores.
+#[test]
+fn background_jobs_share_one_pool() {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // a pool per job would run every job on a thread never seen before
+    let threads: std::collections::HashSet<_> = (0..=cores).map(|_| on_own_threads(0, || std::thread::current().id())).collect();
+    assert!(threads.len() <= cores, "{} threads for {} jobs on {cores} cores", threads.len(), cores + 1);
+    let together = std::thread::scope(|s| {
+        let jobs: Vec<_> = (0..2).map(|_| s.spawn(|| on_own_threads(0, rayon::current_num_threads))).collect();
+        jobs.into_iter().filter_map(|j| j.join().ok()).collect::<Vec<_>>()
+    });
+    assert_eq!(together, vec![cores, cores], "both jobs on the same pool of one thread per core");
+}
+
+/// A shared pool that could not be made (no threads to be had) was remembered as none for good, so
+/// every later background job rendered on the global pool beside the monitors.
+#[test]
+fn a_shared_pool_that_could_not_be_made_is_tried_again() {
+    let slot = std::sync::Mutex::new(None);
+    assert_eq!(crate::run::made_once(&slot, || None::<u32>), None);
+    assert_eq!(crate::run::made_once(&slot, || Some(7)).as_deref(), Some(&7), "tried again");
+    assert_eq!(crate::run::made_once(&slot, || Some(8)).as_deref(), Some(&7), "made once it worked");
+}
+
+#[test]
+fn own_threads_run_the_background_hook_as_they_start() {
+    static STARTED: std::sync::Mutex<Vec<std::thread::ThreadId>> = std::sync::Mutex::new(Vec::new());
+    fn note() {
+        STARTED.lock().unwrap().push(std::thread::current().id());
+    }
+    // a capped job makes its pool now, after the hook is in; the shared pool may have been made by
+    // another test before it
+    if std::thread::available_parallelism().map_or(1, |n| n.get()) < 2 {
+        return;
+    }
+    crate::register_background_thread_start(note);
+    let workers: std::collections::HashSet<_> = on_own_threads(1, || (0..64).into_par_iter().map(|_| std::thread::current().id()).collect());
+    let started = STARTED.lock().unwrap();
+    assert!(!workers.is_empty() && workers.iter().all(|w| started.contains(w)), "every thread of the pool ran the hook");
+    assert!(!started.contains(&std::thread::current().id()), "the calling thread keeps its priority");
+}
+
+#[test]
 fn max_threads_is_a_setting_of_the_json_interface() {
     let s: ExportSettings = serde_json::from_str(r#"{"format":"mjpeg","maxThreads":2}"#).unwrap();
     assert_eq!(s.max_threads, 2);

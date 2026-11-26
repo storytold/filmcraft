@@ -3296,18 +3296,22 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Source monitor =================
-        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?,"clip":id?}"#, always, |s, p| {
+        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?,"clip":id?,"focus":bool?}"#, always, |s, p| {
             if let Some(clip) = clip_p(p, "clip") {
                 return crate::source_monitor::open_clip(s, clip);
             }
             let id = item_p(p, "item")
                 .or(s.state.project_selection.first().copied())
                 .ok_or_else(|| bad("source.open", "need `item` (or a Project panel selection)"))?;
-            s.project.item(id).ok_or_else(|| bad("source.open", "no such item"))?;
+            let source = s.project.item(id).ok_or_else(|| bad("source.open", "no such item"))?;
+            if matches!(source.kind, ItemKind::Script(_)) {
+                return Err(bad("source.open", "Scripts open in the Script panel, not the Source monitor"));
+            }
             s.state.source_item = Some(id);
             // a subclip opens at its In point
             s.state.source_playhead = crate::clip_ops::source_view(s, id).map(|v| v.start).unwrap_or_default();
-            s.events.push(crate::Event::OpenSource(id));
+            let event = if p.get("focus").and_then(Value::as_bool) == Some(false) { crate::Event::CueSource(id) } else { crate::Event::OpenSource(id) };
+            s.events.push(event);
             Ok(Value::Null)
         }),
         // Source panel: Close / Close All, for the clip shown and the list of recent clips (#313)
@@ -4134,6 +4138,28 @@ fn build() -> Vec<CommandSpec> {
                     pr.items.remove(i);
                     pr.root.remove_item(*i);
                 }
+                let invalid_take_sources: std::collections::HashSet<ItemId> = pr
+                    .items
+                    .values()
+                    .filter_map(filmcraft_project::ProjectItem::as_script)
+                    .flat_map(|doc| doc.slates.iter().flat_map(|slate| &slate.takes))
+                    .filter_map(|take| take.source)
+                    .filter(|source| {
+                        !pr.item(*source).is_some_and(|item| match &item.kind {
+                            ItemKind::Media(_) => true,
+                            ItemKind::Subclip { .. } => pr.resolve_media(*source).is_some(),
+                            ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                            _ => false,
+                        })
+                    })
+                    .collect();
+                for it in pr.items.values_mut() {
+                    if let Some(doc) = it.as_script_mut() {
+                        for source in gone.iter().chain(&offlined).chain(&retained_subclips).chain(&invalid_take_sources) {
+                            doc.unbind_source(*source);
+                        }
+                    }
+                }
                 let seq_ids: Vec<ItemId> = pr.sequences().map(|q| q.id).collect();
                 for sid in seq_ids {
                     if let Some(q) = pr.sequence_mut(sid) {
@@ -4258,6 +4284,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
     v.extend(crate::paste_media::commands());
+    v.extend(crate::script_commands::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);
