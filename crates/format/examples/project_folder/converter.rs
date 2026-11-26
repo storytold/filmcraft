@@ -1,6 +1,6 @@
 //! Developer-only project-folder conversion. See docs/project-files.md.
 use craft_fcproj_format::records::ProjectRecords;
-use filmcraft_format::{MAX_PROJECT_BYTES, atomic_write_new};
+use filmcraft_format::{MAX_PROJECT_BYTES, SCHEMA_VERSION, atomic_write_new};
 use filmcraft_media::reader::read_regular_file_bounded;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +17,7 @@ pub(super) const ROOT: &str = "project.fcmod";
 const FORMAT: &str = "filmcraft.project-folder";
 const MANIFEST_LIMIT: u64 = 16 << 20;
 const RECORD_LIMIT: usize = 100_000;
+const SHARED_SCHEMA_VERSION: u32 = craft_fcproj_format::SCHEMA_VERSION;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,7 +80,16 @@ fn assemble(folder: &Path, manifest: &Manifest, destination: &Path) -> io::Resul
     let items = load_group(folder, "item", &manifest.items, &mut budget)?;
     let mut records = ProjectRecords { envelope, bins, items };
     paths::rebase(&mut records, &folder.join(ROOT), destination)?;
-    let bytes = serde_json::to_vec(&records.into_document().map_err(invalid)?)?;
+    let app_schema = records.envelope.get("schema_version").and_then(Value::as_u64) == Some(u64::from(SCHEMA_VERSION));
+    if app_schema {
+        // The shared record API checks its own schema. Only the envelope stamp differs.
+        records.envelope["schema_version"] = SHARED_SCHEMA_VERSION.into();
+    }
+    let mut document = records.into_document().map_err(invalid)?;
+    if app_schema {
+        document["schema_version"] = SCHEMA_VERSION.into();
+    }
+    let bytes = serde_json::to_vec(&document)?;
     filmcraft_format::decode(&bytes).map_err(invalid)?;
     Ok(bytes)
 }
@@ -100,9 +110,18 @@ fn write_payload(folder: &Path, value: Value, write_new: &mut impl FnMut(&Path, 
 pub(super) fn pack(source: &Path, folder: &Path, mut write_new: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
     let mut records = {
         let bytes = read_regular_file_bounded(source, MAX_PROJECT_BYTES)?;
-        filmcraft_format::decode(&bytes).map_err(invalid)?;
-        ProjectRecords::split(&bytes).map_err(invalid)?
+        let schema = filmcraft_format::decode(&bytes).map_err(invalid)?.schema_version;
+        if schema > SHARED_SCHEMA_VERSION {
+            // Preserve the original JSON, including Script, RAW, and extension data.
+            let mut document: Value = serde_json::from_slice(&bytes)?;
+            document["schema_version"] = SHARED_SCHEMA_VERSION.into();
+            ProjectRecords::split(&serde_json::to_vec(&document)?)
+        } else {
+            ProjectRecords::split(&bytes)
+        }
+        .map_err(invalid)?
     };
+    records.envelope["schema_version"] = SCHEMA_VERSION.into();
     if records.bins.len().saturating_add(records.items.len()) > RECORD_LIMIT {
         return Err(invalid("too many project records"));
     }

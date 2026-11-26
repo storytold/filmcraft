@@ -42,6 +42,9 @@
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
 //! - **v18**: Script Project items with linked takes, marks, and independently positioned thumbnails.
+//!   Camera RAW builds also used v18 for per-item source settings.
+//! - **v19**: preserves both Script items and camera RAW settings. Either v18 shape opens without
+//!   rewriting project data.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -56,7 +59,7 @@ pub use atomic::{atomic_write, atomic_write_new, atomic_write_no_follow};
 
 pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, detect_version, migrate_with};
 
-/// Script items require a build that can preserve their takes and thumbnail positions.
+/// Require an editor that preserves both Script items and camera RAW source settings.
 pub const SCHEMA_VERSION: u32 = craft_fcproj_format::SCHEMA_VERSION + 1;
 
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
@@ -114,7 +117,7 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
     let (env, found) = match craft_fcproj_format::decode::<Project>(bytes) {
-        // The Script schema adds optional data. The shared migrations cover every earlier schema.
+        // The app schema adds no structural migration. Shared migrations cover earlier schemas.
         Err(FormatError::TooNew { found, .. }) if found == SCHEMA_VERSION => {
             let env: craft_fcproj_format::EnvelopeIn<Project> = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
             (env, found)
@@ -229,7 +232,7 @@ mod tests {
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 18);
+        assert_eq!(SCHEMA_VERSION, 19);
     }
 
     #[test]
@@ -321,10 +324,13 @@ mod tests {
         let script = p.add_item("dialogue", Label::Blue, ItemKind::Script(Arc::new(doc)), None);
         assert!(decode(&encode(&p, false)).is_ok());
         // Previous Script builds saved these items in schema 17. Shared migrations must keep them.
-        let older = craft_fcproj_format::encode(&p, None::<&filmcraft_project::ProjectView>, "FilmCraft test".into(), false);
-        let loaded = decode(&older).unwrap();
-        assert!(loaded.migrated());
-        assert_eq!(loaded.project, p);
+        let mut older: Value = serde_json::from_slice(&encode(&p, false)).unwrap();
+        for version in [17, 18] {
+            older["schema_version"] = version.into();
+            let loaded = decode(&serde_json::to_vec(&older).unwrap()).unwrap();
+            assert!(loaded.migrated());
+            assert_eq!(loaded.project, p);
+        }
         let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
         doc.lines[1].id = first;
         assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));

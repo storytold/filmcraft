@@ -2,7 +2,7 @@
 mod converter;
 
 use converter::{ROOT, pack, unpack};
-use filmcraft_format::atomic_write_new;
+use filmcraft_format::{SCHEMA_VERSION, atomic_write_new};
 use serde_json::Value;
 use serde_json::json;
 use std::{fs, io, path::Path};
@@ -27,7 +27,8 @@ fn legacy_roundtrips_match_ordinary_migration() {
         unpack(&folder, &out).unwrap();
         let result = fs::read(out).unwrap();
         let schema = craft_fcproj_format::detect_bytes(&bytes).unwrap();
-        let expected = craft_fcproj_format::migrate_with(craft_fcproj_format::MIGRATIONS, serde_json::from_slice(&bytes).unwrap(), schema).unwrap();
+        let mut expected = craft_fcproj_format::migrate_with(craft_fcproj_format::MIGRATIONS, serde_json::from_slice(&bytes).unwrap(), schema).unwrap();
+        expected["schema_version"] = SCHEMA_VERSION.into();
         assert_eq!(serde_json::from_slice::<Value>(&result).unwrap(), expected);
         assert_eq!(filmcraft_format::decode(&result).unwrap().project, filmcraft_format::decode(&bytes).unwrap().project);
     }
@@ -49,6 +50,54 @@ fn current() -> Value {
     p["root"]["children"][0]["Bin"]["children"].as_array_mut().unwrap().push(json!({"Bin":{"id":88,"name":"Footage","children":[{"Item":73}]}}));
     p["next_id"] = json!(900000);
     doc
+}
+
+#[test]
+fn camera_raw_settings_survive_conversion_and_a_normal_project_save() {
+    use filmcraft_project::{ItemId, ItemKind, Label, ScriptDocument};
+    use std::sync::Arc;
+
+    let tmp = tempdir().unwrap();
+    let mut project = filmcraft_format::decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let script = ScriptDocument::from_text("A camera test").unwrap();
+    let script_id = project.add_item("Script", Label::Blue, ItemKind::Script(Arc::new(script.clone())), None);
+    let mut document: Value = serde_json::from_slice(&filmcraft_format::encode(&project, false)).unwrap();
+    let settings = json!({
+        "white_balance": {"Custom": {"temperature": 3200.0, "tint": 12.5}},
+        "exposure": -0.75,
+        "highlights": "Recover",
+        "demosaic": "Fast",
+        "output": "SceneLinearRec709"
+    });
+    let raw_path = "/project/items/5/kind/Media/interpret/raw";
+    document.pointer_mut("/project/items/5/kind/Media/interpret").unwrap()["raw"] = settings.clone();
+
+    for version in [18, SCHEMA_VERSION] {
+        let source = tmp.path().join(format!("source-{version}.fcproj"));
+        let folder = tmp.path().join(format!("folder-{version}"));
+        let export = tmp.path().join(format!("export-{version}.fcproj"));
+        document["schema_version"] = version.into();
+        let source_bytes = serde_json::to_vec(&document).unwrap();
+        fs::write(&source, &source_bytes).unwrap();
+
+        pack(&source, &folder, atomic_write_new).unwrap();
+        unpack(&folder, &export).unwrap();
+        let exported = fs::read(&export).unwrap();
+        let exported_document: Value = serde_json::from_slice(&exported).unwrap();
+        assert_eq!(exported_document.pointer(raw_path), Some(&settings));
+        let reopened = filmcraft_format::decode(&exported).unwrap();
+        assert_eq!(reopened.schema_version, SCHEMA_VERSION);
+        let saved = filmcraft_format::encode_with_view(&reopened.project, reopened.view.as_ref(), false);
+        fs::write(&export, saved).unwrap();
+        let saved = fs::read(&export).unwrap();
+        let saved_document: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(saved_document.pointer(raw_path), Some(&settings), "RAW settings lost on save of v{version} input");
+        let reopened = filmcraft_format::decode(&saved).unwrap();
+        let media = reopened.project.item(ItemId(5)).unwrap().as_media().unwrap();
+        assert_eq!(media.interpret.raw.as_ref(), Some(&settings));
+        assert_eq!(reopened.project.item(script_id).unwrap().as_script(), Some(&script));
+        assert_eq!(fs::read(source).unwrap(), source_bytes);
+    }
 }
 
 #[test]
