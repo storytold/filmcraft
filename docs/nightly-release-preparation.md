@@ -17,9 +17,11 @@ platform secret grant. Nothing has produced a qualified nightly, so the pipeline
 unproven end to end. The unsigned reusable caller's maximum OIDC/attestation
 permissions are for its isolated attester; its compiler narrows to contents and Actions read
 only, with no OIDC, attestation write, release environment or platform signing secrets.
-Shared tooling is pinned to `fc7124a1defa96813aee060031dc8b4d2afa3652`, the craft-common-actions
-main commit that merged [#370](https://github.com/storytold/craft-common-actions/pull/370) (the
-Windows and macOS nightly registry rows for the 14 apps) after
+Shared tooling is pinned to `be00e5ccd18b68e950c8a08532f2230e7c3d0cba`, the craft-common-actions
+main commit that merged [#371](https://github.com/storytold/craft-common-actions/pull/371) (the
+candidate is admitted on the built commit's own Sonar analysis, not main's latest) after
+[#370](https://github.com/storytold/craft-common-actions/pull/370) (the Windows and macOS nightly
+registry rows for the 14 apps) and
 [#369](https://github.com/storytold/craft-common-actions/pull/369) (shared helper checkouts kept out
 of the app's clean-source check, and macOS on `macos-15`), following
 [#364](https://github.com/storytold/craft-common-actions/pull/364) (the signer may run on the
