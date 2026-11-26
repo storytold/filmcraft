@@ -46,9 +46,23 @@ fn hash_of(v: impl Hash) -> u64 {
     h.finish()
 }
 
+/// Identity of a measured signal: every input that changes the sampled values (the frame's
+/// target, time, revision and render size, and whether the values are PQ).
+fn signal_key(k: FrameKey, pq: bool) -> u64 {
+    hash_of((k, pq))
+}
+
+/// The newest candidate whose image is still cached, the scopes' own render (`own`) on a tie.
+/// A key can outlive its image: the Program monitor keeps a texture key after its CPU image is
+/// evicted, so a newer key with nothing behind it does not hide an available older render.
+fn newest_cached<T>(shown: Option<FrameKey>, own: Option<FrameKey>, get: impl Fn(&FrameKey) -> Option<T>) -> Option<(FrameKey, T)> {
+    [shown, own].into_iter().flatten().filter_map(|k| get(&k).map(|v| (k, v))).max_by_key(|(k, _)| k.revision)
+}
+
 /// The active sequence's frame `frame` for the scopes: the monitor picture (¼ resolution, from
 /// the frame workers at priority `prio`) or, for Rec. 2100 scopes of an HDR sequence, a small
-/// working-space render. While a new frame renders the last one stays.
+/// working-space render. While a new frame renders, the newest one ready for a recent revision
+/// stands in, else the last one stays.
 pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, frame: i64, st: &ScopesState, prio: u32) -> Option<ScopeFrame> {
     let seq_id = app.session.state.active_sequence?;
     let q = app.session.active_sequence()?;
@@ -59,19 +73,38 @@ pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, fra
     let rev = app.session.revision;
     let id = egui::Id::unique(("scope-signal", slot));
     let cached: Option<(u64, Arc<Signal>, bool)> = ctx.data(|d| d.get_temp(id));
-    let key = hash_of((seq_id.0, frame, rev, pq));
+    let fkey = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: rev, draft: false };
+    let key = signal_key(fkey, pq);
     if let Some((k, s, p)) = &cached
         && *k == key
     {
         return Some(ScopeFrame { signal: s.clone(), key, pq: *p, space });
     }
-    let fresh = if pq {
-        filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true)
+    let (fresh, key) = if pq {
+        (filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true), key)
     } else {
-        let fkey = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: rev, draft: false };
         let project = app.session.project.clone();
         app.frames.request(fkey, rate.tick_of(frame), 0.25, &project, prio);
-        app.frames.get(&fkey).map(|img| Signal::from_rgba8(img.w, img.h, &img.px))
+        // A dragged value (a colour wheel, a slider) makes a revision per pass, so the frame
+        // asked for is never ready yet: measure the newest one rendered for a recent revision
+        // instead of the picture from before the drag (#4567). The Program monitor's picture
+        // of this frame counts too: its jobs come first, so while each render takes longer than
+        // a pass the scopes' own ones wait for the mouse to rest.
+        let own = app.frames.recent(fkey, 1, 0, crate::frames::PLAYING_REVISION_LAG);
+        let shown = app.program_shown.filter(|k| k.target == fkey.target && k.frame == frame && !k.draft && k.revision <= rev);
+        let ready = newest_cached(shown, own, |k| app.frames.get(k));
+        match ready {
+            Some((k, img)) => {
+                let key = signal_key(k, pq);
+                if let Some((ck, s, p)) = &cached
+                    && *ck == key
+                {
+                    return Some(ScopeFrame { signal: s.clone(), key, pq: *p, space });
+                }
+                (Some(Signal::from_rgba8(img.w, img.h, &img.px)), key)
+            }
+            None => (None, key),
+        }
     };
     match fresh {
         Some(s) => {
@@ -545,5 +578,53 @@ fn vector_graticule(ui: &egui::Ui, sq: Rect, space: ColorSpace, targets: Targets
                 painter.text(p + off, Align2::CENTER_CENTER, tg.name, Tokens::ui(10.0), col);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn key(revision: u64, size: u32) -> FrameKey {
+        FrameKey { target: Target::Sequence(filmcraft_project::ItemId(1)), frame: 0, size, revision, draft: false }
+    }
+
+    /// The Program monitor's texture key can outlive its CPU image: the scopes must still measure
+    /// an available older render instead of keeping the previous signal.
+    #[test]
+    fn a_newer_key_without_an_image_does_not_hide_a_cached_one() {
+        let (shown, own) = (key(2, 500), key(1, 250));
+        let cache = HashMap::from([(own, ())]);
+        assert_eq!(newest_cached(Some(shown), Some(own), |k| cache.get(k).copied()), Some((own, ())));
+    }
+
+    /// Two renders of the same frame and revision at the same size are the same signal.
+    #[test]
+    fn the_signal_key_is_the_frame_and_the_render() {
+        let (a, b) = (key(2, 250), key(2, 250));
+        assert_eq!(signal_key(a, false), signal_key(b, false));
+    }
+
+    /// A Program monitor render at another size samples differently and must not be served as
+    /// the scopes' own size-250 render.
+    #[test]
+    fn the_signal_key_covers_the_render_size() {
+        assert_ne!(signal_key(key(2, 500), false), signal_key(key(2, 250), false));
+    }
+
+    /// On a tie the scopes' own render replaces the Program monitor's picture.
+    #[test]
+    fn the_own_render_wins_a_tie() {
+        let (shown, own) = (key(2, 500), key(2, 250));
+        let cache = HashMap::from([(shown, ()), (own, ())]);
+        assert_eq!(newest_cached(Some(shown), Some(own), |k| cache.get(k).copied()), Some((own, ())));
+    }
+
+    #[test]
+    fn a_newer_cached_render_wins() {
+        let (shown, own) = (key(2, 500), key(1, 250));
+        let cache = HashMap::from([(shown, ()), (own, ())]);
+        assert_eq!(newest_cached(Some(shown), Some(own), |k| cache.get(k).copied()), Some((shown, ())));
     }
 }
