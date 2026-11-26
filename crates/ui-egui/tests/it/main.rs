@@ -106,3 +106,5 @@ mod unlink_ui;
 mod view_ui;
 mod voiceover_ui;
 mod workspaces_ui;
+
+mod timeline_zoom_bar_ui;
