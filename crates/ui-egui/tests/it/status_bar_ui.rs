@@ -3,60 +3,33 @@
 //! before the running job's progress instead of running under it.
 
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{Sender, channel};
 
+use crate::support::{Drive, builder, demo_session, driver, launch, start, step};
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2};
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use filmcraft_engine::{Job, Session};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use filmcraft_engine::Job;
+use serde_json::json;
 
 const MESSAGE: &str = "Could not open /media/day 2/A012C003.mov: unsupported codec";
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    /// Text the app put on the system clipboard.
-    copied: Vec<String>,
-}
-
-impl Driver {
-    fn new() -> Self {
-        let (tx, rx) = channel();
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, copied: Vec::new() };
-        d.frames(4);
-        d
-    }
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
+driver! {
+    Driver {
+        /// Text the app put on the system clipboard.
+        copied: Vec<String>,
+    };
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
+            step(&mut self.harness, |_| {});
             let out = &self.harness.output().platform_output.commands;
             self.copied.extend(out.iter().filter_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None }));
         }
     }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
+}
+
+impl Driver {
+    fn new() -> Self {
+        let (harness, tx) = launch(demo_session(), builder().with_step_dt(1.0 / 60.0));
+        start(Driver { harness, tx, copied: Vec::new() })
     }
     /// The rect and label of the automation element `id`.
     fn element(&mut self, id: &str) -> (Rect, String) {

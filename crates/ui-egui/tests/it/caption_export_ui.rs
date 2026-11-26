@@ -3,25 +3,23 @@
 //! `captions.export` writes it. Driven by automation id through the control channel. With
 //! `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes PNGs there.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, driver, save_shot, start, with_shots};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// What the save panel was asked for: filter label, extensions, suggested name.
 type Asked = Arc<Mutex<Vec<(String, Vec<String>, String)>>>;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    asked: Asked,
-    /// The name the user types in the save panel next (else the suggested one is kept).
-    typed: Arc<Mutex<Option<String>>>,
-    shots: Option<std::path::PathBuf>,
+driver! {
+    Driver {
+        asked: Asked,
+        /// The name the user types in the save panel next (else the suggested one is kept).
+        typed: Arc<Mutex<Option<String>>>,
+    }
 }
 
 impl Driver {
@@ -37,43 +35,9 @@ impl Driver {
             let name = answer.lock().unwrap().take().unwrap_or_else(|| suggested.to_string());
             Some(save_to.join(name).to_string_lossy().into_owned())
         }));
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, asked, typed, shots };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
+        let b = with_shots(builder());
+        let harness = build(b, app);
+        start(Driver { harness, tx, asked, typed })
     }
 
     fn elements(&mut self, prefix: &str) -> Vec<(String, String)> {
@@ -92,11 +56,7 @@ impl Driver {
     }
 
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        self.frames(4);
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("caption-export-{name}.png"))).unwrap();
+        save_shot(self, 4, &format!("caption-export-{name}.png"));
     }
 
     /// Export WebVTT through the dialog, typing `name` in the save panel.
@@ -254,5 +214,54 @@ fn caption_export_writes_the_file_the_save_panel_named_and_never_replaces_one_un
     // chosen in the save panel by its full name (the panel asked): it is replaced
     d.export_vtt_as("keep.vtt");
     assert!(read("keep.vtt").starts_with("WEBVTT"), "replaced");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// With two caption tracks the dialog offers a Caption Track menu, so the file is the track chosen and
+/// not always the first (#4060).
+#[test]
+fn caption_export_writes_the_caption_track_chosen_in_the_dialog() {
+    let dir = tmp("track");
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Main Edit", "audio": 1, "video": 1})).unwrap();
+    s.execute("captions.newTrack", json!({})).unwrap();
+    s.execute("captions.newTrack", json!({})).unwrap();
+    s.execute("captions.add", json!({"track": "C1", "text": "Hello captions", "seconds": 1.0})).unwrap();
+    s.execute("captions.add", json!({"track": "C2", "text": "Second track line", "seconds": 1.0})).unwrap();
+    let mut d = Driver::new(s, dir.clone());
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+
+    // untouched, it starts on the first track
+    d.export_vtt_as("first");
+    assert!(read("first.vtt").contains("Hello captions"), "{}", read("first.vtt"));
+
+    // the second track chosen in the dialog
+    *d.typed.lock().unwrap() = Some("second".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.track"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.track.option.2"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    let second = read("second.vtt");
+    assert!(second.contains("Second track line") && !second.contains("Hello captions"), "{second}");
+
+    // a track given by the command is the one the menu starts on
+    *d.typed.lock().unwrap() = Some("given".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt", "track": "C2"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    assert!(read("given.vtt").contains("Second track line"));
+
+    // a track that does not exist shows the first one, and OK exports that one
+    *d.typed.lock().unwrap() = Some("missing".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt", "track": "C9"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    assert!(read("missing.vtt").contains("Hello captions"), "{}", d.status());
     let _ = std::fs::remove_dir_all(dir);
 }

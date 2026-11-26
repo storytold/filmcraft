@@ -304,3 +304,33 @@ fn close_gap_without_a_selected_gap_refuses_without_editing() {
     assert!(std::sync::Arc::ptr_eq(&before, &s.project));
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// #2960, #3991: a sync-locked track with a clip across the gap (the demo project's music bed)
+/// stopped the gap closing, yet Ripple Delete stayed enabled and did nothing visible. It is
+/// greyed out with the reason, as in Premiere Pro, and works once that track's sync lock is off.
+#[test]
+fn a_gap_blocked_by_a_sync_locked_clip_greys_out_ripple_delete() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Gaps", "video": 2, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    // pictures only, so V2's clip brings no sound onto A1 under the gap
+    let item = s.project.items.values().find(|i| i.has_video() && !i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    let dur = rate.tick_of(48).0;
+    for (track, f) in [("V1", 0), ("V1", 96), ("V2", 24)] {
+        s.execute("timeline.place", json!({"item": item.0, "track": track, "frame": f, "sourceIn": 0, "duration": dur})).unwrap();
+    }
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("timeline.selectGap", json!({"track": "V1", "frame": 60})).unwrap();
+
+    let why = crate::find_command("edit.rippleDelete").map(|c| (c.enabled)(&s)).unwrap().unwrap_err();
+    assert!(why.contains("V2") && why.contains("sync"), "the reason names the track in the way: {why}");
+    assert!(!s.is_enabled("edit.clear"), "Delete on the gap is greyed out too");
+
+    s.execute("timeline.setTrack", json!({"track": "V2", "syncLock": false})).unwrap();
+    assert!(s.is_enabled("edit.rippleDelete"));
+    s.execute("edit.rippleDelete", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].items[1].start, rate.tick_of(48), "the gap closed");
+    assert_eq!(q.video_tracks[1].items[0].start, rate.tick_of(24), "V2, not sync-locked, stays put");
+}

@@ -18,14 +18,14 @@
 //! the Media Browser and the timeline): sources should not keep expensive state, such as a
 //! frame-threaded 4K decoder, for it once it is done.
 
-use std::cell::{Cell, RefCell};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
 
+use craft_media_source::cancel as shared;
 use filmcraft_time::Tick;
 
+pub use shared::{cancelled, with_cancel};
+
 thread_local! {
-    static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
@@ -83,24 +83,11 @@ pub fn catch_up() -> Option<Tick> {
     CATCH_UP.with(Cell::get)
 }
 
-/// Run `f` with `flag` as this thread's cancellation flag (restoring the previous one after).
-pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
-    let prev = CURRENT.with(|c| c.replace(Some(flag.clone())));
-    let r = f();
-    CURRENT.with(|c| *c.borrow_mut() = prev);
-    r
-}
-
-/// Whether the work running on this thread has been cancelled.
-pub fn cancelled() -> bool {
-    CURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))
-}
-
 /// The hints of the work running on this thread ([`with_cancel`], [`with_catch_up`],
 /// [`with_draft`], [`with_background`]), to carry them to another thread doing part of that work.
 #[derive(Clone, Default)]
 pub struct Context {
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: shared::Context,
     catch_up: Option<Tick>,
     draft: bool,
     background: bool,
@@ -109,34 +96,38 @@ pub struct Context {
 impl Context {
     /// This thread's hints.
     pub fn current() -> Self {
-        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
+        Context { cancel: shared::Context::current(), catch_up: catch_up(), draft: draft(), background: background() }
     }
 
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
     /// not keep another job's hints after a panic).
     pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
-        struct Restore(Context);
+        struct Restore {
+            catch_up: Option<Tick>,
+            draft: bool,
+            background: bool,
+        }
         impl Drop for Restore {
             fn drop(&mut self) {
-                let prev = std::mem::take(&mut self.0);
-                CURRENT.with(|c| *c.borrow_mut() = prev.cancel);
-                CATCH_UP.with(|c| c.set(prev.catch_up));
-                DRAFT.with(|c| c.set(prev.draft));
-                BACKGROUND.with(|c| c.set(prev.background));
+                CATCH_UP.with(|c| c.set(self.catch_up));
+                DRAFT.with(|c| c.set(self.draft));
+                BACKGROUND.with(|c| c.set(self.background));
             }
         }
-        let _restore = Restore(Context::current());
-        CURRENT.with(|c| *c.borrow_mut() = self.cancel);
-        CATCH_UP.with(|c| c.set(self.catch_up));
-        DRAFT.with(|c| c.set(self.draft));
-        BACKGROUND.with(|c| c.set(self.background));
-        f()
+        let _restore = Restore {
+            catch_up: CATCH_UP.with(|c| c.replace(self.catch_up)),
+            draft: DRAFT.with(|c| c.replace(self.draft)),
+            background: BACKGROUND.with(|c| c.replace(self.background)),
+        };
+        self.cancel.run(f)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn context_carries_the_hints_to_another_thread_and_restores_its_own() {
@@ -164,6 +155,39 @@ mod tests {
             assert!(cancelled());
         });
         assert!(!cancelled());
+    }
+
+    #[test]
+    fn cancelled_request_unwind_restores_the_outer_request() {
+        let outer = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(AtomicBool::new(true));
+        with_cancel(&outer, || {
+            let result = std::panic::catch_unwind(|| with_cancel(&inner, || panic!("request failed")));
+            assert!(result.is_err());
+            assert!(!cancelled());
+            outer.store(true, Ordering::Relaxed);
+            assert!(cancelled());
+        });
+        assert!(!cancelled());
+    }
+
+    #[test]
+    fn shared_reader_observes_the_flag_captured_by_a_film_request() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let context = shared::with_cancel(&flag, || {
+            assert!(!cancelled());
+            Context::current()
+        });
+        flag.store(true, Ordering::Relaxed);
+        with_draft(true, || {
+            context.run(|| {
+                assert!(shared::cancelled());
+                assert!(cancelled());
+                assert!(!draft());
+            });
+            assert!(draft());
+            assert!(!shared::cancelled());
+        });
     }
 
     #[test]

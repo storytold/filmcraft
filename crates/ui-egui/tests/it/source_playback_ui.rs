@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::support::demo_session;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
@@ -8,15 +9,17 @@ use filmcraft_ui_egui::{AudioOut, FilmcraftApp, dock::PanelKind, menus};
 use serde_json::json;
 
 fn app(item: u64) -> FilmcraftApp {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut session = demo_session();
     session.execute("source.open", json!({"item":item})).unwrap();
     FilmcraftApp::new(session)
 }
 
 #[test]
 fn source_runs_pauses_seeks_and_does_not_edit_the_sequence() {
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app(5)
+    });
     h.step();
     let before = h.state().session.project.to_json();
     let program = h.state().session.playhead();
@@ -41,7 +44,10 @@ fn source_runs_pauses_seeks_and_does_not_edit_the_sequence() {
 
 #[test]
 fn source_stops_at_end_restarts_and_stops_when_item_changes() {
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app(5)
+    });
     h.step();
     h.state_mut().session.execute("source.setPlayhead", json!({"seconds":17.5})).unwrap();
     h.state_mut().play_source().unwrap();
@@ -110,7 +116,10 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
     let fill = Arc::new(Mutex::new(None));
     let mut app = app(11);
     app.audio = Some(Box::new(Out { frames, fill: fill.clone(), stalled: false }));
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..8 {
@@ -138,7 +147,10 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
 fn stalled_source_audio_falls_back_to_wall_clock() {
     let mut app = app(11);
     app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: Arc::new(Mutex::new(None)), stalled: true }));
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..16 {
@@ -151,7 +163,10 @@ fn stalled_source_audio_falls_back_to_wall_clock() {
 
 #[test]
 fn source_range_playback_stops_at_out_and_loop_restarts_without_program_playback() {
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app(5)
+    });
     h.step();
     let rate = filmcraft_engine::clip_ops::source_view(&h.state().session, filmcraft_engine::project::ItemId(5)).unwrap().rate;
     let (start, out) = (rate.tick_of(24), rate.tick_of(47));
@@ -183,7 +198,10 @@ fn source_range_playback_stops_at_out_and_loop_restarts_without_program_playback
 }
 #[test]
 fn a_single_frame_source_range_starts_at_the_marked_last_frame() {
-    let mut h = Harness::builder().with_step_dt(0.1).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    let mut h = Harness::builder().with_step_dt(0.1).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app(5)
+    });
     // Keep the stepped clock ahead of slow first-frame host/font initialization.
     const START: f64 = 10_000.0;
     h.input_mut().time = Some(START);
@@ -208,7 +226,10 @@ fn a_single_frame_source_range_starts_at_the_marked_last_frame() {
 
 #[test]
 fn j_and_l_shuttle_the_source_both_ways_and_double_the_speed() {
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app(5)
+    });
     h.step();
     h.state_mut().ui.focused = PanelKind::Source;
     let before = h.state().session.project.to_json();
@@ -242,8 +263,7 @@ fn j_and_l_shuttle_the_source_both_ways_and_double_the_speed() {
 
 /// A Source monitor session of the demo project's active sequence, with `Out` as the audio device.
 fn sequence_in_source(prepare: impl FnOnce(&mut Session)) -> (FilmcraftApp, Arc<Mutex<Option<Fill>>>) {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut session = demo_session();
     prepare(&mut session);
     let seq = session.state.active_sequence.expect("a sequence").0;
     session.execute("source.open", json!({"item": seq})).unwrap();
@@ -256,7 +276,10 @@ fn sequence_in_source(prepare: impl FnOnce(&mut Session)) -> (FilmcraftApp, Arc<
 #[test]
 fn a_sequence_with_sound_plays_in_the_source_monitor_through_the_device() {
     let (app, fill) = sequence_in_source(|_| {});
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..4 {
@@ -275,7 +298,10 @@ fn a_sequence_without_sound_plays_in_the_source_monitor_without_starting_the_out
         let picture = s.project.items.values().find(|i| i.as_media().is_some_and(|m| m.info.video.is_some())).expect("a picture item").id.0;
         s.execute("timeline.place", json!({"item": picture, "track": "V1", "time": 0, "insert": false, "audio": false})).unwrap();
     });
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..4 {
