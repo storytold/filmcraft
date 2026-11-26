@@ -27,8 +27,9 @@ pub struct NativeBindings {
     pub track_items: BTreeMap<ClipId, String>,
     /// Timeline clip → VideoClip / AudioClip ObjectID (`InPoint` / `OutPoint`).
     pub clips: BTreeMap<ClipId, String>,
-    /// Media project item → Media ObjectUID (`FilePath` / `ActualMediaFilePath`).
-    pub media: BTreeMap<ItemId, String>,
+    /// Media project item → every Media ObjectUID that resolved to it (`FilePath` / `ActualMediaFilePath`).
+    /// Two Premiere Media elements can share one file path and one FilmCraft item; Save must patch each UID.
+    pub media: BTreeMap<ItemId, Vec<String>>,
     /// Sequence project item → Sequence ObjectUID.
     pub sequences: BTreeMap<ItemId, String>,
 }
@@ -90,15 +91,19 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
             queue_field_patch(&source.xml, &objects, "ObjectID", clip_oid, "OutPoint", &source_out.0.to_string(), &mut patches)?;
         }
     }
-    for (item_id, media_uid) in &bindings.media {
+    for (item_id, media_uids) in &bindings.media {
         let Some(item) = project.item(*item_id) else {
-            warning(report, format!("Premiere media {media_uid}: FilmCraft item gone; left unchanged in the project file"));
+            for media_uid in media_uids {
+                warning(report, format!("Premiere media {media_uid}: FilmCraft item gone; left unchanged in the project file"));
+            }
             continue;
         };
         let ItemKind::Media(media) = &item.kind else { continue };
         let MediaRef::File { path } = &media.media else { continue };
-        let field = if object_has_child(&objects, "ObjectUID", media_uid, "ActualMediaFilePath") { "ActualMediaFilePath" } else { "FilePath" };
-        queue_field_patch(&source.xml, &objects, "ObjectUID", media_uid, field, path, &mut patches)?;
+        for media_uid in media_uids {
+            let field = if object_has_child(&objects, "ObjectUID", media_uid, "ActualMediaFilePath") { "ActualMediaFilePath" } else { "FilePath" };
+            queue_field_patch(&source.xml, &objects, "ObjectUID", media_uid, field, path, &mut patches)?;
+        }
     }
     for (item_id, seq_uid) in &bindings.sequences {
         let Some(item) = project.item(*item_id) else {
@@ -386,8 +391,12 @@ impl NativeBindings {
     }
 
     pub fn note_media(&mut self, item: ItemId, media_uid: &str) {
-        if !media_uid.is_empty() {
-            self.media.insert(item, media_uid.to_string());
+        if media_uid.is_empty() {
+            return;
+        }
+        let uids = self.media.entry(item).or_default();
+        if !uids.iter().any(|u| u == media_uid) {
+            uids.push(media_uid.to_string());
         }
     }
 }
@@ -540,5 +549,50 @@ mod tests {
         let messages: Vec<_> = report.entries.iter().map(|e| e.message.as_str()).collect();
         assert!(messages.iter().any(|m| m.contains("AddedSeq") && m.contains("no Premiere binding")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("ExtraClip") && m.contains("no Premiere binding")), "{messages:?}");
+    }
+
+    #[test]
+    fn sync_patches_every_media_uid_sharing_one_file_item() {
+        // Two Media elements, one path → one FilmCraft item; relink must rewrite both UIDs.
+        let xml = r#"<PremiereData>
+<Sequence ObjectUID="parent"><Name>Parent</Name><TrackGroups><TrackGroup><Second ObjectRef="group"/></TrackGroup></TrackGroups></Sequence>
+<VideoTrackGroup ObjectID="group"><TrackGroup><FrameRate>8467200000</FrameRate><Tracks><Track ObjectURef="track"/></Tracks></TrackGroup></VideoTrackGroup>
+<VideoClipTrack ObjectUID="track"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="one"/><TrackItem ObjectRef="two"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack>
+<VideoClipTrackItem ObjectID="one"><ClipTrackItem><TrackItem><Start>0</Start><End>100</End></TrackItem><SubClip ObjectRef="sub-a"/></ClipTrackItem></VideoClipTrackItem>
+<VideoClipTrackItem ObjectID="two"><ClipTrackItem><TrackItem><Start>200</Start><End>300</End></TrackItem><SubClip ObjectRef="sub-b"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="sub-a"><Name>same.mov</Name><Clip ObjectRef="clip-a"/></SubClip>
+<SubClip ObjectID="sub-b"><Name>same.mov</Name><Clip ObjectRef="clip-b"/></SubClip>
+<VideoClip ObjectID="clip-a"><Clip><InPoint>0</InPoint><OutPoint>100</OutPoint><PlaybackSpeed>1</PlaybackSpeed><Source ObjectRef="src-a"/></Clip></VideoClip>
+<VideoClip ObjectID="clip-b"><Clip><InPoint>0</InPoint><OutPoint>100</OutPoint><PlaybackSpeed>1</PlaybackSpeed><Source ObjectRef="src-b"/></Clip></VideoClip>
+<VideoMediaSource ObjectID="src-a"><MediaSource><Media ObjectURef="media-a"/></MediaSource></VideoMediaSource>
+<VideoMediaSource ObjectID="src-b"><MediaSource><Media ObjectURef="media-b"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="media-a"><Title>same.mov</Title><FilePath>same.mov</FilePath></Media>
+<Media ObjectUID="media-b"><Title>same.mov</Title><FilePath>same.mov</FilePath></Media>
+</PremiereData>"#;
+        let mut bindings = NativeBindings::default();
+        let (fragment, _, _) = import_into(xml.as_bytes(), &ImportOptions::default(), None, Some(&mut bindings)).unwrap();
+        let media_id = fragment
+            .project
+            .items
+            .values()
+            .find(|i| matches!(&i.kind, ItemKind::Media(m) if matches!(&m.media, MediaRef::File { path } if path == "same.mov")))
+            .map(|i| i.id)
+            .expect("shared file item");
+        let uids = bindings.media.get(&media_id).expect("media binding");
+        assert!(uids.contains(&"media-a".into()) && uids.contains(&"media-b".into()), "{uids:?}");
+        assert_eq!(uids.len(), 2, "duplicate note_media must not grow the list: {uids:?}");
+
+        let mut project = fragment.project;
+        {
+            let ItemKind::Media(m) = &mut project.item_mut(media_id).unwrap().kind else { panic!("media") };
+            let MediaRef::File { path } = &mut m.media else { panic!("file") };
+            *path = "relocated.mov".into();
+        }
+        let mut source = expand(xml.as_bytes()).unwrap();
+        let mut report = Report::default();
+        sync_from_project(&mut source, &bindings, &project, &mut report).unwrap();
+        assert!(source.xml.contains(r#"ObjectUID="media-a""#) && source.xml.contains(r#"ObjectUID="media-b""#));
+        assert_eq!(source.xml.matches("<FilePath>relocated.mov</FilePath>").count(), 2, "{}", source.xml);
+        assert!(!source.xml.contains("<FilePath>same.mov</FilePath>"), "{}", source.xml);
     }
 }
