@@ -29,14 +29,22 @@ pub mod aaf;
 pub mod ale;
 pub mod edl;
 pub mod essence;
-pub mod fcp7;
-pub mod fcpxml;
+#[cfg(test)]
+#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
+mod fcp7;
+#[cfg(test)]
+#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
+mod fcpxml;
 pub mod omf;
-pub mod otio;
+#[cfg(test)]
+#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
+mod otio;
 
 mod common;
 mod comp;
-pub mod wav;
+mod timeline_model;
+pub use craft_audio::essence_pcm as wav;
+#[cfg(test)]
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
@@ -47,6 +55,47 @@ use serde::{Deserialize, Serialize};
 
 pub use common::{file_url_to_path, path_to_file_url, resolve_path};
 pub use comp::ExtractedMedia;
+
+/// Warn once when an export cannot carry exact marker metadata, including nested/source markers.
+fn warn_marker_metadata_loss(project: &Project, sequence: ItemId, report: &mut Report) {
+    if !project.custom_colors.is_empty() {
+        report.warn("This format does not preserve the saved custom-color palette or its swatch names. Use a FilmCraft project or OTIO to retain the palette.");
+    }
+    let mut pending = std::collections::BTreeSet::from([sequence]);
+    let mut seen = std::collections::BTreeSet::new();
+    let extra = |m: &filmcraft_project::Marker| m.custom_color.is_some() || !m.author.is_empty() || !m.url.is_empty();
+    while let Some(id) = pending.pop_first() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(item) = project.item(id) else { continue };
+        let has_extra = item.custom_label_color.is_some()
+            || match &item.kind {
+                ItemKind::Sequence(seq) => {
+                    let mut found = seq.markers.iter().any(extra);
+                    for clip in seq.all_tracks().flat_map(|track| &track.items) {
+                        found |= clip.markers.iter().any(extra) || clip.custom_label_color.is_some();
+                        if !seen.contains(&clip.item) {
+                            pending.insert(clip.item);
+                        }
+                    }
+                    found
+                }
+                ItemKind::Media(media) => media.markers.iter().any(extra),
+                ItemKind::Subclip { parent, .. } => {
+                    if !seen.contains(parent) {
+                        pending.insert(*parent);
+                    }
+                    false
+                }
+                _ => false,
+            };
+        if has_extra {
+            report.warn("This format does not preserve marker authors or exact custom colors (including clip labels), or marker URLs. Use a FilmCraft project or OTIO for those properties.");
+            return;
+        }
+    }
+}
 
 /// An interchange format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -181,13 +230,31 @@ pub struct Report {
     pub entries: Vec<ReportEntry>,
 }
 
+/// Sequences nested inside each other that an importer follows before treating the rest as a gap;
+/// every level is a native recursion in the FCP7 and FCPXML readers.
+pub const MAX_NESTING_DEPTH: usize = 64;
+
+/// Distinct messages a report keeps; a document can produce one per element, so beyond this
+/// they collapse into a single counted entry (the lookup in [`Report::push`] stays bounded too).
+pub const MAX_REPORT_ENTRIES: usize = 2000;
+
 impl Report {
     pub fn push(&mut self, level: Level, message: impl Into<String>) {
-        let message = message.into();
+        self.push_n(level, message, 1);
+    }
+    /// Record `count` occurrences of one message in a single step.
+    pub fn push_n(&mut self, level: Level, message: impl Into<String>, count: u32) {
+        if count == 0 {
+            return;
+        }
+        let mut message = message.into();
+        if self.entries.len() >= MAX_REPORT_ENTRIES && !self.entries.iter().any(|e| e.level == level && e.message == message) {
+            message = "further diagnostics omitted".into();
+        }
         if let Some(e) = self.entries.iter_mut().find(|e| e.level == level && e.message == message) {
-            e.count += 1;
+            e.count = e.count.saturating_add(count);
         } else {
-            self.entries.push(ReportEntry { level, message, count: 1 });
+            self.entries.push(ReportEntry { level, message, count });
         }
     }
     pub fn warn(&mut self, message: impl Into<String>) {
@@ -270,12 +337,49 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
     let mut report = Report::default();
     let imported = match format {
         Format::Edl => edl::import(&text, opts, &mut report)?,
-        Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
-        Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
-        Format::Otio => otio::import(&text, opts, &mut report)?,
+        Format::Fcp7Xml => timeline_model::import_fcp7(&text, opts, &mut report)?,
+        Format::Fcpxml => timeline_model::import_fcpxml(&text, opts, &mut report)?,
+        Format::Otio => timeline_model::import_otio(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
+    let mut imported = imported;
+    bound_start_timecodes(&mut imported, &mut report);
     Ok((imported, report))
+}
+
+/// Start timecodes beyond this many frames (about 100 hours at the highest accepted rate) are not
+/// timecodes: a value near `i64::MAX` made the export overflow adding frame numbers to it.
+const MAX_START_TIMECODE: u64 = 360_000_000_000;
+
+/// Reset what a document carries beyond what the frame arithmetic can hold, and say so: frame rates
+/// above `common::MAX_RATE` per second (an FCPXML `frameDuration` of `1/9223372036854775807s` made
+/// `frames_round` overflow on export) and start timecodes beyond `MAX_START_TIMECODE` frames. One pass
+/// after every import, so no format can let such a number through.
+pub(crate) fn bound_start_timecodes(imported: &mut Imported, report: &mut Report) {
+    for item in imported.project.items.values_mut() {
+        let name = item.name.clone();
+        if let Some(seq) = item.as_sequence_mut() {
+            if !common::plausible_rate(seq.settings.frame_rate) {
+                report.warn(format!("sequence \"{name}\" has an implausible frame rate ({}); the default was used", seq.settings.frame_rate));
+                seq.settings.frame_rate = FrameRate::default();
+            }
+            if seq.start_timecode.unsigned_abs() > MAX_START_TIMECODE {
+                report.warn(format!("sequence \"{name}\" has an out-of-range start timecode ({} frames); it starts at 0", seq.start_timecode));
+                seq.start_timecode = 0;
+            }
+        } else if let Some(media) = item.as_media_mut() {
+            if let Some(v) = media.info.video.as_mut()
+                && !common::plausible_rate(v.frame_rate)
+            {
+                report.warn(format!("media \"{name}\" has an implausible frame rate ({}); the default was used", v.frame_rate));
+                v.frame_rate = FrameRate::default();
+            }
+            if media.info.start_timecode.is_some_and(|tc| tc.unsigned_abs() > MAX_START_TIMECODE) {
+                report.warn(format!("media \"{name}\" has an out-of-range start timecode; it was ignored"));
+                media.info.start_timecode = None;
+            }
+        }
+    }
 }
 
 fn decode_text(bytes: &[u8]) -> String {
@@ -387,9 +491,9 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
     let mut report = Report::default();
     let text = match format {
         Format::Edl => edl::export(project, sequence, opts, &mut report)?,
-        Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
-        Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
-        Format::Otio => otio::export(project, sequence, opts, &mut report)?,
+        Format::Fcp7Xml => timeline_model::export_fcp7(project, sequence, opts, &mut report)?,
+        Format::Fcpxml => timeline_model::export_fcpxml(project, sequence, opts, &mut report)?,
+        Format::Otio => timeline_model::export_otio(project, sequence, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
     Ok((text.into_bytes(), report))
@@ -425,6 +529,17 @@ pub fn export_edl_per_track(project: &Project, sequence: ItemId, opts: &ExportOp
 /// top-level sequences.
 pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) -> Vec<ItemId> {
     let Imported { project: frag, sequences } = fragment;
+    for color in &frag.custom_colors {
+        if !target.custom_colors.contains(color) {
+            if target.custom_colors.len() >= 64 {
+                continue;
+            }
+            target.custom_colors.push(*color);
+        }
+        if let Some(name) = frag.custom_color_names.get(color) {
+            target.custom_color_names.entry(*color).or_insert_with(|| name.clone());
+        }
+    }
     let mut items: HashMap<ItemId, ItemId> = HashMap::new();
     for id in frag.items.keys() {
         items.insert(*id, ItemId(target.alloc_id()));
@@ -532,5 +647,34 @@ pub fn rebase_source_timecode(project: &mut Project, item: ItemId, start_tc_fram
     if let Some(m) = project.item_mut(item).and_then(|i| i.as_media_mut()) {
         m.info.start_timecode = Some(start_tc_frames);
         m.markers.iter_mut().for_each(|mk| mk.start -= off);
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn report_keeps_a_bounded_number_of_distinct_messages() {
+        let mut r = Report::default();
+        for i in 0..(MAX_REPORT_ENTRIES * 2) {
+            r.warn(format!("line {i} is not recognised"));
+        }
+        assert_eq!(r.entries.len(), MAX_REPORT_ENTRIES + 1);
+        let last = r.entries.last().unwrap();
+        assert_eq!((last.message.as_str(), last.count as usize), ("further diagnostics omitted", MAX_REPORT_ENTRIES));
+        // known messages still merge after the cap
+        r.warn("line 0 is not recognised");
+        assert_eq!(r.entries[0].count, 2);
+    }
+
+    #[test]
+    fn repeated_counts_merge_in_one_step() {
+        let mut r = Report::default();
+        r.push_n(Level::Info, "skipped", 0);
+        assert!(r.entries.is_empty());
+        r.push_n(Level::Info, "skipped", 3);
+        r.push_n(Level::Info, "skipped", u32::MAX);
+        assert_eq!((r.entries.len(), r.entries[0].count), (1, u32::MAX));
     }
 }

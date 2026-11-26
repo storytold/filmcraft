@@ -1,5 +1,5 @@
 //! Writes shell completions (bash, zsh, fish, elvish, PowerShell) and man pages (one per
-//! subcommand) generated from the CLI's clap definition (RFC-0012):
+//! subcommand) generated from the CLI's clap definition (RFC-0018):
 //! `cargo run -p filmcraft-cli --example man-and-completions -- <out-dir>`.
 
 use std::io::Write as _;

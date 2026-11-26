@@ -1,3 +1,4 @@
+use super::HexColor;
 use super::label::Label;
 use super::sequence::{Sequence, SplitMarks, checked_par};
 use super::track::{AudioChannels, Marker};
@@ -144,6 +145,8 @@ pub struct ProjectItem {
     pub id: ItemId,
     pub name: String,
     pub label: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label_color: Option<HexColor>,
     pub kind: ItemKind,
     /// Free-form metadata (Description, Scene, Shot, Log Note…).
     #[serde(default)]

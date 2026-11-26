@@ -5,6 +5,11 @@ Premiere's default keyboard (macOS). The table lives in `crates/engine/src/short
 `PREMIERE` (application-wide keys and a few panel keys) and `PREMIERE_PANEL` (panel-scoped keys
 that FilmCraft Default uses as well). `presets::premiere()` is the whole preset.
 
+Keyboard Shortcuts ▸ Export… / Import… write and read FilmCraft's own JSON preset files. An imported
+file becomes a custom preset named after the set in it (or the file), with " (Imported)" added when
+that is a built-in preset's name, so an exported built-in set comes back as its own entry (#2489).
+Premiere's `.kys` files can't be imported yet: choosing one says so.
+
 Every entry names a FilmCraft command id. Engine commands run through `Session::execute`; UI
 commands (frames, panels, monitor zoom, Project and Text panel navigation) run through
 `menus::invoke`. Both are reachable by id from the CLI (`filmcraft-cli exec <id>`), the control
@@ -63,3 +68,13 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Project panel: Next/Previous Column Field, Next/Previous Row Field (Tab, ⇧Tab, Return, ⇧Return) | The list view has no inline-editable metadata cells. |
 | Text panel: Edit Segment (Return) | No inline transcript text editing (corrections go through `transcript.set`). |
 | Text panel: Follow Active Monitor (⇧C), Show Source Transcript (⇧Z) | Only sequence transcripts exist; source clips have no transcript view. |
+
+## Numpad keys
+
+FilmCraft's shortcut engine runs on egui, which maps numpad digits to the same `Key::Num*` variants as the main keyboard row. This means **numpad digits cannot currently be bound independently** of their main-keyboard equivalents — binding `0` on the numpad binds `0` everywhere, and vice versa.
+
+This is because egui reports numpad digits as the main-row digit keys (it does not expose distinct `Key::Numpad*` variants).
+
+- `0` is bound to **Multi-Camera Record On/Off Toggle** in the Premiere-compatible preset; rebind it if you rely on numpad `0` for something else (Edit ▸ Keyboard Shortcuts…).
+
+See [#2645](https://github.com/storytold/filmcraft/issues/2645) for upstream egui tracking.

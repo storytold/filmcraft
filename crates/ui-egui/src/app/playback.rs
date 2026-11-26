@@ -1,11 +1,21 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::play_ahead;
 use super::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Tick, frames, json, panels, shuttle};
+use crate::state;
 #[cfg(test)]
 use filmcraft_engine::Session;
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- playback
+
+    /// Finish editing/recording transport before entering read-only Export preview.
+    pub(crate) fn set_mode(&mut self, mode: state::Mode) {
+        if mode == state::Mode::Export && self.ui.mode != mode {
+            self.stop();
+            self.stop_source();
+        }
+        self.ui.mode = mode;
+    }
 
     pub fn toggle_play(&mut self, speed: f64) {
         if self.playback.playing {
@@ -39,6 +49,7 @@ impl FilmcraftApp {
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
+        self.playback.smooth_playhead = None;
         self.playback.preroll = Some(-1.0);
         self.playback.preroll_ready = false;
         if let Some(a) = self.audio.as_mut() {
@@ -55,15 +66,18 @@ impl FilmcraftApp {
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
         self.start_audio(now);
-        // Audio Track Mixer: an automation pass runs while playing forward in real time
-        if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
-            let t = self.session.playhead();
-            let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
+        // Export preview is read-only: never arm editing/recording passes from its transport.
+        if self.ui.mode != state::Mode::Export {
+            // Audio Track Mixer: an automation pass runs while playing forward in real time
+            if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
+                let t = self.session.playhead();
+                let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
+            }
+            // Multi-Camera view: playing records live cuts (keys 1–9 / clicking angles)
+            panels::multicam::on_play(self);
+            // voice-over: the capture starts with the audio clock
+            panels::voiceover::on_play(self);
         }
-        // Multi-Camera view: playing records live cuts (keys 1–9 / clicking angles)
-        panels::multicam::on_play(self);
-        // voice-over: the capture starts with the audio clock
-        panels::voiceover::on_play(self);
     }
 
     /// Play the last Text to Speech preview (`Session::tts_preview`) on the audio output, stopping
@@ -73,6 +87,7 @@ impl FilmcraftApp {
         if self.playback.playing {
             self.stop();
         }
+        self.release_scrub_output();
         let a = self.audio.as_mut().ok_or("no audio output (check Settings > Audio Hardware)")?;
         let sr = a.sample_rate().max(1);
         a.stop();
@@ -91,11 +106,29 @@ impl FilmcraftApp {
         });
         a.start(fill)?;
         self.playback.audio_clock = false;
+        self.playback.tts_preview = true;
         Ok(seconds)
+    }
+
+    /// Whether [`FilmcraftApp::stop`] has a transport to stop: Program or Source playback, a
+    /// preroll, or a recording that runs one. A press that only moves the playhead uses this so it
+    /// does not close an audio stream that is already open (#2633): dropping the output stream
+    /// makes the next scrub grain open the device again, and on WASAPI that open is slow.
+    pub fn transport_running(&self) -> bool {
+        self.playback.playing
+            // A panel that panicked clears `playing` but leaves the output playing, and the clock
+            // stays on: the press still has that stream to stop.
+            || self.playback.audio_clock
+            || self.source_playback.clock.playing
+            || self.playback.preroll.is_some()
+            || self.session.mixrec.active()
+            || self.session.mcrec.active()
+            || self.session.voiceover.recording()
     }
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.playback.tts_preview = false;
         self.playback.stop_at = None;
         self.playback.rest_at = None;
         self.playback.preroll = None;
@@ -103,6 +136,9 @@ impl FilmcraftApp {
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
+        }
+        if let Some(out) = self.scrub_out.as_mut() {
+            out.stop();
         }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
@@ -117,9 +153,30 @@ impl FilmcraftApp {
         panels::voiceover::on_stop(self);
     }
 
+    /// [`stop`](Self::stop) for a press or drag that moves the playhead (a scrub bar, a ruler).
+    /// With nothing playing or recording there is nothing to stop, and stopping the output would
+    /// close the scrub stream (see `scrub.rs`) that the drag keeps open, once per move. A take
+    /// that records while stopped and a Text to Speech preview still end here, as they do in `stop`.
+    pub(crate) fn stop_for_scrub(&mut self) {
+        if self.transport_running() || self.playback.tts_preview {
+            self.stop();
+        }
+    }
+
+    /// Give the scrub output's device back before playback opens its own stream (#2633). The scrub
+    /// stream lingers for a few seconds after the last grain, and a device that takes one stream
+    /// at a time (a raw ALSA `hw:` device, an exclusive-mode output) would refuse playback's.
+    fn release_scrub_output(&mut self) {
+        if let Some(out) = self.scrub_out.as_mut() {
+            out.release();
+            self.scrub.device_stopped();
+        }
+    }
+
     pub(super) fn start_audio(&mut self, now: f64) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
+        self.release_scrub_output();
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
         // Output frames still follow the accelerated timeline. The pitch preference selects
@@ -159,11 +216,53 @@ impl FilmcraftApp {
         }
     }
 
+    /// Where the Timeline draws the playhead: the smoothed playback clock while playing, else the
+    /// session playhead.
+    pub(crate) fn shown_playhead(&self) -> Tick {
+        match self.playback.smooth_playhead {
+            Some((t, _)) if self.playback.playing => t,
+            _ => self.session.playhead(),
+        }
+    }
+
+    /// The drawn playhead for a playback clock at `clock`: the last drawn one moved on by the wall
+    /// time since, plus a tenth of how far that is from the clock. It never steps back against
+    /// the direction of play; a jump (loop, seek) more than a quarter second away is taken at once.
+    fn smooth_playhead(&self, clock: Tick, now: f64) -> Tick {
+        let Some((drawn, at)) = self.playback.smooth_playhead else { return clock };
+        let speed = self.playback.speed;
+        let predicted = drawn.seconds() + (now - at).max(0.0) * speed;
+        let error = clock.seconds() - predicted;
+        if !predicted.is_finite() || error.abs() > 0.25 {
+            return clock;
+        }
+        let next = predicted + error * 0.1;
+        let next = if speed >= 0.0 { next.max(drawn.seconds()) } else { next.min(drawn.seconds()) };
+        Tick::from_seconds_f64(next)
+    }
+
     /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
     /// is lost or stalls.
-    pub(super) fn advance_playback(&mut self, ctx: &egui::Context) {
+    pub(crate) fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
+            self.playback.smooth_playhead = None;
             return;
+        }
+        // Range edits can exclude the current frame in either playback direction, even
+        // while preroll is waiting. Stop before the old clock or buffered audio advances.
+        if self.ui.mode == state::Mode::Export
+            && let Some((first, last)) = panels::export_mode::preview_bounds(self)
+        {
+            let rate = self.session.sequence_rate();
+            let frame = rate.frame_at(self.session.playhead());
+            let bounded = frame.clamp(first, last);
+            if frame != bounded {
+                self.stop();
+                self.session.set_playhead(rate.tick_of(bounded));
+                self.playback.smooth_playhead = None;
+                ctx.request_repaint();
+                return;
+            }
         }
         let now = self.now();
         if let Some(since) = self.playback.preroll {
@@ -232,30 +331,89 @@ impl FilmcraftApp {
         let t = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
         let seq = self.session.active_sequence();
         let dur = seq.map(|q| q.duration()).unwrap_or_default();
-        let (lo, hi) = if self.playback.looping {
+        let exporting = self.ui.mode == state::Mode::Export;
+        let looping = self.playback.looping && !exporting;
+        let (lo, hi) = if exporting {
+            panels::export_mode::preview_bounds(self)
+                .map(|(first, last)| (rate.tick_of(first), rate.tick_of(last.saturating_add(1))))
+                .unwrap_or((Tick::ZERO, dur))
+        } else if looping {
             (seq.and_then(|q| q.mark_in).unwrap_or(Tick::ZERO), seq.and_then(|q| q.mark_out).map(|o| o + rate.frame_duration()).unwrap_or(dur))
         } else {
             (Tick::ZERO, dur)
         };
-        if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
+        let reverse_end = if exporting { lo } else { Tick::ZERO };
+        if let Some(end) = self.playback.stop_at.filter(|e| !exporting && t >= *e && self.playback.speed > 0.0 && !looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
             self.stop();
-        } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
+        } else if t >= hi && self.playback.speed > 0.0 && (exporting || looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
-            if self.playback.looping {
+            if looping {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
                 self.stop();
             }
-        } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
-            self.session.set_playhead(Tick::ZERO);
+        } else if t <= reverse_end && self.playback.speed < 0.0 {
+            self.session.set_playhead(reverse_end);
             self.stop();
         } else {
             self.session.set_playhead(t);
+            self.playback.smooth_playhead = Some((self.smooth_playhead(t, now), now));
         }
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod export_recording_tests {
+    use super::*;
+
+    #[test]
+    fn export_preview_never_arms_or_writes_mixer_automation() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("mixer.setStrip", json!({"strip": "A1", "mode": "Write"})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = None;
+        app.set_mode(state::Mode::Export);
+        app.ui.export.range = "custom".into();
+        app.ui.export.custom_end = 1.0;
+        let before = serde_json::to_value(&app.session.project).unwrap();
+        let undo = app.session.undo_mark();
+        let revision = app.session.revision;
+        let ctx = egui::Context::default();
+        panels::export_mode::preview_command(&mut app, "export.preview.toggle", &json!({})).unwrap();
+        app.end_preroll(0.0);
+        assert!(!app.session.mixrec.active(), "Export must not start a Write automation pass");
+        app.set_now_for_test(2.0);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!app.playback.playing);
+        assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+        assert_eq!(app.session.undo_mark(), undo);
+        assert_eq!(app.session.revision, revision);
+    }
+
+    #[test]
+    fn entering_export_finishes_an_existing_voiceover_take_and_editing_pass() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("audio.voiceover.settings", json!({"prerollSeconds": 0.0})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = None;
+        app.ui.mode = state::Mode::Edit;
+        panels::voiceover::toggle(&mut app, None).unwrap();
+        app.end_preroll(0.0);
+        assert!(app.playback.playing && app.session.voiceover.recording());
+        assert!(app.session.mixrec.active(), "normal Edit playback still records automation");
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "mode.export", json!({})).unwrap();
+        assert_eq!(app.ui.mode, state::Mode::Export);
+        assert!(!app.playback.playing);
+        assert!(!app.session.voiceover.recording());
+        assert!(!app.session.mixrec.active());
     }
 }
 
@@ -313,5 +471,94 @@ mod voiceover_playback_tests {
         assert!(app.session.playhead() > from, "{:?} <= {from:?}", app.session.playhead());
         app.session.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
         app.stop();
+    }
+}
+
+#[cfg(test)]
+mod smooth_playhead_tests {
+    use super::*;
+
+    fn playing_at(now: f64) -> FilmcraftApp {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.playback.playing = true;
+        app.playback.speed = 1.0;
+        app.playback.anchor_tick = Tick::ZERO;
+        app.playback.anchor_time = 0.0;
+        app.set_now_for_test(now);
+        app.advance_playback(&egui::Context::default());
+        app
+    }
+
+    /// The playhead line follows the playback clock between frame boundaries, so it glides at the
+    /// display's refresh rate instead of jumping a whole frame at a time. The session playhead
+    /// still names the frame shown.
+    #[test]
+    fn the_drawn_playhead_moves_between_frames_while_playing() {
+        let frame = playing_at(0.0).session.sequence_rate().frame_duration().seconds();
+        let mid = frame * 1.5;
+        let app = playing_at(mid);
+        assert_eq!(app.session.playhead(), app.session.sequence_rate().tick_of(1), "the frame shown");
+        let drawn = app.shown_playhead().seconds();
+        assert!((drawn - mid).abs() < 1e-6, "drawn at the clock time {mid}, not the frame boundary: {drawn}");
+        let later = playing_at(mid + frame * 0.25).shown_playhead().seconds();
+        assert!(later > drawn, "it keeps moving inside the same frame: {drawn} -> {later}");
+    }
+
+    /// A device that reports its clock once per 1024-sample buffer.
+    struct BufferedDevice(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl crate::AudioOut for BufferedDevice {
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn stop(&mut self) {}
+        fn played_frames(&self) -> Option<u64> {
+            Some(self.0.load(std::sync::atomic::Ordering::Relaxed))
+        }
+    }
+
+    /// Played on the audio clock and drawn at 60 Hz, the playhead only ever moves forward, by
+    /// about one display frame's worth of time each frame. It used to step back a few points and
+    /// then jump ahead every half second or so.
+    #[test]
+    fn on_the_audio_clock_the_drawn_playhead_never_steps_back() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let played = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        app.audio = Some(Box::new(BufferedDevice(played.clone())));
+        app.playback.playing = true;
+        app.playback.speed = 1.0;
+        app.playback.audio_clock = true;
+        app.playback.anchor_tick = Tick::ZERO;
+        let ctx = egui::Context::default();
+        let mut last: Option<f64> = None;
+        for frame in 0..240 {
+            let now = frame as f64 / 60.0;
+            played.store((now * 48_000.0 / 1024.0).floor() as u64 * 1024, std::sync::atomic::Ordering::Relaxed);
+            app.set_now_for_test(now);
+            app.advance_playback(&ctx);
+            let drawn = app.shown_playhead().seconds();
+            if let Some(prev) = last.filter(|_| frame > 30) {
+                let step = drawn - prev;
+                assert!(step >= 0.0, "frame {frame}: stepped back {:.4} s ({prev:.4} -> {drawn:.4})", -step);
+                assert!((0.5 / 60.0..1.5 / 60.0).contains(&step), "frame {frame}: uneven step {step:.4} s");
+                assert!((drawn - now).abs() < 0.05, "frame {frame}: drawn {drawn:.4} drifted from the clock {now:.4}");
+            }
+            last = Some(drawn);
+        }
+    }
+
+    /// Stopped, the drawn playhead is the session playhead.
+    #[test]
+    fn stopped_it_is_the_session_playhead() {
+        let mut app = playing_at(0.1);
+        app.stop();
+        assert_eq!(app.shown_playhead(), app.session.playhead());
     }
 }

@@ -1,6 +1,6 @@
 //! FilmCraft headless CLI: every engine command is one shell call away, for scripts and AI agents.
 //!
-//! Follows RFC-0012 (command-line conventions): the command line is the clap derive types in
+//! Follows RFC-0018 (command-line conventions): the command line is the clap derive types in
 //! [`cli`], errors are the thiserror enums in [`error`], and `main` only wires the process to
 //! [`run`]. Run `filmcraft-cli --help` for the reference (also in docs/agents.md).
 
@@ -12,6 +12,7 @@ mod commands;
 pub mod error;
 mod io;
 mod probe;
+mod project_lock;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -34,6 +35,21 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
+    }
+
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
     }
 }
 
@@ -98,7 +114,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::commands::{absolute, format_for, offline_media, offline_warning, render_at_playhead, set_custom_bounds, written_paths};
+    use crate::commands::{absolute, export_warnings, format_for, offline_media, offline_warning, render_at_playhead, set_custom_bounds, written_paths};
 
     fn run_args(args: &[&str]) -> (u8, String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -346,5 +362,58 @@ mod tests {
         assert_eq!(f("out/clip.MXF"), Some("mxf-op1a"));
         assert_eq!(f("a.mov"), Some("prores"));
         assert_eq!(f("noext"), None);
+        assert_eq!(f("song.MP3"), Some("mp3"));
+    }
+
+    #[test]
+    fn an_image_sequence_export_names_its_first_and_last_stills() {
+        let sequence = json!({"path": "out/f-0001.png", "lastPath": "out/f-0240.png"});
+        assert_eq!(written_paths(&sequence, "out/f-0001.png"), ["out/f-0001.png to out/f-0240.png"]);
+    }
+
+    #[test]
+    fn export_warnings_from_direct_and_queued_results() {
+        let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
+        // `export.queue.add` answers with the whole queue; `added` names the items this call queued
+        let older = json!({"id": 1, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}});
+        let cases: [(&str, serde_json::Value, &[&str]); 8] = [
+            ("direct", json!({"path": "a.mp4", "result": {"encoder": "software", "warnings": [fell_back]}}), &[fell_back]),
+            ("direct, nothing to say", json!({"path": "a.mp4", "result": {"encoder": "NVENC"}}), &[]),
+            (
+                "queued, one of two",
+                json!({"added": [1, 2], "items": [{"id": 1, "status": "done", "result": {"warnings": [fell_back]}}, {"id": 2, "status": "done", "result": {"encoder": "software"}}]}),
+                &[fell_back],
+            ),
+            ("queued, failed", json!({"added": [1], "items": [{"id": 1, "status": "failed", "result": null}]}), &[]),
+            // an item finished earlier is not this export's: NVENC ran for the new one
+            ("queued after an older fallback", json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "NVENC"}}]}), &[]),
+            (
+                "queued, falls back after an older one did",
+                json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}}]}),
+                &[fell_back],
+            ),
+            // the range advisory is printed on its own, with its CLI hint
+            ("range warning only", json!({"warnings": ["In/Out range is 1 frame"], "result": {}}), &[]),
+            ("no result", json!({}), &[]),
+        ];
+        for (name, result, want) in cases {
+            assert_eq!(export_warnings(&result), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_desktop_launcher_protocol_is_refused_in_both_forms() {
+        for flag in ["--launch-profile", "--launch-profile=nightly-v1", "--profile-root", "--profile-root=/tmp/nightly"] {
+            for args in [vec![flag], vec!["inspect", flag], vec![flag, "--version"]] {
+                let (code, out, err) = run_args(&args);
+                assert_eq!((code, out.as_str()), (2, ""), "{args:?}: {err}");
+                assert!(err.contains("the CLI has no launch profile"), "{args:?}: {err}");
+            }
+        }
+        // after `--` it is data, and a near miss is an ordinary unknown option
+        for flag in ["--version", "-V", "--data-dir", "--profile", "--launch", "profile-root"] {
+            let (_, _, err) = run_args(&[flag]);
+            assert!(!err.contains("no launch profile"), "{flag}: {err}");
+        }
     }
 }

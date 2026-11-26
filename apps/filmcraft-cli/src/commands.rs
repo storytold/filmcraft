@@ -56,6 +56,7 @@ pub fn format_for(path: &Path) -> Option<&'static str> {
         "bmp" => "bmp",
         "aif" | "aiff" => "aiff",
         "m4a" | "aac" => "aac",
+        "mp3" => "mp3",
         _ => return None,
     })
 }
@@ -123,6 +124,7 @@ pub async fn describe(g: &Global, a: DescribeArgs, io: &mut Io<'_>) -> Result<()
 
 pub async fn exec(g: &Global, a: ExecArgs, io: &mut Io<'_>) -> Result<(), CliError> {
     let params = params_object(&a.params)?;
+    let _lock = crate::project_lock::for_save(g, io)?;
     let mut b = Backend::open(g)?;
     match b.exec(&a.id, params).await {
         Ok(v) => io.json(g.compact, &v),
@@ -135,6 +137,7 @@ pub async fn exec(g: &Global, a: ExecArgs, io: &mut Io<'_>) -> Result<(), CliErr
 pub async fn run(g: &Global, a: RunArgs, io: &mut Io<'_>) -> Result<(), CliError> {
     let text =
         if a.script == Path::new("-") { std::io::read_to_string(std::io::stdin()).map_err(Failure::Stdin)? } else { read_text(a.script.clone()).await? };
+    let _lock = crate::project_lock::for_save(g, io)?;
     let mut b = Backend::open(g)?;
     let mut failed = 0;
     for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
@@ -177,6 +180,7 @@ pub async fn inspect(g: &Global, a: InspectArgs, io: &mut Io<'_>) -> Result<(), 
 
 pub async fn import(g: &Global, a: ImportArgs, io: &mut Io<'_>) -> Result<(), CliError> {
     let paths: Vec<Value> = a.files.iter().map(|p| path_param(&absolute(p))).collect();
+    let _lock = crate::project_lock::for_save(g, io)?;
     let mut b = Backend::open(g)?;
     match b.exec("file.import", json!({"paths": paths})).await {
         Ok(v) => io.json(g.compact, &v),
@@ -249,6 +253,9 @@ pub async fn export(g: &Global, a: ExportArgs, io: &mut Io<'_>) -> Result<(), Cl
     for warning in v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
         io.warning(format_args!("{warning} (CLI: --range entire)"));
     }
+    for warning in export_warnings(&v) {
+        io.warning(format_args!("{warning}"));
+    }
     check_offline(a.allow_offline, &offline_media(&v), &format!("export: {written}"), io)?;
     io.diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
     Ok(())
@@ -290,7 +297,11 @@ pub async fn mcp(g: &Global) -> Result<(), CliError> {
 /// `requested` when the result names none.
 pub fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     let paths: Vec<String> = match result.get("path").and_then(Value::as_str) {
-        Some(p) => vec![p.to_string()],
+        // an image sequence: its first and last stills
+        Some(p) => vec![match result.get("lastPath").and_then(Value::as_str) {
+            Some(last) => format!("{p} to {last}"),
+            None => p.to_string(),
+        }],
         None => result
             .get("items")
             .and_then(Value::as_array)
@@ -314,6 +325,17 @@ pub fn offline_media(result: &Value) -> Vec<Value> {
         }
     }
     out
+}
+
+/// What the exports in a result reported about how they ran (hardware encoding asked for, but the
+/// software encoder ran): the warnings of a direct export's report (`result`), or of each queued
+/// item's. `export.queue.add` answers with the whole queue, so only the items it `added` count: one
+/// that finished earlier (in the app, with `--bridge`) is not this export's.
+pub fn export_warnings(result: &Value) -> Vec<&str> {
+    let added: Vec<&Value> = result.get("added").and_then(Value::as_array).into_iter().flatten().collect();
+    let queued = result.get("items").and_then(Value::as_array).into_iter().flatten().filter(|i| i.get("id").is_some_and(|id| added.contains(&id)));
+    let reports = std::iter::once(result).chain(queued).filter_map(|r| r.get("result"));
+    reports.filter_map(|r| r.get("warnings").and_then(Value::as_array)).flatten().filter_map(Value::as_str).collect()
 }
 
 /// One stderr line per offline item that rendered as placeholder frames (#1054).

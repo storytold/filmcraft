@@ -119,8 +119,10 @@ pub(crate) fn effect_rows(
         let mut mui = ui.new_child(egui::UiBuilder::new().max_rect(mr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let mut mode = m.mode;
         crate::panels::effect_controls::fit_to_row(&mut mui);
-        let combo =
-            craft_ui::ComboBox::from_id_salt(("mask-mode", clip.0, idx, k)).selected_text(crate::i18n::t(mode.label())).width(88.0).show_ui(&mut mui, |ui| {
+        let combo = crate::legacy_dropdown::Dropdown::from_id_salt(("mask-mode", clip.0, idx, k))
+            .selected_text(crate::i18n::t(mode.label()))
+            .width(88.0)
+            .show_ui(&mut mui, |ui| {
                 for md in MaskMode::ALL {
                     if ui.selectable_value(&mut mode, md, crate::i18n::t(md.label())).changed() {
                         actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "mode": md.label()})));
@@ -249,7 +251,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let it = it.clone();
     let Some(e) = it.effects.get(sel.effect) else { return };
     let Some(m) = e.masks.get(sel.mask) else { return };
-    let mt = it.source_time_at(ph);
+    let mt = it.effect_time_at(ph);
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };
     let lin_inv = Affine { e: 0.0, f: 0.0, ..to_clip };
@@ -407,7 +409,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             actions.push(("masks.addVertex".into(), with(json!({"after": i, "at": [c.x, c.y]}))));
         }
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && ui.ctx().memory(|m| m.focused().is_none()) {
+    if crate::framework::escape_pressed(ui.ctx()) && !crate::framework::field_focused(ui.ctx(), None) {
         actions.push(("masks.select".into(), json!({"none": true})));
     }
     for (c, p) in actions {
@@ -790,7 +792,7 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
         app.ui.mask_pen = None;
         return;
     };
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };
     let col = Color32::from_rgb(0x5a, 0xb4, 0xff);
@@ -839,7 +841,9 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
     if ui.input(|i| i.key_pressed(egui::Key::Enter)) && d.points.len() >= 3 {
         commit = true;
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // The marker dialog draws after the Program monitor. Let it own Escape
+    // while open, rather than deleting the draft before the dialog can close.
+    if app.ui.marker_properties.is_none() && crate::framework::escape_pressed(ui.ctx()) {
         app.ui.mask_pen = None;
         return;
     }

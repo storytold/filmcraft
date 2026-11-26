@@ -1,4 +1,4 @@
-//! Errors of the CLI (RFC-0012): usage errors exit 2, failures exit 1.
+//! Errors of the CLI (RFC-0018): usage errors exit 2, failures exit 1.
 
 use std::path::PathBuf;
 
@@ -56,13 +56,16 @@ pub enum UsageError {
     Conflict(&'static str, &'static str),
     #[error("--bridge: {0}")]
     Bridge(#[source] AutomationError),
+    #[error("{0} belongs to the FilmCraft desktop app's Launcher profile; the CLI has no launch profile")]
+    DesktopProfile(String),
 }
 
 impl UsageError {
-    /// This error as one of clap's own, so it prints and exits like them (RFC-0012).
+    /// This error as one of clap's own, so it prints and exits like them (RFC-0018).
     pub fn into_clap(self, cmd: &mut clap::Command) -> clap::error::Error {
         let kind = match self {
             UsageError::Conflict(..) => clap::error::ErrorKind::ArgumentConflict,
+            UsageError::DesktopProfile(_) => clap::error::ErrorKind::UnknownArgument,
             _ => clap::error::ErrorKind::ValueValidation,
         };
         cmd.error(kind, self)

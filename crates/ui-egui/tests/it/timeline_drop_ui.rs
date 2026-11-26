@@ -9,20 +9,16 @@ use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
-fn step(h: &mut Harness<'static, FilmcraftApp>) {
-    let ctx = h.ctx.clone();
-    let mut raw = std::mem::take(h.input_mut());
-    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
-    *h.input_mut() = raw;
-    ctx.request_repaint();
-    h.step();
-}
+use super::support::step_repaint as step;
+use crate::support::demo_session;
 
 fn harness() -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let mut s = demo_session();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(s)
+    });
     for _ in 0..4 {
         step(&mut h);
     }
@@ -39,11 +35,13 @@ fn control_rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, height))
 }
 
-/// A point 60 px into the Timeline's clip area on the named track row.
+/// A point 60 px into the Timeline's clip area on the named track row, in the part of the row the
+/// ruler does not cover: in a short Timeline body the first rows can scroll partly under it.
 fn point_on_row(h: &Harness<'static, FilmcraftApp>, row_control: &str) -> egui::Pos2 {
     let row = control_rect(h, row_control);
     let panel = control_rect(h, "panel.Timeline");
-    egui::pos2(panel.min.x + h.state().ui.timeline.header_w + 60.0, row.center().y)
+    let top = h.state().auto.find("timeline.ruler").map_or(row.min.y, |ruler| row.min.y.max(ruler.rect[1] + ruler.rect[3]));
+    egui::pos2(panel.min.x + h.state().ui.timeline.header_w + 60.0, (top + row.max.y) / 2.0)
 }
 
 /// A file the OS dropped on the window, as the native integration hands it to egui.
@@ -145,7 +143,10 @@ fn tone_dropped_on_a_video_row_goes_to_the_audio_track_without_error() {
 
 /// Empty project: no sequence yet. Dropping on the empty Timeline must import *and* make a sequence.
 fn empty_harness() -> Harness<'static, FilmcraftApp> {
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(Session::default()));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(Session::default())
+    });
     for _ in 0..4 {
         step(&mut h);
     }
@@ -260,7 +261,8 @@ fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts(
         assert!(!covered_preview, "a covered Timeline must not preview a placement");
         float_panel(&mut h, "Info", [5.0, 5.0, 320.0, 200.0]);
         let at = point_on_row(&h, "timeline.track.V1.target");
-        assert!(hover_at(&mut h, at));
+        let uncovered_preview = hover_at(&mut h, at);
+        assert!(uncovered_preview);
         drop_at(&mut h, at, &still(&format!("drop_uncovered_{scale}.png")));
         assert_eq!(clip_counts(&h), (1, 0));
     }
@@ -284,8 +286,9 @@ fn floating_timeline_accepts_once_and_another_float_can_occlude_it() {
 fn offscreen_float_uses_rendered_clamp_and_maximized_timeline_ignores_hidden_floats() {
     let mut h = harness();
     let at = point_on_row(&h, "timeline.track.V1.target");
-    // The very wide offscreen float is clamped back to x=0, over this row.
-    float_panel(&mut h, "Info", [-5000.0, at.y - 60.0, 1500.0, 200.0]);
+    // The very wide offscreen float is clamped back to x=0, its body over this row: the window's
+    // title bar and tab strip take about 65 pt above the body.
+    float_panel(&mut h, "Info", [-5000.0, at.y - 100.0, 1500.0, 200.0]);
     let visible = control_rect(&h, "panel.Info");
     assert!(visible.contains(at), "rendered={visible:?}, drop={at:?}, floats={:?}", h.state().ui.dock.floating);
     assert!(!hover_at(&mut h, at));

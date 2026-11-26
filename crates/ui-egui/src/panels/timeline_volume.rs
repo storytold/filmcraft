@@ -214,7 +214,7 @@ fn key_drag_id() -> egui::Id {
 /// it to delete it. Runs after the timeline's own interaction, so they are above the clip.
 pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, aclip: Rect) {
     let held: Option<KeyDrag> = ui.data(|d| d.get_temp(key_drag_id()));
-    if held.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if held.is_some() && crate::framework::escape_pressed(ui.ctx()) {
         if let Some(h) = held
             && h.begun
         {
@@ -264,7 +264,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     icons::paint(&ui.painter().with_clip_rect(area), Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, Color32::WHITE);
                     ui.ctx().set_cursor_icon(CursorIcon::Move);
                 }
-                if resp.drag_started()
+                if resp.drag_started_by(egui::PointerButton::Primary)
                     && let Some(p) = pointer
                 {
                     next = Some(KeyDrag { clip: it.id, index: i, grab: p - c, begun: false });
@@ -327,6 +327,7 @@ mod tests {
 
     fn clip(speed: f64, reverse: bool) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(1),
             item: ItemId(1),
             name: String::new(),
@@ -347,6 +348,7 @@ mod tests {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),

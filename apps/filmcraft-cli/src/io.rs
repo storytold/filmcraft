@@ -1,4 +1,4 @@
-//! The process's two streams (RFC-0012): results on stdout, everything else on stderr.
+//! The process's two streams (RFC-0018): results on stdout, everything else on stderr.
 
 use std::fmt::Arguments;
 use std::io::{ErrorKind, Write};

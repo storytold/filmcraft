@@ -573,19 +573,27 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
         // the left button only, as for the other things dragged on the monitor
-        if resp.drag_started_by(egui::PointerButton::Primary) {
+        let primary = egui::PointerButton::Primary;
+        if resp.drag_started_by(primary) {
             ui.data_mut(|d| d.insert_temp(drag_id, NewGuide { vertical }));
         }
         let Some(ng) = ui.data(|d| d.get_temp::<NewGuide>(drag_id)).filter(|g| g.vertical == vertical) else { continue };
+        // Cancel the preview while the press is still held. Its eventual release must
+        // not create a guide, even when the runtime consumed Escape before egui saw it.
+        let dragging = resp.dragged_by(primary);
+        let released = resp.drag_stopped_by(primary);
+        let escaped = crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx());
+        if escaped || !dragging {
+            ui.data_mut(|d| d.remove::<NewGuide>(drag_id));
+        }
+        if escaped || !(dragging || released) {
+            continue;
+        }
         let Some(pos) = resp.interact_pointer_pos().or(ui.ctx().pointer_latest_pos()) else { continue };
         if area.contains(pos) {
             let seg = if ng.vertical { [pos2(pos.x, area.min.y), pos2(pos.x, area.max.y)] } else { [pos2(area.min.x, pos.y), pos2(area.max.x, pos.y)] };
             ui.painter().with_clip_rect(area).line_segment(seg, Stroke::new(1.0, GUIDE_COLOR));
-        }
-        if resp.drag_stopped() {
-            ui.data_mut(|d| d.remove::<NewGuide>(drag_id));
-            // egui ends a drag on Escape: that stop adds no guide (#580)
-            if area.contains(pos) && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if released {
                 let position = if ng.vertical { ((pos.x - pic.min.x) / kx).round() } else { ((pos.y - pic.min.y) / ky).round() } as f64;
                 let v = view_mut(app, w);
                 v.guides.push(Guide { vertical: ng.vertical, position });
@@ -624,26 +632,32 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
         let left = egui::PointerButton::Primary;
-        // egui ends a drag on Escape: that stop puts the guide back where it was (#580)
+        // Keep the starting position only while this drag may edit the guide.
         let before_id = egui::Id::unique((pfx, "guide-before-drag", i));
         if resp.drag_started_by(left) {
             ui.data_mut(|d| d.insert_temp(before_id, g.position));
         }
-        if resp.drag_stopped_by(left) {
-            let before = ui.data_mut(|d| d.remove_temp::<f64>(before_id));
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                if let (Some(p0), Some(guide)) = (before, view_mut(app, w).guides.get_mut(i)) {
-                    guide.position = p0;
-                }
-                continue;
-            }
+        let Some(before) = ui.data(|d| d.get_temp::<f64>(before_id)) else { continue };
+        let dragging = resp.dragged_by(left);
+        let released = resp.drag_stopped_by(left);
+        let escaped = crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx());
+        if escaped || !dragging {
+            ui.data_mut(|d| d.remove::<f64>(before_id));
         }
-        if let Some(pos) = resp.interact_pointer_pos()
-            && (resp.dragged_by(left) || resp.drag_stopped_by(left))
+        if escaped {
+            if (dragging || resp.drag_stopped())
+                && let Some(guide) = view_mut(app, w).guides.get_mut(i)
+            {
+                guide.position = before;
+            }
+            continue;
+        }
+        if (dragging || released)
+            && let Some(pos) = resp.interact_pointer_pos()
         {
             if !area.contains(pos) {
                 // outside the picture area: dropping here removes the guide
-                if resp.drag_stopped() {
+                if released {
                     remove = Some(i);
                 }
             } else {
@@ -740,10 +754,10 @@ fn column_peak(peaks: &[(f32, f32)], shown: (Tick, Tick), f0: f64, f1: f64) -> (
 const TICKS_PER_SAMPLE_48K: f64 = filmcraft_time::TICKS_PER_SECOND as f64 / 48_000.0;
 
 /// Comparison View: the reference side's label, timecode and step / set buttons.
-pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: filmcraft_time::FrameRate, drop_frame: bool) {
+pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: filmcraft_time::FrameRate, drop_frame: bool, display: TimeDisplay) {
     let t = app.tokens;
     let rf = Tick(app.ui.program.compare_ref.unwrap_or(app.session.playhead().0));
-    let tc = format_time(rf, rate, drop_frame, TimeDisplay::Timecode, 48000);
+    let tc = format_time(rf, rate, drop_frame, display, 48000);
     ui.painter().text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, tlf!("Reference  {tc}", tc), Tokens::ui(11.0), t.text_dim);
     let mut x = bar.max.x;
     for (key, label, tip) in [
@@ -827,6 +841,11 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         app.auto.add(&format!("{pfx}.settings.{key}"), r, &label);
         if clicked && let Some(Err(e)) = route(app, &format!("view.{key}"), &json!({"monitor": pfx})) {
             app.ui.status = e;
+        }
+        // the menu stays open for the toggles; a display mode, a resolution and Clear Guides are
+        // choices that close it
+        if clicked && (key.starts_with("display.") || key.contains("Res.") || key == "clearGuides") {
+            ui.close();
         }
     }
 }

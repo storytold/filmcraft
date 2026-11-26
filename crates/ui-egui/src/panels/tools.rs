@@ -1,4 +1,5 @@
-//! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click, a long
+//! The Tools panel. The buttons run along the panel's longer side and wrap onto further lines when
+//! it is too short to hold them. Grouped tools show a small flyout triangle; right-click, a long
 //! press or pressing and dragging opens the group to pick another tool.
 
 use egui::{Rect, Sense, pos2, vec2};
@@ -7,22 +8,65 @@ use crate::FilmcraftApp;
 use crate::icons;
 use crate::state::Tool;
 
+const SIZE: f32 = 32.0;
+const GAP: f32 = 4.0;
+
+/// Where the `i`th of `n` buttons goes: in a line along the longer side of `rect`, wrapping onto
+/// further lines as the panel's length needs, the lines centred across it. `None` when the panel
+/// has no room for it.
+fn button_pos(rect: Rect, i: usize, n: usize) -> Option<egui::Pos2> {
+    let step = SIZE + GAP;
+    let horizontal = rect.width() > rect.height();
+    let (along, across) = if horizontal { (rect.width(), rect.height()) } else { (rect.height(), rect.width()) };
+    let per_line = (along / step).floor() as usize;
+    // `n` lines take `n * step - GAP`
+    let room = ((across + GAP) / step).floor() as usize;
+    if per_line == 0 || room == 0 {
+        return None;
+    }
+    let line = i / per_line;
+    if line >= room {
+        return None;
+    }
+    let lines = n.div_ceil(per_line).min(room);
+    let start = (across - (lines as f32 * step - GAP)) / 2.0;
+    let (a, c) = (GAP + (i % per_line) as f32 * step, start + line as f32 * step);
+    Some(if horizontal { pos2(rect.min.x + a, rect.min.y + c) } else { pos2(rect.min.x + c, rect.min.y + a) })
+}
+
+fn shortcut_text(app: &FilmcraftApp, tool: Tool) -> Option<String> {
+    tool.command_id().and_then(|id| app.session.shortcuts.primary(id)).map(|keys| crate::menus::shortcut_text(&keys))
+}
+
+fn tooltip(app: &FilmcraftApp, tool: Tool) -> String {
+    let label = app.ui.language.tr(tool.label());
+    match shortcut_text(app, tool) {
+        Some(keys) => format!("{label} ({keys})"),
+        None => label.to_owned(),
+    }
+}
+
+fn flyout_label(app: &FilmcraftApp, tool: Tool) -> String {
+    let label = app.ui.language.tr(tool.label());
+    match shortcut_text(app, tool) {
+        Some(keys) => format!("{label}   {keys}"),
+        None => label.to_owned(),
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let mut y = rect.min.y + 4.0;
-    let size = 32.0;
     let held_id = egui::Id::unique("tools-held");
     if ui.input(|i| i.pointer.any_pressed()) {
         ui.data_mut(|d| d.remove::<egui::Id>(held_id));
     }
-    for group in Tool::groups() {
+    let groups = Tool::groups();
+    let count = groups.len();
+    for (i, group) in groups.into_iter().enumerate() {
+        let Some(at) = button_pos(rect, i, count) else { break };
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
-        let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
-        let tip = if current.shortcut().is_empty() {
-            app.ui.language.tr(current.label()).to_owned()
-        } else {
-            format!("{} ({})", app.ui.language.tr(current.label()), current.shortcut())
-        };
+        let r = Rect::from_min_size(at, vec2(SIZE, SIZE));
+        let tip = tooltip(app, current);
         let resp = ui.interact(r, egui::Id::unique(("tool", format!("{:?}", group[0]))), Sense::click_and_drag()).on_hover_text(tip);
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, resp.enabled(), app.ui.tool == current, current.label()));
         for tl in &group {
@@ -74,7 +118,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let close_behavior = if held && resp.clicked() { egui::PopupCloseBehavior::IgnoreClicks } else { egui::PopupCloseBehavior::CloseOnClickOutside };
             egui::Popup::menu(&resp).open_memory(command).close_behavior(close_behavior).show(|ui| {
                 for tl in &group {
-                    let row = ui.selectable_label(app.ui.tool == *tl, format!("{}   {}", app.ui.language.tr(tl.label()), tl.shortcut()));
+                    let row = ui.selectable_label(app.ui.tool == *tl, flyout_label(app, *tl));
                     app.auto.add_response(&format!("tools.select.{tl:?}"), &row, tl.label());
                     // letting go over a row of a flyout this press opened picks that tool
                     let released_on = held && ui.input(|i| i.pointer.primary_released() && i.pointer.interact_pos().is_some_and(|p| row.rect.contains(p)));
@@ -85,16 +129,30 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
         }
-        y += size + 4.0;
-        if y > rect.max.y - size {
-            break;
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_hints_follow_the_active_shortcut_and_hide_cleared_keys() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let modified = if cfg!(target_os = "macos") { "⇧⌘K" } else { "Ctrl+Shift+K" };
+        for (tool, command, default, keys, display) in
+            [(Tool::Razor, "tool.razor", "C", "S", "S"), (Tool::TrackSelectBackward, "tool.trackSelectBackward", "Shift+A", "Cmd+Shift+K", modified)]
+        {
+            let label = app.ui.language.tr(tool.label()).to_owned();
+            assert_eq!(tooltip(&app, tool), format!("{label} ({})", crate::menus::shortcut_text(default)));
+            app.session.execute("shortcuts.set", serde_json::json!({"command": command, "keys": keys})).unwrap();
+            assert_eq!(tooltip(&app, tool), format!("{label} ({display})"));
+            assert_eq!(flyout_label(&app, tool), format!("{label}   {display}"));
+            app.session.execute("shortcuts.clear", serde_json::json!({"command": command})).unwrap();
+            assert_eq!(tooltip(&app, tool), label);
+            assert_eq!(flyout_label(&app, tool), label);
+        }
+    }
 
     fn frame(app: &mut FilmcraftApp, ctx: &egui::Context, time: f64, events: Vec<egui::Event>) {
         app.auto.begin_frame();
@@ -127,6 +185,55 @@ mod tests {
         frame(&mut app, &ctx, 1.05, vec![egui::Event::PointerMoved(at + by)]);
         frame(&mut app, &ctx, 1.1, vec![]);
         (app, ctx)
+    }
+
+    fn positions(width: f32, height: f32) -> Vec<Option<egui::Pos2>> {
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, height));
+        (0..8).map(|i| button_pos(rect, i, 8)).collect()
+    }
+
+    #[test]
+    fn a_tall_panel_is_one_column_and_a_wide_one_is_one_row() {
+        let column = positions(42.0, 700.0);
+        assert!(column.iter().all(|p| p.is_some_and(|p| p.x == 5.0)), "centred across a 42 wide panel: {column:?}");
+        assert_eq!(column[1].map(|p| p.y), Some(40.0));
+        let row = positions(700.0, 42.0);
+        assert!(row.iter().all(|p| p.is_some_and(|p| p.y == 5.0)), "{row:?}");
+        assert_eq!(row[1].map(|p| p.x), Some(40.0));
+    }
+
+    #[test]
+    fn a_short_panel_wraps_onto_further_lines_and_every_button_is_reachable() {
+        // 150 wide by 80 tall: four to a line, and room for two lines
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(150.0, 80.0));
+        let all: Vec<_> = (0..8).filter_map(|i| button_pos(rect, i, 8)).collect();
+        assert_eq!(all.len(), 8);
+        for p in &all {
+            assert!(rect.contains_rect(Rect::from_min_size(*p, vec2(SIZE, SIZE))), "{p:?} is outside {rect:?}");
+        }
+        let distinct: std::collections::HashSet<_> = all.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+        assert_eq!(distinct.len(), 8, "no two buttons overlap");
+    }
+
+    #[test]
+    fn a_narrow_panel_holds_a_second_column_when_the_buttons_fit_across_it() {
+        // 68 wide by 150 tall: two columns of 32 with a 4 gap fit, four buttons to a column
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(68.0, 150.0));
+        let all: Vec<_> = (0..8).filter_map(|i| button_pos(rect, i, 8)).collect();
+        assert_eq!(all.len(), 8);
+        for p in &all {
+            assert!(rect.contains_rect(Rect::from_min_size(*p, vec2(SIZE, SIZE))), "{p:?} is outside {rect:?}");
+        }
+        let distinct: std::collections::HashSet<_> = all.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+        assert_eq!(distinct.len(), 8, "no two buttons overlap");
+        assert_eq!(all.iter().map(|p| p.x as i32).collect::<std::collections::BTreeSet<_>>().len(), 2);
+    }
+
+    #[test]
+    fn a_panel_with_no_room_for_a_button_gives_none_and_never_panics() {
+        assert!(button_pos(Rect::from_min_size(egui::Pos2::ZERO, vec2(0.0, 0.0)), 0, 8).is_none());
+        assert!(button_pos(Rect::from_min_size(egui::Pos2::ZERO, vec2(30.0, 30.0)), 5, 8).is_none());
+        let _ = button_pos(Rect::from_min_size(egui::Pos2::ZERO, vec2(f32::NAN, 50.0)), 1, 8);
     }
 
     #[test]

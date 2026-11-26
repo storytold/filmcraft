@@ -2,71 +2,43 @@
 //! right-click Voice-Over Record Settings dialog, and a recording with the synthetic input landing
 //! on the clicked track.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, driver};
+use filmcraft_engine::voiceover::{AudioInput, InputFormat};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
+struct FailedInput;
+
+impl AudioInput for FailedInput {
+    fn devices(&self) -> Vec<String> {
+        vec!["Failed Input".into()]
+    }
+
+    fn channels(&self, _device: &str) -> u16 {
+        1
+    }
+
+    fn start(&mut self, _device: &str, sample_rate: u32) -> std::result::Result<InputFormat, String> {
+        Ok(InputFormat { sample_rate, channels: 1 })
+    }
+
+    fn read(&mut self, frames: usize) -> Vec<Vec<f32>> {
+        vec![vec![0.5; frames]]
+    }
+
+    fn error(&self) -> Option<String> {
+        Some("ALSA poll returned POLLERR".into())
+    }
+
+    fn discard(&mut self) {}
+
+    fn stop(&mut self) {}
 }
 
+driver!(Driver);
+
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
     fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
+        self.click_settle(id, 2);
     }
 
     fn settings(&mut self) -> Value {
@@ -89,6 +61,20 @@ fn a_failed_take_can_be_discarded_from_the_settings_dialog() {
     assert!(!d.harness.state().session.voiceover.recording(), "{}", d.harness.state().ui.status);
     d.exec("file.newProject", json!({}));
     std::fs::remove_file(blocker).unwrap();
+}
+
+#[test]
+fn an_audio_input_error_stops_playback_and_reports_the_device_failure() {
+    let mut d = Driver::demo();
+    d.harness.state_mut().session.voiceover.input = Some(Box::new(FailedInput));
+
+    d.click("timeline.track.A1.voiceover");
+
+    let app = d.harness.state();
+    assert!(!app.playback.playing, "failed voice-over input must stop playback");
+    assert!(!app.session.voiceover.recording(), "failed voice-over input must clear the recording");
+    assert!(app.ui.status.contains("ALSA poll returned POLLERR"), "{}", app.ui.status);
+    assert!(app.ui.status.contains("Settings > Audio Hardware"), "{}", app.ui.status);
 }
 
 #[test]

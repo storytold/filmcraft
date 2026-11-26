@@ -4,7 +4,7 @@ OS media integration for FilmCraft (layer L5): hardware video decoding through t
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
 encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
-[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
+[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) (rule 13, `unsafe` in `## This repository`).
 
 ```rust
 // at startup (the desktop app, filmcraft-cli, the bench)
@@ -105,8 +105,12 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   bit-exact. Each picture is sent as one picture-parameter buffer, the scaling matrices, and a slice
   parameter + slice data buffer per slice (the NAL unit as stored, emulation prevention included).
   HEVC pictures are sent the same way per slice segment (scaling lists only when enabled, converted
-  to raster order). Pictures the DPB outputs are read back right away (`vaGetImage` into an NV12 or
-  P010 image, then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
+  to raster order). Pictures the DPB outputs are read back right away (`vaDeriveImage`, which maps the
+  surface's own NV12 or P010 memory, or `vaGetImage` into an image where a driver cannot derive it;
+  then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
+  [`va::Display::export_surface`](src/vaapi/va.rs) can hand a decoded surface over as DMABUF
+  (DRM PRIME 2: plane formats, offsets, pitches, the objects' file descriptors and their DRM format
+  modifiers) instead of reading it back; nothing imports it into the compositor yet.
   - *frame_num gaps* (and every start at a non-IDR picture: an open-GOP seek) get "non-existing"
     frames like the software decoder's: copies of the latest decoded frame, mid-gray when there is
     none (`vaPutImage`). Pictures predicted from them (the leading pictures of an open GOP after a
@@ -143,7 +147,15 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 - **What it takes:** H.264 in MP4 / MOV, 8-bit SDR, even picture sizes up to 8192, Baseline / Main /
   High (the level is chosen by the OS), constant or one-pass variable bitrate with the settings'
   target and ceiling, the keyframe distance (closed GOPs: every keyframe is an IDR picture).
-  Pictures are converted exactly like the built-in encoder's (BT.709, limited range), 4:2:0 NV12.
+- **Pictures go in as the export's RGBA** (`32BGRA` buffers tagged BT.709 primaries and transfer)
+  and VideoToolbox converts them to limited-range BT.709 4:2:0 itself, so the export's encode
+  thread only copies the picture into the input buffer. The CPU conversion used to run on that
+  thread, where it competed with the render of the next frames for the thread pool and took longer
+  than the hardware encode: 20 ms a 1080p frame on an M2 Max, 88 % of the export's wall time, with
+  the hardware encoder idle meanwhile. A VideoToolbox that refuses RGB input (known from the first
+  picture; creating the session does not tell) gets that CPU conversion into NV12 instead, exactly
+  like the built-in encoder's (BT.709, limited range), and the stream starts over from its first
+  frame; `encode_rgba` returns the copy's time, which goes into `perf.stats` `export.stages.convertMs`.
 - **No B-frames.** On real 1080p footage the quality is the same with and without them (±0.3 dB at
   equal bitrate) and the bitrate lands closer to the target without them, so frame reordering is
   off: compressed frames come out in presentation order, with no composition offsets or edit list.
@@ -341,7 +353,11 @@ Details in [docs/performance.md](../../docs/performance.md).
 ## Not yet
 
 Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
-textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
+textures on Windows; on Linux the VA-API half is in: `va::Display::export_surface` hands a decoded
+surface over as a DMABUF - the plane layout, the objects' file descriptors and their format
+modifiers, checked against the C layout in `abi_tests.rs` and on a real driver in `va.rs`'s test -
+but nothing imports it into wgpu yet, which needs raw Vulkan (`wgpu-hal`) and a same-GPU rule);
+B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
 VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
 the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors and on Linux, and encoders

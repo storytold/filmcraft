@@ -1,4 +1,4 @@
-//! The command line as clap derive types (RFC-0012): `--help` is these doc comments, and the
+//! The command line as clap derive types (RFC-0018): `--help` is these doc comments, and the
 //! values reach the commands already typed.
 
 use std::path::PathBuf;
@@ -46,6 +46,12 @@ const VALUE_GLOBALS: [&str; 4] = ["--project", "--save-as", "--bridge", "--data-
 
 pub fn parse(args: &[OsString]) -> Result<Cli, clap::Error> {
     let mut cmd = Cli::command();
+    // The desktop app's private Launcher protocol: the CLI is never started with it, so refuse it
+    // (both the separate and the `=` form) before parsing instead of reporting an unknown option.
+    // After `--` an argument is data, not an option.
+    if let Some(found) = args.iter().skip(1).take_while(|a| *a != "--").filter_map(|a| a.to_str()).find(|a| desktop_launch_profile_argument(a)) {
+        return Err(UsageError::DesktopProfile(found.to_string()).into_clap(&mut cmd));
+    }
     let matches = match cmd.try_get_matches_from_mut(args) {
         Err(e) if args.iter().skip(1).take_while(|a| *a != "--").any(|a| a == "--help" || a == "-h") => {
             // the first word that names a subcommand, not counting the value of a global option
@@ -70,6 +76,11 @@ pub fn parse(args: &[OsString]) -> Result<Cli, clap::Error> {
     Ok(cli)
 }
 
+/// An option of the desktop app's Launcher protocol (`--launch-profile`, `--profile-root`).
+fn desktop_launch_profile_argument(arg: &str) -> bool {
+    ["--launch-profile", "--profile-root"].iter().any(|flag| arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+}
+
 /// Options every subcommand takes; they may come before or after the subcommand.
 #[derive(Args, Debug, Clone)]
 pub struct Global {
@@ -79,7 +90,7 @@ pub struct Global {
     /// Open the built-in demo project (headless).
     #[arg(long, global = true, conflicts_with = "bridge")]
     pub demo: bool,
-    /// Save the project back to --project when done.
+    /// Save the project back to --project when done; runs saving one project take turns, so each edits what the last one saved.
     #[arg(long, global = true, conflicts_with = "save_as")]
     pub save: bool,
     /// Save the project to this path when done.
@@ -293,7 +304,7 @@ pub struct ExportArgs {
     /// Export preset name (built-in or the user's).
     #[arg(long, value_parser = text)]
     pub preset: Option<String>,
-    /// Format: h264, hevc, prores, dnxhr, apv, mjpeg, mxf-op1a, mxf-opatom, png, tiff, bmp, gif, wav, aiff or aac (default: guessed from the extension).
+    /// Format: h264, hevc, prores, dnxhr, apv, mjpeg, mxf-op1a, mxf-opatom, png, tiff, bmp, gif, wav, aiff, aac or mp3 (default: guessed from the extension).
     #[arg(long, value_parser = text)]
     pub format: Option<String>,
     /// Range to export.

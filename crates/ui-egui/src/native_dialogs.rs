@@ -20,6 +20,14 @@
 //!   there is nothing to write into and the path is dropped.
 //!
 //! One dialog is open at a time; asking for another one meanwhile is refused.
+//!
+//! A save dialog's answer always ends in one of the dialog's extensions: the first is added when
+//! the chosen name has none of them ([`with_save_extension`]). GTK's file chooser, which the XDG
+//! portal shows on GNOME and other GTK desktops, saves the name as typed, so `edit` would be
+//! written without `.fcproj` and File ▸ Open's filter would hide it (#1644). When the name with
+//! the extension added is a file that exists, the dialog's own replace prompt was about another
+//! name, so the app asks before the continuation runs (automation ids `overwrite.replace`,
+//! `overwrite.cancel`).
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
@@ -40,7 +48,7 @@ pub enum FileDialog {
     /// Save a FilmCraft project, suggesting `name`.
     SaveProject { name: String },
     /// Save a file, suggesting `name`.
-    SaveAs { filter: String, exts: Vec<String>, name: String },
+    SaveAs { filter: String, exts: Vec<String>, name: String, adds_ext: bool },
     /// Choose a folder, starting at `at` when there is one.
     Folder { at: Option<String> },
     /// Choose one file to relink to (Link Media ▸ Locate…, Attach Proxies, Reconnect Full
@@ -58,6 +66,26 @@ pub(crate) struct PendingDialog {
     then: Continuation,
 }
 
+/// A save dialog's answer that names an existing file once its extension was added: the
+/// continuation waits for Replace (it then gets `path`) or Cancel (it gets nothing).
+pub(crate) struct PendingOverwrite {
+    pub(crate) path: String,
+    then: Continuation,
+}
+
+/// `path` ending in one of `exts`, compared without case: as chosen when it already does, else
+/// with the first added (`cut` → `cut.edl`, `a.filmcraft` → `a.filmcraft.fcproj`, `EDIT.FCPROJ`
+/// stays). A trailing dot is dropped first (`cut.` → `cut.edl`).
+pub fn with_save_extension(path: &str, exts: &[String]) -> String {
+    let wanted: Vec<&str> = exts.iter().map(String::as_str).filter(|e| !e.is_empty() && *e != "*").collect();
+    let Some(first) = wanted.first() else { return path.to_string() };
+    let current = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    if wanted.iter().any(|e| e.eq_ignore_ascii_case(current)) {
+        return path.to_string();
+    }
+    format!("{}.{first}", path.strip_suffix('.').unwrap_or(path))
+}
+
 fn strings(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| (*s).to_string()).collect()
 }
@@ -70,7 +98,23 @@ impl FileDialog {
         Self::OpenFile { filter: filter.to_string(), exts: strings(exts) }
     }
     pub fn save_as(filter: &str, exts: &[&str], name: &str) -> Self {
-        Self::SaveAs { filter: filter.to_string(), exts: strings(exts), name: name.to_string() }
+        Self::SaveAs { filter: filter.to_string(), exts: strings(exts), name: name.to_string(), adds_ext: true }
+    }
+
+    /// Like [`save_as`](Self::save_as), but the answer keeps the name as chosen: the caller picks
+    /// the format from the extension and asks before replacing a file itself.
+    pub fn save_as_named(filter: &str, exts: &[&str], name: &str) -> Self {
+        Self::SaveAs { filter: filter.to_string(), exts: strings(exts), name: name.to_string(), adds_ext: false }
+    }
+
+    /// The extensions a file saved through this dialog ends in (see [`with_save_extension`]);
+    /// `None` for dialogs that don't save, or that accept any name.
+    fn save_extensions(&self) -> Option<Vec<String>> {
+        match self {
+            Self::SaveProject { .. } => Some(vec!["fcproj".to_string()]),
+            Self::SaveAs { exts, adds_ext: true, .. } if exts.iter().any(|e| !e.is_empty() && e != "*") => Some(exts.clone()),
+            _ => None,
+        }
     }
 
     /// Whether `hooks` can show this dialog at all (a host without the picker leaves it out).
@@ -95,7 +139,7 @@ impl FileDialog {
             Self::OpenFile { filter, exts } => one(hooks.pick_open_file.as_mut().and_then(|f| f(&filter, &refs(&exts)))),
             Self::OpenProject => one(hooks.pick_open_project.as_mut().and_then(|f| f())),
             Self::SaveProject { name } => one(hooks.pick_save.as_mut().and_then(|f| f(&name))),
-            Self::SaveAs { filter, exts, name } => one(hooks.pick_save_as.as_mut().and_then(|f| f(&filter, &refs(&exts), &name))),
+            Self::SaveAs { filter, exts, name, .. } => one(hooks.pick_save_as.as_mut().and_then(|f| f(&filter, &refs(&exts), &name))),
             Self::Folder { at } => one(match (at, hooks.pick_folder_at.as_mut()) {
                 (Some(dir), Some(f)) => f(&dir),
                 _ => hooks.pick_folder.as_mut().and_then(|f| f()),
@@ -118,11 +162,12 @@ impl FilmcraftApp {
     /// later frame; otherwise `then` runs now and its result is returned. While a dialog is open
     /// another one is refused.
     pub fn pick(&mut self, dialog: FileDialog, then: impl FnOnce(&mut FilmcraftApp, Vec<String>) -> Result<Value, String> + 'static) -> Result<Value, String> {
-        if self.native_dialog.is_some() {
+        if self.dialog_busy() {
             return Err(tl!("A file dialog is already open").into());
         }
+        let then = with_extension_check(&dialog, Box::new(then));
         if let Some(run) = self.hooks.run_dialog.as_mut() {
-            self.native_dialog = Some(PendingDialog { answer: run(dialog), then: Box::new(then) });
+            self.native_dialog = Some(PendingDialog { answer: run(dialog), then });
             return Ok(json!({"dialog": "open"}));
         }
         let paths = dialog.run_now(&mut self.hooks);
@@ -134,10 +179,15 @@ impl FilmcraftApp {
     /// the host's synchronous pickers: a panel works on a copy of its state and writes it back at
     /// the end of the frame, which would overwrite a path written in the middle of it.
     pub fn pick_ui(&mut self, dialog: FileDialog, then: impl FnOnce(&mut FilmcraftApp, Vec<String>) + 'static) {
-        if self.native_dialog.is_some() {
+        if self.dialog_busy() {
             self.ui.status = tl!("A file dialog is already open").into();
             return;
         }
+        let then: Continuation = Box::new(move |app, paths| {
+            then(app, paths);
+            Ok(Value::Null)
+        });
+        let then = with_extension_check(&dialog, then);
         let answer = match self.hooks.run_dialog.as_mut() {
             Some(run) => run(dialog),
             None => {
@@ -147,16 +197,32 @@ impl FilmcraftApp {
                 rx
             }
         };
-        let then: Continuation = Box::new(move |app, paths| {
-            then(app, paths);
-            Ok(Value::Null)
-        });
         self.native_dialog = Some(PendingDialog { answer, then });
     }
 
     /// Whether a file dialog is open (one the host shows without blocking).
     pub fn native_dialog_open(&self) -> bool {
         self.native_dialog.is_some()
+    }
+
+    /// A file dialog, or the replace prompt for its answer, is waiting for the user.
+    fn dialog_busy(&self) -> bool {
+        self.native_dialog.is_some() || self.overwrite_prompt.is_some()
+    }
+
+    /// The file the replace prompt asks about, if it is up.
+    pub fn overwrite_prompt_path(&self) -> Option<&str> {
+        self.overwrite_prompt.as_ref().map(|p| p.path.as_str())
+    }
+
+    /// Answer the replace prompt: Replace runs the continuation with the file, Cancel with
+    /// nothing (as a cancelled dialog). An error goes to the status line.
+    pub(crate) fn answer_overwrite(&mut self, replace: bool) {
+        let Some(p) = self.overwrite_prompt.take() else { return };
+        let paths = if replace { vec![p.path] } else { Vec::new() };
+        if let Err(e) = (p.then)(self, paths) {
+            self.ui.status = e;
+        }
     }
 
     /// Run the open dialog's continuation once it has answered (called first thing every frame).
@@ -191,3 +257,50 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
     ("file.exportAle", "Avid Log Exchange", "ale"),
     ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
 ];
+
+/// `then` for `dialog`: a save dialog's answer gets its extension ([`with_save_extension`]), and
+/// when that names an existing file other than the one chosen, the replace prompt holds `then`.
+fn with_extension_check(dialog: &FileDialog, then: Continuation) -> Continuation {
+    let Some(exts) = dialog.save_extensions() else { return then };
+    Box::new(move |app, paths| {
+        let Some(chosen) = paths.into_iter().next() else { return then(app, Vec::new()) };
+        let path = with_save_extension(&chosen, &exts);
+        if path != chosen && std::path::Path::new(&path).exists() {
+            app.overwrite_prompt = Some(PendingOverwrite { path, then });
+            return Ok(json!({"dialog": "replace"}));
+        }
+        then(app, vec![path])
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_save_extension;
+
+    fn exts(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_saved_name_gets_the_first_extension_unless_it_has_one_of_them() {
+        let project = exts(&["fcproj"]);
+        assert_eq!(with_save_extension("/edits/cut", &project), "/edits/cut.fcproj");
+        assert_eq!(with_save_extension("/edits/cut.", &project), "/edits/cut.fcproj");
+        assert_eq!(with_save_extension("/edits/a.filmcraft", &project), "/edits/a.filmcraft.fcproj");
+        assert_eq!(with_save_extension("/edits/v1.2 final", &project), "/edits/v1.2 final.fcproj");
+        for kept in ["/edits/cut.fcproj", "/edits/CUT.FCPROJ", "/edits/Cut.FcProj", r"C:\Edits\cut.fcproj"] {
+            assert_eq!(with_save_extension(kept, &project), kept);
+        }
+        // any of several extensions is kept; none gets the first
+        let captions = exts(&["srt", "vtt", "scc"]);
+        assert_eq!(with_save_extension("/c/subs.vtt", &captions), "/c/subs.vtt");
+        assert_eq!(with_save_extension("/c/subs.txt", &captions), "/c/subs.txt.srt");
+        // nothing to add: no extensions, or only a wildcard
+        assert_eq!(with_save_extension("/c/any", &[]), "/c/any");
+        assert_eq!(with_save_extension("/c/any", &exts(&["*", ""])), "/c/any");
+        // never panics on odd input
+        for odd in ["", ".", "/", "é.", "🦀", ".fcproj"] {
+            let _ = with_save_extension(odd, &project);
+        }
+    }
+}

@@ -3,84 +3,27 @@
 //! Normalize Mix Track, Dynamic Audio Waveforms, Reveal Log Files and the System Compatibility
 //! Report, all driven by automation id through the control channel.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use filmcraft_engine::project::ItemId;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
     fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let s = demo_session();
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(s).with_control(rx);
         // never hand paths to the real OS opener from a test
         app.hooks.open_path = Some(Box::new(|_, _| Ok(())));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn menu(&mut self, id: &str) -> Value {
-        let r = self.ok("ui.menu.invoke", json!({"id": id}));
-        self.frames(3);
-        r
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
+        let harness = build(builder(), app);
+        start(Driver { harness, tx })
     }
 
     fn item_named(&mut self, name: &str) -> u64 {
@@ -119,6 +62,33 @@ fn menu_items_toggles_and_help() {
     let _ = std::fs::remove_file(&path);
     // Import from Media Browser needs a Media Browser selection
     assert_eq!(d.call("ui.menu.invoke", json!({"id": "file.importFromMediaBrowser"}))["ok"], false);
+}
+
+/// #2623: the engine's on/off commands in the Sequence and Markers menus show their state, so
+/// choosing one visibly turns it on or off.
+#[test]
+fn engine_toggles_show_their_checkmark() {
+    let mut d = Driver::new();
+    let checked = |d: &mut Driver, id: &str| {
+        let menus = d.ok("ui.menu.list", json!({}));
+        menus.as_array().unwrap().iter().find(|m| m["id"] == id).unwrap_or_else(|| panic!("{id} not in menus"))["checked"].clone()
+    };
+    for (id, on) in [
+        ("sequence.snap", true),
+        ("sequence.linkedSelection", true),
+        ("sequence.selectionFollowsPlayhead", false),
+        ("sequence.showThroughEdits", false),
+        ("markers.rippleSequenceMarkers", false),
+        ("markers.copyPasteIncludesSequenceMarkers", false),
+    ] {
+        assert_eq!(checked(&mut d, id), json!(on), "{id} before");
+        d.menu(id);
+        assert_eq!(checked(&mut d, id), json!(!on), "{id} after choosing it");
+    }
+    assert!(d.app().session.state.ripple_sequence_markers);
+    d.menu("markers.rippleSequenceMarkers");
+    assert_eq!(checked(&mut d, "markers.rippleSequenceMarkers"), json!(false));
+    assert!(!d.app().session.state.ripple_sequence_markers);
 }
 
 #[test]
@@ -358,5 +328,26 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     let clear = menus.as_array().unwrap().iter().find(|m| m["id"] == "file.clearRecent").cloned().expect("Clear Recent Files");
     assert_eq!(clear["enabled"], false);
     assert!(!menus.as_array().unwrap().iter().any(|m| m["id"].as_str().is_some_and(|id| id.starts_with("file.openRecent."))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn saving_the_project_says_where_in_the_status_bar() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-saved-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut d = Driver::new();
+    let status = |d: &mut Driver| d.app().ui.status.clone();
+    let first = dir.join("first.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveAs", "params": {"path": first}}));
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.save");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.saveAll");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    let copy = dir.join("copy.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveCopy", "params": {"path": copy}}));
+    assert_eq!(status(&mut d), format!("Copy of the project saved to {copy}"));
     let _ = std::fs::remove_dir_all(&dir);
 }

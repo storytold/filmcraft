@@ -5,7 +5,7 @@
 //! image are written to `<workspace>/target/golden-failures/` for inspection.
 //!
 //! `FILMCRAFT_BLESS=1` (re)writes the reference instead of comparing, plus its `.attribution`
-//! sidecar when missing (AGENTS.md §1). References must be produced by FilmCraft itself (original
+//! sidecar when missing (standards/clean-room.md). References must be produced by FilmCraft itself (original
 //! work), be small (< [`MAX_GOLDEN_BYTES`]) and be listed in `ATTRIBUTION.md`.
 
 use std::io::{BufReader, Cursor};
