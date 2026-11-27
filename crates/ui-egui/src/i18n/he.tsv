@@ -3340,3 +3340,90 @@
 	Open Link	פתיחת קישור
 	Opens this address in your web browser	פתיחת כתובת זו בדפדפן האינטרנט
 	Enter a valid HTTP or HTTPS URL without credentials	יש להזין כתובת HTTP או HTTPS תקינה ללא פרטי התחברות
+
+# Script window (storytold/filmcraft#2726, merged; source 7b8e522d63f2e2c1617dea4939feb48e769d6f2f); existing craft-i18n wording retained where present. AI-assisted, native review pending.
+	Script	תסריט
+	Open Script	פתיחת תסריט
+	Find in Script	חיפוש בתסריט
+	Add Script Mark	הוספת סימון בתסריט
+	Toggle Script Offscreen	החלפת מצב מחוץ לפריים בתסריט
+	Script Thumbnail Back	תמונה ממוזערת קודמת בתסריט
+	Script Thumbnail Forward	תמונה ממוזערת הבאה בתסריט
+	{n} Script-linked clip(s) still need review. Select each remaining source to relink.	נותרו {n} קליפים המקושרים לתסריט שדורשים בדיקה. יש לבחור כל מקור שנותר כדי לקשר אותו מחדש.
+	Review Script marks	בדיקת הסימונים בתסריט
+	FilmCraft cannot confirm this is the same footage used by linked Script takes.	ל־FilmCraft אין אפשרות לוודא שזהו אותו חומר מצולם המשמש את הטייקים המקושרים לתסריט.
+	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	אם זהו אותו חומר מצולם, יש לאשר את הקישור מחדש כדי לשמור על הסימונים. אחרת יש לבטל ולהחליף את הטייקים בתסריט.
+	Cancel relink	ביטול קישור מחדש
+	Confirm Same Footage and Relink	אישור שזהו אותו חומר מצולם וקישור מחדש
+	Relink canceled; Script marks were preserved.	הקישור מחדש בוטל; הסימונים בתסריט נשמרו.
+	Script section copied	קטע התסריט הועתק
+	Pasted text exceeds the 4 MiB limit.	הטקסט שהודבק חורג מהמגבלה של 4 MiB.
+	Untitled Script	תסריט ללא שם
+	Reconnected {count} Script candle(s)	קווי טייק שחוברו מחדש בתסריט: {count}
+	Plain-text script	תסריט בטקסט פשוט
+	Cannot read script: {error}	לא ניתן לקרוא את התסריט: {error}
+	Script text exceeds the 4 MiB import limit	טקסט התסריט חורג ממגבלת הייבוא של 4 MiB
+	Cannot read script as UTF-8 text: {error}	לא ניתן לקרוא את התסריט כטקסט UTF-8: {error}
+	Script text needs room for five leading setup lines	נדרש מקום לחמש שורות הכנה בתחילת טקסט התסריט
+	Get started with Script	צעדים ראשונים בחלון התסריט
+	0. Export Script text	0. ייצוא טקסט התסריט
+	1. Import Text	1. ייבוא טקסט
+	Save your .txt file as UTF-8 plain text, then choose Import Text… above. Or choose New to write a script.	יש לשמור את קובץ ה-.txt כטקסט פשוט בקידוד UTF-8, ואז לבחור באפשרות ייבוא טקסט… שלמעלה. לחלופין, יש לבחור באפשרות חדש כדי לכתוב תסריט.
+	2. Add clips	2. הוספת קליפים
+	Select rows, then drag a clip from the Project panel onto the selection.	יש לבחור שורות ולגרור קליפ מלוח הפרויקט אל השורות שנבחרו.
+	3. Follow candles	3. מעקב אחר קווי הטייק
+	A candle shows a take's row coverage. Double-click a candle or thumbnail to open Source; press Space to play.	קו טייק מציג את השורות המכוסות על ידי הטייק. לחיצה כפולה על קו טייק או על תמונה ממוזערת תפתח את מוניטור המקור; לחיצה על מקש הרווח תתחיל את הניגון.
+	4. Add marks	4. הוספת סמנים
+	Select a candle row, find the matching frame in Source, then click the diamond Mark button in Script. Click a mark to return to that frame.	יש לבחור שורה בקו הטייק, לאתר את הפריים המתאים במוניטור המקור וללחוץ על לחצן הסימון בצורת מעוין בחלון התסריט. לחיצה על סמן תחזיר לאותו פריים.
+	Replace take?	להחליף את הטייק?
+	This replacement could be different footage. Old script marks would point to the wrong frames.	הקובץ החלופי עשוי להכיל חומר מצולם אחר. הסימונים הישנים בתסריט יצביעו על פריימים שגויים.
+	This updates every matching candle in all scripts.	פעולה זו תעדכן את כל קווי הטייק התואמים בכל התסריטים.
+	Replace matching candles and clear their marks?	להחליף את קווי הטייק התואמים ולמחוק את הסמנים שלהם?
+	Replace and Clear Marks	החלפה ומחיקת סימונים
+	Drag to change the script's left margin	גרירה לשינוי השוליים השמאליים של התסריט
+	Drag to change script wrapping	גרירה לשינוי גלישת השורות בתסריט
+	Edit Line	עריכת שורה
+	Insert Line Below	הוספת שורה מתחת
+	Delete Line	מחיקת שורה
+	Click to cue Source; Command/Ctrl-drag to move this mark to another script line	לחיצה למעבר למיקום במקור; גרירה עם Command/Ctrl להעברת הסימון לשורה אחרת בתסריט
+	Delete Mark	מחיקת סימון
+	Command-drag (Mac) or Ctrl-drag (Windows) to adjust candle length	גרירה עם Command (Mac) או Ctrl (Windows) לשינוי אורך הטייק
+	Reattach this candle's source first.	יש לחבר מחדש תחילה את המקור של קו טייק זה.
+	Add Another Candle	הוספת טייק נוסף
+	Move Left	הזזה שמאלה
+	Move Right	הזזה ימינה
+	Candle Color	צבע הטייק
+	Clear Offscreen	ביטול סימון מחוץ לפריים
+	Mark Offscreen	סימון מחוץ לפריים
+	Page	עמוד
+	Double-click to edit Page	לחיצה כפולה לעריכת מספר העמוד
+	Double-click to edit Scene	לחיצה כפולה לעריכת הסצנה
+	Find in Project	חיפוש בפרויקט
+	Rebind to Selected Project Clip	קישור מחדש לקליפ שנבחר בפרויקט
+	Select one available media clip, subclip, or multicamera source in Project first.	יש לבחור תחילה בפרויקט קליפ מדיה זמין, קליפ משנה או מקור מרובה מצלמות.
+	Reconnect every matching candle in all scripts. Matching footage keeps its marks; other replacements require review.	חיבור מחדש של כל קווי הטייק התואמים בכל התסריטים. אם חומר הגלם זהה, הסמנים נשמרים; החלפות אחרות מחייבות בדיקה.
+	Script help	עזרה בחלון התסריט
+	Choose a script	בחירת תסריט
+	Script settings	הגדרות התסריט
+	Text size	גודל הטקסט
+	Thumbnail size	גודל התמונה הממוזערת
+	Left margin	שוליים שמאליים
+	Wrap margin	שוליים לגלישת שורות
+	Show row colors	הצגת צבעי שורות
+	Show line numbers	הצגת מספרי שורות
+	Import Text…	ייבוא טקסט…
+	Plain text .txt supported.	קובצי טקסט פשוט מסוג .txt נתמכים.
+	Set selected candle rows to the current color; right-click for palette	החלת הצבע הנוכחי על שורות הטייק שנבחרו; לחיצה ימנית לפתיחת לוח הצבעים
+	Candle color	צבע הטייק
+	Add or edit Scene on the selected line	הוספה או עריכה של הסצנה בשורה שנבחרה
+	Add or edit Page on the selected line	הוספה או עריכה של מספר העמוד בשורה שנבחרה
+	Jump to {caption} label	מעבר לתווית {caption}
+	Add a mark at the Source playhead; cues the selected candle's source if needed	הוספת סימון במיקום סמן הניגון של המקור; טעינת המקור של הטייק שנבחר לפי הצורך
+	Mark or clear the selected candle rows as off-screen	סימון או ביטול סימון מחוץ לפריים בשורות הטייק שנבחרו
+	Search text	חיפוש טקסט
+	Previous match (Shift+Enter)	התוצאה הקודמת (Shift+Enter)
+	Next match (Enter)	התוצאה הבאה (Enter)
+	No matches	לא נמצאו תוצאות
+	{current} of {count}	{current} מתוך {count}
+	Choose linked take ({count})	בחירת טייק מקושר ({count})
+	Line {current} of {total}	שורה {current} מתוך {total}
