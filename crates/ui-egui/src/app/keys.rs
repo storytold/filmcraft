@@ -22,6 +22,38 @@ impl FilmcraftApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
             return;
         }
+        if self.ui.focused == PanelKind::Script
+            && panels::script::has_text_paste_undo(self)
+            && ctx.text_edit_focused()
+            && ctx.input_mut(|input| !input.modifiers.shift && !input.modifiers.alt && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z))
+        {
+            if let Err(error) = panels::script::undo_text_paste(self, ctx) {
+                self.ui.status = error;
+            }
+            return;
+        }
+        if self.ui.focused == PanelKind::Script && !ctx.text_edit_focused() && self.dialog.is_none() {
+            let pasted = ctx.input_mut(|input| {
+                let mut pasted = Vec::new();
+                input.events.retain(|event| {
+                    if let egui::Event::Paste(text) = event {
+                        pasted.push(text.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                pasted
+            });
+            if !pasted.is_empty() {
+                for text in pasted {
+                    if let Err(error) = panels::script::paste_plain_text(self, &text) {
+                        self.ui.status = error;
+                    }
+                }
+                return;
+            }
+        }
         // The runtime keeps egui's focus on the framework stop or the hosted canvas a press reached,
         // so egui's own `egui_wants_keyboard_input` would end every shortcut after a click on a panel.
         if crate::framework::keyboard_taken(ctx) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {

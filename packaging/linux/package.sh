@@ -128,7 +128,7 @@ if has tar; then
     # A Nightly binary only starts with its private profile, so an unpacked tarball gets the same
     # launcher the other Nightly formats install: `filmcraft` starts `filmcraft-bin`.
     mv "$WORK/tar/$BASENAME/bin/filmcraft" "$WORK/tar/$BASENAME/bin/filmcraft-bin"
-    install -Dm755 "$HERE/nightly-launch.sh" "$WORK/tar/$BASENAME/bin/filmcraft"
+    install -Dm755 "$HERE/nightly-package-launch.sh" "$WORK/tar/$BASENAME/bin/filmcraft"
   fi
   install -m755 "$HERE/install.sh" "$WORK/tar/$BASENAME/install.sh"
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
