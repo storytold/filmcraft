@@ -41,6 +41,7 @@ pub mod project_views;
 pub mod reference;
 pub mod remix;
 pub mod scopes;
+pub mod script;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
@@ -166,6 +167,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Progress => events::progress(app, ui, rect),
         PanelKind::ReferenceMonitor => reference::show(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
+        PanelKind::Script => script::show(app, ui, rect),
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),
@@ -235,11 +237,6 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
 
-/// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
-pub(crate) fn dragging(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
-}
-
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
     ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
 }
@@ -299,7 +296,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
     let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(ctx) {
         cancel_drag(ui);
         return;
     }

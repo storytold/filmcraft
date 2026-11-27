@@ -63,11 +63,11 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119
 ## This repository
 <!-- craft-agents:end -->
 
-FilmCraft is a Rust video editor (workspace edition 2024). Run it with `cargo run -p filmcraft -- --control 9876` (`docs/control-protocol.md`); look at `ui.screenshot` for UI work.
+FilmCraft is a Rust video editor (workspace edition 2024). Run it with `cargo run -p filmcraft -- --control 9886` (`docs/control-protocol.md`); look at `ui.screenshot` for UI work.
 
 - **Layout:** `crates/*` and `apps/*` (globbed), `xtask/`. Layers L0 to L5 are in `docs/architecture.md` §1; nothing below L5 depends on egui, eframe, winit, rfd or cpal. New crates include `[lints] workspace = true`; production crate roots declare their lint attributes before modules.
 - **Checks for the crates you changed:** `cargo fmt --check`; `cargo clippy -p <crate> --all-targets -- -D warnings`; `cargo nextest run -p <crate>` (or `cargo test -p <crate>`); `cargo xtask layers` for dependency changes; `cargo xtask assets` for asset changes; `cargo xtask wasm` for L0 to L4, `filmcraft-ui-egui` and `filmcraft-web` (wasm32). `cargo xtask ci` runs all of them. Set `CRAFT_FONTS_DIR` too for font code.
-- **`unsafe`:** the workspace sets `unsafe_code = "forbid"`. `crates/platform` is the one crate that uses it (OS media FFI; `unsafe_code = "deny"`, `#[allow(unsafe_code)]` on its FFI modules only; `docs/adr/0001-platform-ffi.md`).
+- **`unsafe`:** the workspace sets `unsafe_code = "forbid"`. `crates/platform` is the one crate that uses it (OS media FFI, and on macOS lowering the scheduling priority of background job threads, `docs/adr/0002-background-thread-priority.md`; `unsafe_code = "deny"`, `#[allow(unsafe_code)]` on its FFI modules only; `docs/adr/0001-platform-ffi.md`).
 - **Panic net:** the hook in `crates/ui-egui/src/crash.rs` logs panics; the UI pass runs under `catch_unwind`; `panic = "unwind"`. Clean crates deny the panicking lints; `clippy.toml` allows them in tests.
 - **Time:** all edit math uses `filmcraft_time::Tick` (254 016 000 000 per second).
 - **Commands and automation:** commands live in `crates/engine`; UI, CLI, control channel and MCP dispatch by command id. Each interactive widget registers an automation id.

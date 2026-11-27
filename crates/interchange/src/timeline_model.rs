@@ -1,6 +1,6 @@
 //! Conversion between FilmCraft effect values and the shared timeline model.
 
-use craft_timeline::model as shared;
+use craft_timeline::interchange as shared;
 use filmcraft_project as film;
 use filmcraft_time::Tick;
 
@@ -542,6 +542,8 @@ fn to_project(project: &film::Project, root: film::ItemId) -> Result<shared::Pro
                 shared::ItemKind::Uncarried { what: "graphic clip".into(), width: *width, height: *height, rate: *rate, duration: Tick::ZERO },
                 serde_json::json!({}),
             ),
+            // Scripts are project documents and cannot appear as timeline media.
+            film::ItemKind::Script(_) => continue,
         };
         out.items.insert(
             shared::ItemId(id.0),

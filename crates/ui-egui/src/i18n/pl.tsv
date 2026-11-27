@@ -3620,6 +3620,7 @@
 	Open a sequence to search its graphics	Otwórz sekwencję, aby przeszukać jej grafiki
 	No text graphics in this sequence. Add text with the Type tool.	Ta sekwencja nie zawiera grafik z tekstem. Dodaj tekst narzędziem Tekst.
 	No matching text.	Brak pasującego tekstu.
+	Set Playhead	Ustaw głowicę
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
 

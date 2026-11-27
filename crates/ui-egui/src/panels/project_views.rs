@@ -28,6 +28,7 @@ pub fn item_icon(k: &ItemKind) -> Icon {
         },
         ItemKind::Sequence(_) => Icon::Sequence,
         ItemKind::Subclip { .. } => Icon::Film,
+        ItemKind::Script(_) => Icon::Captions,
         ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => Icon::Adjust,
     }
 }
@@ -270,6 +271,8 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
             // like Premiere: double-clicking a Color Matte opens its color picker
             actions.push(("project.select".into(), json!({"items": [id.0]})));
             actions.push(("project.matteColor".into(), json!({})));
+        } else if matches!(kind, ItemKind::Script(_)) {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
         } else {
             let cmd = if matches!(kind, ItemKind::Sequence(_)) { "sequence.open" } else { "source.open" };
             actions.push((cmd.into(), json!({"item": id.0})));
@@ -283,16 +286,29 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
     }
 }
 
+fn script_and_source_menu(ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Open in Source Monitor")).clicked() {
+        actions.push(("source.open".into(), json!({"item": id.0})));
+        ui.close();
+    }
+    if matches!(kind, ItemKind::Script(_)) {
+        if ui.button(tl!("Open Script")).clicked() {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
+            ui.close();
+        }
+    } else if ui.button(tl!("Find in Script")).clicked() {
+        actions.push(("script.findInScript".into(), json!({"item": id.0})));
+        ui.close();
+    }
+}
+
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button(tl!("Open in Source Monitor")).clicked() {
-        actions.push(("source.open".into(), json!({"item": id.0})));
-        ui.close();
-    }
+    script_and_source_menu(ui, id, kind, actions);
     if matches!(kind, ItemKind::Sequence(_)) && ui.button(tl!("Open in Timeline")).clicked() {
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
@@ -307,7 +323,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
             ui.close();
         }
     }
-    if ui.button(tl!("New Sequence From Clip")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("New Sequence From Clip")).clicked() {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
@@ -316,19 +332,21 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("edit.duplicate".into(), json!({})));
         ui.close();
     }
-    if ui.button(tl!("Set Poster Frame")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Set Poster Frame")).clicked() {
         // the hover-scrubbed time when there is one
         let h = app.ui.project_panel.hover.filter(|h| h.item == id.0);
         actions.push(("project.select".into(), sel()));
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    let b = ui.button(tl!("Interpret Footage…"));
-    app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
-    if b.clicked() {
-        let items = menu_targets(&app.session.state.project_selection, id);
-        actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
-        ui.close();
+    if !matches!(kind, ItemKind::Script(_)) {
+        let b = ui.button(tl!("Interpret Footage…"));
+        app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
+        if b.clicked() {
+            let items = menu_targets(&app.session.state.project_selection, id);
+            actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
+            ui.close();
+        }
     }
     // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
     let subclip_items: Vec<(&str, &str, &str)> = match kind {
@@ -513,7 +531,7 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
     if let Some(rn) = app.ui.project_panel.rename.as_mut() {
         rn.text = text;
     }
-    let done = if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    let done = if crate::framework::escape_pressed(ui.ctx()) {
         app.ui.project_panel.rename = None;
         true
     } else if resp.lost_focus() {
@@ -739,7 +757,7 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
         ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, current.clone(), add)));
     }
     let Some((anchor, before, add)) = ui.data(|d| d.get_temp::<Drag>(key)) else { return };
-    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let cancel = crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx());
     if cancel || !(bg.dragged_by(primary) || bg.drag_stopped_by(primary)) {
         ui.data_mut(|d| d.remove::<Drag>(key));
         if cancel && before != current {
@@ -1242,7 +1260,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             );
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
-            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let escape = crate::framework::escape_pressed(ui.ctx());
             // only the primary button moves cards: a middle-button drag pans the canvas (#579)
             let (dragged, stopped) = (resp.dragged_by(egui::PointerButton::Primary), resp.drag_stopped_by(egui::PointerButton::Primary));
             if (dragged || stopped) && (escape || crate::panels::drag_cancelled(ui)) {

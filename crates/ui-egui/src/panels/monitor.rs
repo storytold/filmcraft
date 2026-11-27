@@ -103,12 +103,15 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     } else {
         format!("monitor-{prefix}")
     };
+    // behind the playhead in the play direction: in reverse playback the pictures still
+    // finishing (kept running by `schedule_playback`) are above it
+    let back = crate::frames::Lookback { frames: app.frames.plan_lookback(key.target, rate.as_f64()), dir: dir.unwrap_or(1) };
     let (shown, on_screen) = if use_gpu {
         let found = app
             .frames
             .get_plan(&key)
             .map(|p| (key, p))
-            .or_else(|| app.frames.nearest_plan(key, 6))
+            .or_else(|| app.frames.nearest_plan(key, back))
             .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
             .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
         match found {
@@ -117,10 +120,10 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         }
     } else if grid {
         let recent = playing_recent(app, key, dir);
-        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true)
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true, back)
     } else {
         let recent = playing_recent(app, key, dir);
-        cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, false, back)
     };
     let exact = on_screen == Some(key);
     if which == Which::Program {
@@ -156,7 +159,17 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
         }
         let (reference, _) = if mv.transparency_grid {
-            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], None, DisplayMode::Composite, true)
+            cpu_texture_as(
+                app,
+                &ctx,
+                &format!("monitor-{prefix}-ref-grid"),
+                rkey,
+                &[],
+                None,
+                DisplayMode::Composite,
+                true,
+                crate::frames::Lookback::backward(6),
+            )
         } else {
             cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite)
         };
@@ -588,7 +601,7 @@ const ASKED_KEYS: usize = 64;
 /// is, and showing it keeps the picture one pass behind the mouse instead of frozen until the
 /// mouse rests. Playback has its own schedule and remembers nothing (what was on screen before
 /// Play is no stand-in for where it stopped).
-fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
+pub(crate) fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
     let asked = app.monitor_asked.entry(prefix.to_string()).or_default();
     if playing {
         asked.clear();
@@ -617,8 +630,9 @@ fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option
 
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
 /// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
-/// with the display mode's channel mapping. Returns the texture and the frame it shows.
-fn cpu_texture(
+/// with the display mode's channel mapping. Returns the texture and the frame it shows. The monitor
+/// itself calls [`cpu_texture_as`] with the GPU path's look-back while playing.
+pub(crate) fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     name: &str,
@@ -627,10 +641,11 @@ fn cpu_texture(
     recent: Option<FrameKey>,
     mode: DisplayMode,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
-    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false)
+    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false, crate::frames::Lookback::backward(6))
 }
 
-/// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+/// [`cpu_texture`], looking back `back` frames (in the play direction) instead of six earlier
+/// ones, and keeping the frame's alpha when `alpha` is set (the Transparency Grid).
 #[allow(clippy::too_many_arguments)]
 fn cpu_texture_as(
     app: &mut FilmcraftApp,
@@ -641,12 +656,13 @@ fn cpu_texture_as(
     recent: Option<FrameKey>,
     mode: DisplayMode,
     alpha: bool,
+    back: crate::frames::Lookback,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
     let found = app
         .frames
         .get(&key)
         .map(|img| (key, img))
-        .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
+        .or_else(|| back.frames_before(key.frame).map(|frame| FrameKey { frame, ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
         .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))))
         .or_else(|| recent.and_then(|k| app.frames.get(&k).map(|img| (k, img))));
     match found {
@@ -686,7 +702,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
     let pending_id = egui::Id::unique("eyedropper-pending");
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(&ctx) {
         app.ui.eyedropper = None;
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
         return;
@@ -1166,7 +1182,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     // roomy spacing when every button fits with it, tight spacing before any goes to the overflow menu
     let count = buttons.len() as f32;
     let gap = if count * TRANSPORT_BUTTON + (count - 1.0).max(0.0) * 6.0 <= available { 6.0 } else { 2.0 };
-    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
+    let Some(fit) = crate::widgets::toolbar_fit::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
         ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(row.min, pos2((row.right() - 30.0).max(row.left()), row.bottom()))), |ui| {
             egui::ScrollArea::horizontal().id_salt((prefix, "transport-scroll")).show(ui, |ui| {
                 ui.horizontal(|ui| {
