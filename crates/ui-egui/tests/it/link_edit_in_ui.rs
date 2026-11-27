@@ -66,7 +66,7 @@ impl Driver {
         s.path = Some("/tmp/link-edit-in-ui.fcproj".into());
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = crate::support::build(crate::support::builder(), app);
         let mut d = Driver { harness, tx, _turn: turn };
         d.frames(4);
         d

@@ -18,7 +18,7 @@ impl Driver {
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(Session::default()).with_control(rx);
         app.hooks.dialog_label = label.map(|text| Box::new(move || Some(text.to_string())) as Box<dyn Fn() -> Option<String>>);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = crate::support::build(crate::support::builder(), app);
         let mut driver = Driver { harness, tx };
         driver.frames(4);
         driver
