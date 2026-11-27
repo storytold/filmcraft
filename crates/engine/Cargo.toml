@@ -46,6 +46,7 @@ roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
@@ -53,4 +54,3 @@ tempfile = "3"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["png", "gif"] }

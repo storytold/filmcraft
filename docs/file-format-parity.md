@@ -25,7 +25,7 @@ only). "Tested" names the evidence.
 | Marker CSV / text | write | — | yes (#454) | — | 80% |
 | Selection as project | Premiere project | — | `.fcproj` only | — | 50% |
 | Templates (`.prproj` templates) | yes | — | our templates | — | 70% |
-| Motion Graphics templates `.mogrt` | read + write | **refused by design** (clean-room, AGENTS.md §1); our `.fcgt` instead | `.fcgt` | — | n/a |
+| Motion Graphics templates `.mogrt` | read + write | **refused by design** (clean-room, standards/clean-room.md); our `.fcgt` instead | `.fcgt` | — | n/a |
 | Effect presets `.prfpset` | read + write | yes (plain XML and gzip `.prfpset`, bin folders, keyframes, Bezier easing, Motion / Opacity / Transform / Crop / Blur / Color / Keying / Distort / Stylize / Time / Transition / Audio effects, `<data dir>/Effect Presets` drop folder) | our JSON presets | unit tests | 80% |
 | Keyboard shortcuts `.kys` | read + write | no | our presets incl. a Premiere layout | — | 60% |
 | Export presets `.epr` | read + write | no | our presets (import / export) | — | 50% |

@@ -3,49 +3,23 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, driver, start};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::graphics_notice::GraphicsNotice;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new(notice: Option<GraphicsNotice>) -> Self {
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(Session::default()).with_control(rx);
         app.graphics_notice = notice;
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
+        let harness = build(builder(), app);
+        start(Driver { harness, tx })
     }
     fn ids(&mut self) -> Vec<String> {
         let v = self.call("ui.elements", json!({"prefix": "graphics.notice"}));
@@ -60,9 +34,6 @@ impl Driver {
         let v = self.call("ui.click", json!({"id": id}));
         assert_eq!(v["ok"], json!(true), "{id}: {v}");
         self.frames(3);
-    }
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
     }
 }
 

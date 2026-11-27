@@ -6,18 +6,24 @@
 
 use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, builder, demo_session, driver, save_shot, start, step, with_shots};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-    // Real Context output tokens, retained across later idle/control-channel frames.
-    reset_requests: Vec<egui::ImeResetId>,
+driver! {
+    Driver {
+        // Real Context output tokens, retained across later idle/control-channel frames.
+        reset_requests: Vec<egui::ImeResetId>,
+    };
+    fn frames(&mut self, n: usize) {
+        for _ in 0..n {
+            // the control channel's clicks and keys enter through the input hook
+            step(&mut self.harness, |_| {});
+            if let Some(request) = self.harness.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request) {
+                self.reset_requests.push(request);
+            }
+        }
+    }
 }
 
 impl Driver {
@@ -26,71 +32,24 @@ impl Driver {
     }
 
     fn new_with(configure: impl FnOnce(&mut FilmcraftApp)) -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let s = demo_session();
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(s).with_control(rx);
         configure(&mut app);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |cc| {
+        let harness = with_shots(builder().with_step_dt(1.0 / 60.0)).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
             filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
             app
         });
-        let mut d = Driver { harness, tx, shots, reset_requests: Vec::new() };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // the control channel's clicks and keys enter through the input hook
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-            if let Some(request) = self.harness.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request) {
-                self.reset_requests.push(request);
-            }
-        }
+        start(Driver { harness, tx, reset_requests: Vec::new() })
     }
 
     fn reset_completed(&self) -> egui::Event {
         egui::Event::ImeResetCompleted { request_id: *self.reset_requests.last().expect("a real Context reset request was published") }
     }
 
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        self.frames(8);
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+        save_shot(self, 8, &format!("{name}.png"));
     }
 
     fn ime(&self) -> Option<egui::output::IMEOutput> {
@@ -115,10 +74,7 @@ fn caret(d: &Driver) -> (usize, usize) {
 
 impl Driver {
     fn rect(&mut self, id: &str) -> [f64; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r = &e["rect"];
-        [r[0].as_f64().unwrap(), r[1].as_f64().unwrap(), r[2].as_f64().unwrap(), r[3].as_f64().unwrap()]
+        self.expect_rect(id)
     }
 }
 

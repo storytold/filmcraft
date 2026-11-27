@@ -1,59 +1,23 @@
 //! Headless UI test of the caption track font picker in the Text panel's Captions tab: picking a
 //! family sets the track style's font, and macOS-private (`.`-prefixed) faces are not offered.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, build, builder, demo_session, driver, painted_texts, start};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         // the font list names every installed family, and some names are in scripts the interface
         // fonts do not cover (macOS lists "इनाईमाथी" for InaiMathi): draw those as boxes
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).allow_missing_glyphs().build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
+        let harness = build(builder().allow_missing_glyphs(), app);
+        start(Driver { harness, tx })
     }
 
     fn font(&mut self, track: u64) -> String {
@@ -98,20 +62,7 @@ fn caption_font_picker_sets_the_track_font() {
 
 /// Every text shape on screen, with the colour of its first run.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Color32)> {
-    fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Color32)>) {
-        match s {
-            egui::Shape::Text(t) => {
-                if let Some(sec) = t.galley.job.sections.first() {
-                    out.push((t.galley.text().to_string(), sec.format.color));
-                }
-            }
-            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    d.harness.output().shapes.iter().for_each(|c| walk(&c.shape, &mut out));
-    out
+    painted_texts(&d.harness).iter().filter_map(|t| t.galley.job.sections.first().map(|sec| (t.galley.text().to_string(), sec.format.color))).collect()
 }
 
 /// Relative luminance (WCAG) of an opaque colour.

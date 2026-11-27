@@ -2,59 +2,31 @@
 //! driven headless through the control channel: once a click turns one into a text field, Left and
 //! Right move the caret inside it (#3372) instead of moving focus out, which committed the value.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, builder, demo_session, driver, launch, start, step};
 use filmcraft_project::{ClipId, ParamValue};
 use filmcraft_time::Tick;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    /// The window is in the background: egui sees it focused only on frames carrying control input.
-    background: bool,
-}
-
-impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, background: false };
-        d.frames(4);
-        d
+driver! {
+    pub(crate) Driver {
+        /// The window is in the background: egui sees it focused only on frames carrying control input.
+        background: bool,
+    };
+    fn after_ok(&mut self) {
+        self.frames(2);
     }
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            raw.focused = !self.background;
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
+            let focused = !self.background;
+            step(&mut self.harness, |raw| raw.focused = focused);
         }
     }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                self.frames(2);
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+}
+
+impl Driver {
+    pub(crate) fn demo() -> Self {
+        let (harness, tx) = launch(demo_session(), builder());
+        start(Driver { harness, tx, background: false })
     }
     /// A new text layer, selected and showing in Properties; its clip.
     fn text_layer(&mut self) -> u64 {
