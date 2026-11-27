@@ -740,7 +740,7 @@ fn hdr_lumetri_matches_cpu() {
                 flat.apply(&mut plain);
                 assert_ne!(cpu.px, plain.px, "{working:?} {params:?}: HDR Specular changed nothing");
             }
-            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
             let (worst, flips) = compare(&cpu.px, &gpu);
             eprintln!("{working:?} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
             if worst > EXACT * 10.0 || flips > 0.0 {
@@ -906,7 +906,7 @@ fn cpu_effect_fallback_keeps_the_input_transform() {
     let e = effect("brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("brightness / contrast op");
     let layer = PlanLayer {
-        fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![op] })),
+        fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] })),
         input: Some(t),
         ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)
     };
