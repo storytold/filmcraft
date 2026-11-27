@@ -17,10 +17,15 @@ pub mod graphic;
 pub mod graphic_design;
 pub mod gtemplate;
 pub mod keyframe;
+mod marker_color;
+pub use marker_color::HexColor;
+mod marker_url;
+pub use marker_url::marker_web_url;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod script;
 pub mod transcript;
 pub mod vtransition;
 
@@ -32,7 +37,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
-pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
+pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect, interchange_name, search_aliases};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
 pub use graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode, SourceGraphic, StyleRun};
@@ -41,6 +46,9 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
+pub use script::{
+    ScriptColor, ScriptDocument, ScriptLine, ScriptLineColor, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId,
+};
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
@@ -82,12 +90,17 @@ id_type!(MarkerId);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
+    /// Custom marker/clip swatches saved only with this project (schema v16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_colors: Vec<HexColor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_color_names: BTreeMap<HexColor, String>,
     pub settings: ProjectSettings,
     pub root: Bin,
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
-    /// The project's LUT library (Lumetri Input LUT / Creative Look "Browse…"). LUT files are
+    /// The project's LUT library (Color Grading Input LUT / Creative Look "Browse…"). LUT files are
     /// embedded, so projects render without the original files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub luts: Vec<ProjectLut>,
@@ -128,6 +141,8 @@ impl Project {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
+            custom_colors: Vec::new(),
+            custom_color_names: BTreeMap::new(),
             settings: ProjectSettings::default(),
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
@@ -217,7 +232,10 @@ impl Project {
     pub fn add_item(&mut self, name: &str, label: Label, kind: ItemKind, bin: Option<BinId>) -> ItemId {
         let id = ItemId(self.alloc_id());
         let created = id.0;
-        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() });
+        self.items.insert(
+            id,
+            ProjectItem { id, name: name.into(), label, custom_label_color: None, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() },
+        );
         if let Some(b) = bin.and_then(|b| self.root.find_bin_mut(b)) {
             b.children.push(BinEntry::Item(id));
         } else {
@@ -393,13 +411,14 @@ impl Project {
         if delta == Tick::ZERO {
             return;
         }
-        let mut users = vec![item];
+        // Resolve each subclip's complete (bounded) parent chain. A direct-parent test misses
+        // subclips of subclips and leaves their source references in the old media frame space.
+        let users: Vec<ItemId> = self.items.keys().copied().filter(|id| self.resolve_media(*id).is_some_and(|(root, _, _)| root == item)).collect();
         for it in self.items.values_mut() {
-            if let ItemKind::Subclip { parent, range, .. } = &mut it.kind
-                && *parent == item
+            if let ItemKind::Subclip { range, .. } = &mut it.kind
+                && users.contains(&it.id)
             {
                 range.start -= delta;
-                users.push(it.id);
             }
         }
         for it in self.items.values_mut() {
@@ -421,6 +440,9 @@ impl Project {
                     }
                 }
             }
+            if let ItemKind::Script(doc) = &mut it.kind {
+                std::sync::Arc::make_mut(doc).shift_source_time(&users, delta);
+            }
         }
         if let Some(m) = self.item_mut(item).and_then(|i| i.as_media_mut()) {
             m.mark_in = m.mark_in.map(|t| t - delta);
@@ -432,6 +454,9 @@ impl Project {
     /// Build a track item for `item` placed at `start` covering `source` range (media time).
     pub fn make_track_item(&mut self, item: ItemId, kind: TrackKind, start: Tick, source: TimeRange, seq_rate: FrameRate) -> Option<TrackItem> {
         let it = self.items.get(&item)?;
+        if matches!(it.kind, ItemKind::Script(_)) {
+            return None;
+        }
         let name = it.name.clone();
         let label = it.label;
         let mut effects = match kind {
@@ -454,6 +479,7 @@ impl Project {
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
         Some(TrackItem {
+            custom_label_color: self.item(item).and_then(|i| i.custom_label_color),
             id,
             item,
             name,
@@ -474,6 +500,7 @@ impl Project {
             essential: None,
             multicam,
             time_interpolation: TimeInterpolation::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels,

@@ -3,92 +3,26 @@
 //! `ui.timeline.hit` and the press agree. The real `FilmcraftApp` under `egui_kittest` with the
 //! demo project, the pointer moving a few pixels per frame as a mouse does.
 
-use std::sync::mpsc::{Sender, channel};
-
+use crate::support::{Drive, Launch, driver, pointer_drag, screenshot};
 use egui::{CursorIcon, Pos2, pos2};
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_project::ClipId;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 /// Two clips of the demo project that share a cut on V1.
 const CITY: &str = "City_Night_Drive.mp4";
 const DUNES: &str = "Desert_Dunes.mp4";
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    /// The demo project, snapping off so drags land exactly where the pointer goes. Frames are
-    /// 1/60 s apart, as on a display: at the harness's default 1/4 s, a press held for four frames
-    /// is already a drag by time (egui's 0.8 s click limit), wherever the pointer is.
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        session.execute("sequence.snap", json!({"on": false})).expect("snapping off");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        // `ui.elements` answers once the timeline has finished fitting the sequence
-        d.ok("ui.elements", json!({"prefix": "timeline.clip."}));
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
     fn app(&self) -> &FilmcraftApp {
         self.harness.state()
     }
 
     /// Press at `from`, move to `to` over `steps` frames (as a mouse does), release.
     fn drag(&mut self, from: Pos2, to: Pos2, steps: usize) {
-        let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
-        push(self, egui::Event::PointerMoved(from));
-        self.frames(1);
-        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
-        self.frames(1);
-        for i in 1..=steps {
-            push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
-            self.frames(1);
-        }
-        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
-        self.frames(2);
+        pointer_drag(self, from, to, steps);
     }
 
     /// Move the pointer to `at` with no button down, and let the Timeline react.
@@ -104,15 +38,7 @@ impl Driver {
 
     /// Render the window to `<target tmp>/ui-screenshots/<name>.png` (needs a GPU).
     fn screenshot(&mut self, name: &str) -> std::path::PathBuf {
-        self.frames(2);
-        let img = self.harness.render().expect("render");
-        let png = filmcraft_ui_egui::control::encode_png(img.as_raw(), img.width(), img.height()).expect("png");
-        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-screenshots");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        std::fs::write(&path, png).unwrap();
-        eprintln!("screenshot: {}", path.display());
-        path
+        screenshot(self, name)
     }
 
     /// The clip named `name` on V1.
@@ -166,7 +92,7 @@ impl Driver {
 /// be selected and moved instead.
 #[test]
 fn dragging_an_out_edge_inward_trims_the_clip() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let city = d.v1_clip(CITY);
     let (x0, x1, y) = d.edges(city);
     let (s0, e0) = d.span(city);
@@ -185,7 +111,7 @@ fn dragging_an_out_edge_inward_trims_the_clip() {
 /// trim once it is released.
 #[test]
 fn duplicate_frame_markers_stay_inside_a_clip_being_trimmed() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let city = d.v1_clip(CITY);
     let (item, start, source_in, duration) = {
         let (_, it) = d.app().session.active_sequence().expect("sequence").find_item(ClipId(city)).expect("clip");
@@ -246,7 +172,7 @@ fn duplicate_frame_markers_stay_inside_a_clip_being_trimmed() {
 /// left stays as it was. The left clip's Out edge used to claim both sides of the cut.
 #[test]
 fn right_of_a_cut_trims_the_right_clip() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
     assert_eq!(d.span(city).1, d.span(dunes).0, "the demo's City_Night_Drive and Desert_Dunes share a cut");
     let (cut, _, y) = d.edges(dunes);
@@ -263,7 +189,7 @@ fn right_of_a_cut_trims_the_right_clip() {
 /// outside the edge zone, and selected the clip.
 #[test]
 fn a_wobbly_click_on_an_edge_selects_the_edit_point() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let city = d.v1_clip(CITY);
     let st = &mut d.harness.state_mut().session.state;
     st.selection.clear();
@@ -277,7 +203,7 @@ fn a_wobbly_click_on_an_edge_selects_the_edit_point() {
 
 /// Click a real rolling edge, then the Trim Monitor's +1 button: linked sound follows exactly once.
 fn linked_trim_monitor() -> Driver {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let rate = d.app().session.sequence_rate();
     let video = ClipId(d.v1_clip(CITY));
     let q = d.app().session.active_sequence().unwrap();
@@ -322,7 +248,7 @@ fn screenshot_linked_trim_monitor() {
 /// distance egui waits before it calls a press a drag.
 #[test]
 fn a_moved_clip_follows_the_pointer_from_where_it_was_grabbed() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let city = d.v1_clip(CITY);
     let (x0, x1, y) = d.edges(city);
     let (s0, _) = d.span(city);
@@ -339,7 +265,7 @@ fn a_moved_clip_follows_the_pointer_from_where_it_was_grabbed() {
 /// (That a drag from those points trims those edges is tested above, from the same points.)
 #[test]
 fn cursor_hit_test_and_press_agree_at_a_cut() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
     let (x0, _, _) = d.edges(city);
     let (cut, _, y) = d.edges(dunes);
@@ -366,7 +292,7 @@ fn cursor_hit_test_and_press_agree_at_a_cut() {
 #[test]
 #[ignore]
 fn hover_bracket_screenshots() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let dunes = d.v1_clip(DUNES);
     let (cut, _, y) = d.edges(dunes);
     for (tool, name, x) in
@@ -383,7 +309,7 @@ fn hover_bracket_screenshots() {
 /// threshold), past the 5 px edge zone, so the caption moved.
 #[test]
 fn dragging_a_caption_edge_inward_trims_it() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let id = d.exec("captions.add", json!({"seconds": 2.0, "durationSeconds": 2.0}))["caption"].as_u64().expect("caption id");
     d.frames(4);
     let name = format!("timeline.caption.{id}");
@@ -403,6 +329,125 @@ fn dragging_a_caption_edge_inward_trims_it() {
     assert!(e1 < e0, "the caption's end moved in: {e0} → {e1}");
 }
 
+/// Screen rect (x, y, w, h) of a caption block.
+fn caption_rect(d: &mut Driver, id: u64) -> [f32; 4] {
+    let name = format!("timeline.caption.{id}");
+    let els = d.ok("ui.elements", json!({"prefix": name}));
+    let el = els.as_array().expect("elements").iter().find(|e| e["id"] == name.as_str()).unwrap_or_else(|| panic!("no {name}: {els}")).clone();
+    let r: Vec<f32> = el["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
+    [r[0], r[1], r[2], r[3]]
+}
+
+/// A caption's (start, end) in ticks.
+fn caption_span(d: &Driver, id: u64) -> (i64, i64) {
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let (_, c) = seq.find_caption(ClipId(id)).expect("caption");
+    (c.start.0, c.end().0)
+}
+
+fn add_caption(d: &mut Driver, start: i64, seconds: f64) -> u64 {
+    let id = d.exec("captions.add", json!({"time": start, "durationSeconds": seconds}))["caption"].as_u64().expect("caption id");
+    d.frames(4);
+    id
+}
+
+/// Desert_Dunes, its In point (the cut with City_Night_Drive) and one second, in ticks.
+fn dunes_cut(d: &Driver) -> (u64, i64, i64) {
+    let dunes = d.v1_clip(DUNES);
+    let sec = filmcraft_time::Tick::from_seconds_f64(1.0).0;
+    let cut = d.span(dunes).0;
+    assert!(cut >= 2 * sec, "the demo's cut is at least 2 s in");
+    (dunes, cut, sec)
+}
+
+/// A caption ending a second before the cut, its Out edge dragged to 4 px short of the cut:
+/// returns the caption's end and the cut.
+fn trim_caption_out_near_the_cut(snapping: bool) -> (i64, i64) {
+    let mut d = Driver::demo_snap_off();
+    d.exec("sequence.snap", json!({"on": snapping}));
+    let (dunes, cut, sec) = dunes_cut(&d);
+    let id = add_caption(&mut d, cut - 2 * sec, 1.0);
+    let r = caption_rect(&mut d, id);
+    let (x1, y) = (r[0] + r[2], r[1] + r[3] / 2.0);
+    let (cut_x, _, _) = d.edges(dunes);
+    // grabbed 2 px inside, so the edge ends 2 px right of the pointer
+    d.drag(pos2(x1 - 2.0, y), pos2(cut_x - 4.0 - 2.0, y), 40);
+    (caption_span(&d, id).1, cut)
+}
+
+/// #2192: with snapping on, a caption's edge trimmed close to a clip's edge lands on it, as a
+/// clip's does; with snapping off the same drag stops where the pointer does.
+#[test]
+fn a_trimmed_caption_edge_snaps_to_a_cut() {
+    let (end, cut) = trim_caption_out_near_the_cut(true);
+    assert_eq!(end, cut, "the caption's Out edge snapped to the cut");
+    let (end, cut) = trim_caption_out_near_the_cut(false);
+    assert_ne!(end, cut, "with snapping off the same drag stops short of the cut");
+}
+
+/// Two one-second captions inside Desert_Dunes, the later one dragged left until its start is
+/// 4 px after the earlier one's end: returns that start and that end.
+fn move_caption_near_another(snapping: bool) -> (i64, i64) {
+    let mut d = Driver::demo_snap_off();
+    d.exec("sequence.snap", json!({"on": snapping}));
+    let (_, cut, sec) = dunes_cut(&d);
+    let first = add_caption(&mut d, cut + 2 * sec, 1.0);
+    let second = add_caption(&mut d, cut + 4 * sec, 1.0);
+    let (a, b) = (caption_rect(&mut d, first), caption_rect(&mut d, second));
+    let from = pos2(b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
+    let by = b[0] - (a[0] + a[2]) - 4.0;
+    d.drag(from, pos2(from.x - by, from.y), 40);
+    (caption_span(&d, second).0, caption_span(&d, first).1)
+}
+
+/// #2192: with snapping on, a moved caption snaps to another caption's edge.
+#[test]
+fn a_moved_caption_snaps_to_another_caption() {
+    let (start, end) = move_caption_near_another(true);
+    assert_eq!(start, end, "the moved caption starts where the other one ends");
+    let (start, end) = move_caption_near_another(false);
+    assert_ne!(start, end, "with snapping off the same drag stops short of the other caption");
+}
+
+/// A start for a one-second caption with no other snap target (edit, marker, playhead, in/out)
+/// within a second of either of its edges.
+fn quiet_spot(d: &Driver) -> i64 {
+    let (_, cut, sec) = dunes_cut(d);
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let mut targets: Vec<i64> = seq.all_tracks().flat_map(|t| &t.items).flat_map(|i| [i.start.0, i.end().0]).collect();
+    targets.extend(seq.markers.iter().map(|m| m.start.0));
+    targets.extend(seq.mark_in.iter().chain(&seq.mark_out).map(|t| t.0));
+    targets.push(d.app().session.playhead().0);
+    (0..40)
+        .map(|q| cut + q * sec / 4)
+        .find(|&t| targets.iter().all(|&c| (c - t).abs() > sec && (c - (t + sec)).abs() > sec))
+        .expect("a quiet second on the demo timeline")
+}
+
+/// A caption at a [`quiet_spot`] nudged 7.5 px right (past egui's 6 pt drag threshold, inside the
+/// 9 px snap distance): its start before and after.
+fn nudge_caption(snapping: bool) -> (i64, i64) {
+    let mut d = Driver::demo_snap_off();
+    d.exec("sequence.snap", json!({"on": snapping}));
+    let at = quiet_spot(&d);
+    let id = add_caption(&mut d, at, 1.0);
+    let r = caption_rect(&mut d, id);
+    let from = pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let s0 = caption_span(&d, id).0;
+    d.drag(from, pos2(from.x + 7.5, from.y), 20);
+    (s0, caption_span(&d, id).0)
+}
+
+/// #2192: a moved caption does not snap to where it started, or a short drag would leave it in
+/// place: with snapping on a short nudge moves it as far as with snapping off.
+#[test]
+fn a_moved_caption_does_not_snap_to_itself() {
+    let (s0, on) = nudge_caption(true);
+    let (_, off) = nudge_caption(false);
+    assert!(off > s0, "with snapping off the nudge moves the caption: {s0} → {off}");
+    assert_eq!(on, off, "snapping on, the nudge moves it as far");
+}
+
 /// #374: renders the Ambient_Score music clip mid-way through a trim of its In edge, with the
 /// mouse button still down, for visual review (needs a GPU): `cargo test -p filmcraft-ui-egui
 /// --test it timeline_trim_ui::trim_waveform_screenshots -- --ignored`. The waveform stays where it was
@@ -411,7 +456,7 @@ fn dragging_a_caption_edge_inward_trims_it() {
 #[test]
 #[ignore]
 fn trim_waveform_screenshots() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let seq = d.app().session.active_sequence().expect("sequence");
     let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).expect("music clip").id.0;
     let (x0, _, y) = d.edges(music);
@@ -443,7 +488,7 @@ fn trim_waveform_screenshots() {
 #[test]
 fn an_edge_dragged_past_the_media_stops_at_its_end() {
     use filmcraft_ui_egui::panels::timeline::Drag;
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let last = d.app().session.active_sequence().expect("sequence").video_tracks[0].items.last().expect("a clip on V1").id.0;
     let (_, x1, y) = d.edges(last);
     let (_, e0) = d.span(last);
@@ -474,7 +519,7 @@ fn an_edge_dragged_past_the_media_stops_at_its_end() {
 #[test]
 fn a_cut_rolled_past_its_limit_stops_there() {
     use filmcraft_ui_egui::panels::timeline::Drag;
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
     d.ok("ui.menu.invoke", json!({"id": "tool.rolling"}));
     let (cut, x1, y) = d.edges(dunes);
@@ -508,7 +553,7 @@ fn a_cut_rolled_past_its_limit_stops_there() {
 /// now). The drag commits one normal trim on release.
 #[test]
 fn dragging_in_the_trim_monitor_trims_without_hanging() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let city = d.v1_clip(CITY);
     d.exec("trim.selectEditPoint", json!({"clip": city, "edge": "out", "kind": "trim"}));
     d.frames(2);
@@ -529,7 +574,7 @@ fn dragging_in_the_trim_monitor_trims_without_hanging() {
 }
 
 fn locked_move_keeps_the_original_preview(audio: bool, destination: bool, linked_partner: bool, edge: Option<&str>) {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     d.exec("sequence.linkedSelection", json!({"on": linked_partner}));
     let seq = d.app().session.active_sequence().unwrap();
     let tracks = if audio { &seq.audio_tracks } else { &seq.video_tracks };
@@ -611,7 +656,7 @@ fn locked_edges_do_not_preview_a_trim() {
 }
 
 fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     d.exec("sequence.linkedSelection", json!({"on": linked}));
     d.exec("sequence.snap", json!({"on": false}));
     d.ok("ui.set", json!({"timeline":{"videoTrackHeight":32,"audioTrackHeight":32}}));
@@ -631,7 +676,12 @@ fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
     let row = layout.rows.iter().find(|r| r.track == tracks[0].id).unwrap();
     let outer = layout.rows.iter().find(|r| r.track == tracks.last().unwrap().id).unwrap();
     let from = egui::pos2(layout.x_of(original.start + filmcraft_time::Tick(original.duration.0 / 2)), row.rect.min.y + 8.0);
-    let to = egui::pos2(from.x, if audio { outer.rect.max.y + 8.0 } else { outer.rect.min.y - 8.0 });
+    // Below the last audio track, the drop lands in the empty band above the Mix row (34 points
+    // high at the bottom of the tracks): next's dock gives the Timeline a shorter body than the old
+    // dock did, so the band is a few points, not the 8 below the track the old layout left.
+    let mix_top = layout.content.max.y - 34.0;
+    let to = egui::pos2(from.x, if audio { (outer.rect.max.y + 8.0).min((outer.rect.max.y + mix_top) / 2.0) } else { outer.rect.min.y - 8.0 });
+    assert!(!audio || outer.rect.max.y < mix_top, "room below the last audio track: {:?} vs {mix_top}", outer.rect);
     assert!(layout.content.contains(to));
     assert!(layout.row_at(to.y).is_none());
     let before = d.app().session.project.clone();
@@ -706,7 +756,7 @@ fn linked_audio_drag_adds_audio_and_video_tracks() {
 #[test]
 fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
     for alt in [true, false] {
-        let mut d = Driver::demo();
+        let mut d = Driver::demo_snap_off();
         let seq = d.app().session.active_sequence().expect("sequence");
         let (video, sound) = seq.video_tracks[0]
             .items
@@ -729,4 +779,67 @@ fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
             assert_eq!(d.span(sound).1, a0.1 - (v0.1 - v1.1), "the linked audio follows a plain trim");
         }
     }
+}
+
+impl Driver {
+    /// Press at `from` and move to `to` over `steps` frames, the button still down.
+    fn press_and_move(&mut self, from: Pos2, to: Pos2, steps: usize) {
+        let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
+        push(self, egui::Event::PointerMoved(from));
+        self.frames(1);
+        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        self.frames(1);
+        for i in 1..=steps {
+            push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
+            self.frames(1);
+        }
+    }
+
+    fn release(&mut self, at: Pos2) {
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        self.frames(2);
+    }
+}
+
+/// #1780: the trim cursor stays while an edge is dragged, after the pointer has left the 7 px edge
+/// zone, and goes back to the arrow on release. It used to show only on hover, so it turned back
+/// into the arrow as soon as the drag began. The edge is dragged past the end of the media, where
+/// it stops (#653), so the release leaves the pointer over empty track, away from any edge.
+#[test]
+fn the_trim_cursor_stays_while_an_edge_is_dragged() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo_snap_off();
+    let last = d.app().session.active_sequence().expect("sequence").video_tracks[0].items.last().expect("a clip on V1").id.0;
+    let (_, x1, y) = d.edges(last);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 + 300.0, y));
+    d.press_and_move(from, to, 60);
+    assert!(matches!(d.app().tl.drag, Some(Drag::Trim { .. })), "trimming: {:?}", d.app().tl.drag);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 300 px past the edge");
+    d.release(to);
+    assert_eq!(d.cursor(), CursorIcon::Default, "the arrow after the release");
+}
+
+/// #1780: as for a clip, the trim cursor stays while a transition's end is dragged.
+#[test]
+fn the_trim_cursor_stays_while_a_transition_end_is_dragged() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo_snap_off();
+    let id = d.app().session.active_sequence().expect("sequence").video_tracks[0].transitions.first().expect("the demo's transition on V1").id.0;
+    let name = format!("timeline.transition.{id}.out");
+    let els = d.ok("ui.elements", json!({"prefix": name}));
+    let el = els.as_array().expect("elements").iter().find(|e| e["id"] == name.as_str()).unwrap_or_else(|| panic!("no {name}: {els}")).clone();
+    let r: Vec<f32> = el["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
+    let from = pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let to = from + egui::vec2(40.0, 0.0);
+    d.hover(from);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor over the transition's end");
+    d.press_and_move(from, to, 40);
+    assert!(matches!(d.app().tl.drag, Some(Drag::Transition { edge: Some(_), .. })), "dragging the end: {:?}", d.app().tl.drag);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 40 px on");
+    d.release(to);
 }

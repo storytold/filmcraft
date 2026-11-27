@@ -27,20 +27,33 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.floatPanel", "Undock Panel", [], None),
     uic!("window.closePanel", "Close Panel", [], None),
     uic!("app.language.english", "English", ["Edit", "Language"], None),
-    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
-    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
-    uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
-    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
-    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
-    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
-    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
-    uic!("app.language.french", "Français", ["Edit", "Language"], None),
+    // Alphabetical by the language's own name after English; Cyrillic, then CJK names follow
+    // the Latin ones. Settings ▸ General ▸ Interface Language lists them the same way.
     uic!("app.language.indonesian", "Bahasa Indonesia", ["Edit", "Language"], None),
+    uic!("app.language.bosnian", "Bosanski", ["Edit", "Language"], None),
+    uic!("app.language.czech", "Čeština", ["Edit", "Language"], None),
+    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
+    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
+    uic!("app.language.french", "Français", ["Edit", "Language"], None),
     uic!("app.language.italian", "Italiano", ["Edit", "Language"], None),
+    uic!("app.language.polish", "Polski", ["Edit", "Language"], None),
+    uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
+    uic!("app.language.swedish", "Svenska", ["Edit", "Language"], None),
+    uic!("app.language.turkish", "Türkçe", ["Edit", "Language"], None),
+    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
+    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
+    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
+    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
+    uic!("export.preview.toggle", "Play/Stop", [], None),
+    uic!("export.preview.seek", "Set Playhead", [], None),
+    uic!("export.preview.first", "Go to In", [], None),
+    uic!("export.preview.last", "Go to Out", [], None),
+    uic!("export.preview.stepBack", "Step Back 1 Frame", [], None),
+    uic!("export.preview.stepForward", "Step Forward 1 Frame", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -116,7 +129,15 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.effects", "Effects", ["Window", "Workspaces"], Some("Alt+Shift+4")),
     uic!("window.workspace.audio", "Audio", ["Window", "Workspaces"], Some("Alt+Shift+5")),
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
+    uic!("window.workspace.script", "Lined Script", ["Window", "Workspaces"], None),
+    uic!("script.openPanel", "Open Script", [], None),
+    uic!("script.findInScript", "Find in Script", [], None),
+    uic!("script.addMarkAtSelection", "Add Script Mark", [], None),
+    uic!("script.toggleOffscreen", "Toggle Script Offscreen", [], None),
+    uic!("script.thumbnailBack", "Script Thumbnail Back", [], None),
+    uic!("script.thumbnailForward", "Script Thumbnail Forward", [], None),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
+    uic!("window.workspace.vertical", "Vertical", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
@@ -167,6 +188,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.settings.trim", "Trim…", ["Edit", "Preferences"], None),
 ];
 
+fn panel_menu_label(panel: PanelKind) -> &'static str {
+    match panel {
+        PanelKind::Script => "Lined Script",
+        _ => panel.title(),
+    }
+}
+
 pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
@@ -176,14 +204,89 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => true,
         Some(_) => false,
-        None => app.ui.focused == PanelKind::Source,
+        None => app.ui.mode != Mode::Export && app.ui.focused == PanelKind::Source,
+    }
+}
+
+/// Route menu editing to the focused text field; automation can explicitly invoke the engine.
+pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if text_field_window(ctx).is_some() && edits_text(id) {
+        return activate_native(app, ctx, id);
+    }
+    invoke_command(app, ctx, id, params)
+}
+
+pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> Vec<MenuItem> {
+    let mut items = menu_items(app);
+    if text_field_window(ctx).is_some() {
+        for item in items.iter_mut().filter(|item| edits_text(&item.id)) {
+            item.enabled = true;
+        }
+    }
+    items
+}
+
+/// Export owns the transport even if Source had focus before changing workspaces.
+fn export_preview_command<'a>(app: &FilmcraftApp, id: &'a str, params: &Value) -> Option<&'a str> {
+    if id.starts_with("export.preview.") {
+        return Some(id);
+    }
+    if app.ui.mode != Mode::Export || params.get("monitor").is_some_and(|monitor| !monitor.is_null()) {
+        return None;
+    }
+    match id {
+        "playback.toggle" => Some("export.preview.toggle"),
+        "playhead.stepBack" => Some("export.preview.stepBack"),
+        "playhead.stepForward" => Some("export.preview.stepForward"),
+        "markers.goToIn" => Some("export.preview.first"),
+        "markers.goToOut" => Some("export.preview.last"),
+        _ => None,
     }
 }
 
 /// Execute a UI or engine command by id.
-pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    app.ui.script.sync_project(&app.session.project_instance);
+    if let Some(command) = export_preview_command(app, id, &params) {
+        return crate::panels::export_mode::preview_command(app, command, &params);
+    }
+    // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
+    // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
+    // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
+    if app.ui.focused == PanelKind::Project && id == "edit.selectAll" {
+        let (cmd, params) = crate::panels::project::select_all_command(app);
+        return invoke(app, ctx, &cmd, params);
+    }
+    if app.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
+        return invoke(app, ctx, "project.deselectAll", params);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
+    }
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch
+    // Warning asks first, from a menu (`engine.execute` keeps the sequence settings, #1540)
+    if !app.engine_call && matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+        return Ok(json!({"dialog": "clipMismatch"}));
+    }
+    // From a menu, a shortcut or `ui.menu.invoke`, a command without parameters opens the dialog
+    // that asks for them. From the control channel's `engine.execute` it does not (#1540): an agent
+    // can neither see nor close a dialog, so the engine command runs with what was given, and
+    // Sequence Settings… answers the settings it would have shown.
+    let menu = !app.engine_call;
+    if !menu && id == "sequence.settings" && (params.is_null() || params.as_object().is_some_and(|m| m.is_empty())) {
+        filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+        let seq = app.session.execute("sequence.inspect", json!({})).map_err(|e| e.to_string())?;
+        return Ok(json!({"settings": seq["settings"]}));
+    }
+    // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
+    // Sequence and Color Matte take it when they open); a `bin` of the caller wins, null included
+    // (the engine's root)
+    if matches!(id, "file.newAdjustmentLayer" | "file.newBarsAndTone" | "file.newBlackVideo" | "file.newCountingLeader" | "file.newTransparentVideo")
+        && params.get("bin").is_none()
+        && let Some(bin) = crate::panels::project::shown_bin(app)
+        && let Some(object) = params.as_object_mut()
+    {
+        object.insert("bin".into(), json!(bin));
     }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
@@ -202,7 +305,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.french"
             | "app.language.indonesian"
             | "app.language.italian"
+            | "app.language.bosnian"
             | "app.language.korean"
+            | "app.language.czech"
+            | "app.language.polish"
+            | "app.language.swedish"
+            | "app.language.turkish"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -227,7 +335,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.french" => crate::i18n::Language::Fr,
             "app.language.indonesian" => crate::i18n::Language::Id,
             "app.language.italian" => crate::i18n::Language::It,
+            "app.language.bosnian" => crate::i18n::Language::Bs,
             "app.language.korean" => crate::i18n::Language::Ko,
+            "app.language.czech" => crate::i18n::Language::Cs,
+            "app.language.polish" => crate::i18n::Language::Pl,
+            "app.language.swedish" => crate::i18n::Language::Sv,
+            "app.language.turkish" => crate::i18n::Language::Tr,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -246,7 +359,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             let source = targets_source(app, &params);
             params.as_object_mut().ok_or("command parameters must be an object")?.insert("target".into(), json!(if source { "source" } else { "program" }));
         }
-        if params.get("path").is_none() {
+        if menu && params.get("path").is_none() {
             return crate::panels::frame_export::open(app, ctx, &params);
         }
     }
@@ -260,6 +373,65 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if let Some(rest) = id.strip_prefix("window.panel.") {
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
+        return Ok(Value::Null);
+    }
+    if id == "script.openPanel" {
+        let item = params.get("item").and_then(Value::as_u64).ok_or("script.openPanel needs an item")?;
+        if app.session.project.item(filmcraft_project::ItemId(item)).and_then(|item| item.as_script()).is_none() {
+            return Err("that project item is not a script".into());
+        }
+        app.ui.script.open_document(Some(item));
+        app.show_panel(PanelKind::Script);
+        return Ok(json!({"item": item}));
+    }
+    if id == "script.findInScript" {
+        let source =
+            params.get("item").and_then(Value::as_u64).or_else(|| app.session.state.project_selection.first().map(|id| id.0)).ok_or("select a project clip")?;
+        return crate::panels::script::find_source(app, filmcraft_project::ItemId(source));
+    }
+    if id == "script.addMarkAtSelection" {
+        return crate::panels::script::add_mark_at_selection(app);
+    }
+    if id == "script.toggleOffscreen" {
+        return crate::panels::script::toggle_offscreen_selection(app);
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.clear" && params.as_object().is_none_or(|map| map.is_empty()) {
+        if ctx.text_edit_focused() {
+            return Ok(Value::Null);
+        }
+        return crate::panels::script::delete_selection(app);
+    }
+    if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
+        return crate::panels::script::shuttle_thumbnail(app, ctx, if id == "script.thumbnailBack" { -1 } else { 1 });
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.undo" && crate::panels::script::has_text_paste_undo(app) {
+        return crate::panels::script::undo_text_paste(app, ctx);
+    }
+    if app.ui.focused == PanelKind::Script && params.as_object().is_none_or(|map| map.is_empty()) && matches!(id, "edit.copy" | "edit.paste") {
+        if ctx.text_edit_focused() {
+            if id == "edit.copy" {
+                app.synthetic.push(egui::Event::Copy);
+            } else if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+                app.synthetic.push(egui::Event::Paste(text));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
+            return Ok(Value::Null);
+        }
+        if id == "edit.copy" {
+            let result = crate::panels::script::copy_paste_section(app, true)?;
+            if let Some(text) = crate::panels::script::copied_plain_text(app) {
+                ctx.copy_text(text);
+            }
+            return Ok(result);
+        }
+        if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+            return crate::panels::script::paste_plain_text(app, &text);
+        }
+        if app.ui.script.section_clipboard.is_some() {
+            return crate::panels::script::copy_paste_section(app, false);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         return Ok(Value::Null);
     }
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
@@ -284,10 +456,13 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         return r;
     }
-    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
         return r;
     }
-    if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+    // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
+    if (menu || matches!(id, "file.closeProject" | "file.closeAllProjects" | "app.quit"))
+        && let Some(r) = crate::panels::clip_dialogs::route(app, id, &params)
+    {
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
@@ -305,13 +480,16 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         return r;
     }
-    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
+    // The dialogs answer only the menu (#1540): from `engine.execute` the command goes on to the
+    // engine with the parameters given, and answers an error when it needs some. The UI commands
+    // the menu-dialog route also carries (dynamic waveforms, reveal, …) answer either way.
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, menu) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
         return r;
     }
-    if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
+    if menu && let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -420,7 +598,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width);
+            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
+            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
@@ -442,7 +621,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(Value::Null);
         }
         "mode.export" => {
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(Value::Null);
         }
         "app.checkForUpdates" => {
@@ -464,24 +643,24 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(Value::Null);
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
-        "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
+        "file.exportAaf" | "file.exportOmf" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
         }
         // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
         // settings (#3365); with a path it exports directly.
-        "captions.export" if params.get("path").is_none() => {
+        "captions.export" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
-        "file.exportMedia" if params.get("path").is_none() => {
+        "file.exportMedia" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(json!({"mode": "export"}));
         }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
-        "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.audioGain" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             if app.ui.audio_gain.mode.is_empty() {
                 app.ui.audio_gain.mode = "adjust".into();
@@ -490,19 +669,19 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.
-        "clip.interpretFootage" if params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
+        "clip.interpretFootage" if menu && params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
         }
         // Remix Properties… from the menu opens the dialog; with params it applies directly.
-        "clip.remix.properties" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.remix.properties" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::remix::open(app, ctx);
         }
         // Add Tracks… from the menu opens the dialog (new tracks after the last ones, as Premiere
         // offers); with params it adds the tracks directly.
-        "sequence.addTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.addTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             let seq = app.session.active_sequence();
             let count = |f: fn(&filmcraft_engine::project::Sequence) -> usize| seq.map_or(0, f);
@@ -515,7 +694,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.dialog = Some(crate::Dialog::AddTracks);
             return Ok(json!({"dialog": "addTracks"}));
         }
-        "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.deleteTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.delete_tracks = Default::default();
             app.dialog = Some(crate::Dialog::DeleteTracks);
@@ -523,18 +702,18 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         // Sequence Settings… from the menu opens the dialog; with params the engine command applies
         // them directly.
-        "sequence.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.settings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::sequence_settings::open(app);
             return Ok(json!({"dialog": "sequenceSettings"}));
         }
         // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
         // makes the sequence directly
-        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) => {
-            crate::panels::sequence_settings::open_new(app);
+        "file.newSequence" if menu && (params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some()) => {
+            crate::panels::sequence_settings::open_new(app, crate::panels::project::bin_only(&params));
             return Ok(json!({"dialog": "newSequence"}));
         }
-        "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.colorSettings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
@@ -598,21 +777,36 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         return Ok(Value::Null);
     }
     // File dialogs for commands that need a path.
-    if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
-        || (id == "file.importImageSequence" && params.get("path").is_none())
-        || (id == "file.saveAs" && params.get("path").is_none())
-        || (id == "file.saveCopy" && params.get("path").is_none())
-        || (id == "file.open" && params.get("path").is_none())
-        || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (id == "captions.import" && params.get("path").is_none())
-        || (id == "graphics.newFromFile" && params.get("path").is_none())
-        || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
+    if menu
+        && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
+            || (id == "file.importImageSequence" && params.get("path").is_none())
+            || (id == "file.saveAs" && params.get("path").is_none())
+            || (id == "file.saveCopy" && params.get("path").is_none())
+            || (id == "file.open" && params.get("path").is_none())
+            || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+            || (id == "captions.import" && params.get("path").is_none())
+            || (id == "graphics.newFromFile" && params.get("path").is_none())
+            || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none()))
     {
         return app.file_dialog(id, &params);
     }
+    // Stepping a frame or jumping to an edit point parks the playhead: playback stops, then the
+    // step lands on its frame, as in Premiere Pro (#4655). Left running, the playback clock would
+    // carry the playhead on from its anchor on the next pass and overwrite the step. Stopping
+    // first ends an automation pass where playback actually was, not where the step lands.
+    if parks_playhead(id) && app.playback.playing {
+        app.stop();
+    }
+    let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
+    }
+    if r.is_ok() {
+        let path = save_path.or_else(|| app.session.path.clone());
+        if let Some(path) = path {
+            saved_status(app, id, &path);
+        }
     }
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
@@ -630,35 +824,112 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     r
 }
 
+/// Commands that move the playhead a frame or to an edit point: playback stops where they land,
+/// as Premiere Pro's Step and Go to Edit Point keys do (#4655).
+fn parks_playhead(id: &str) -> bool {
+    matches!(
+        id,
+        "playhead.stepBack"
+            | "playhead.stepForward"
+            | "playhead.stepBack5"
+            | "playhead.stepForward5"
+            | "playhead.prevEdit"
+            | "playhead.nextEdit"
+            | "playhead.prevEditAnyTrack"
+            | "playhead.nextEditAnyTrack"
+    )
+}
+
+/// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
+pub(crate) fn saved_status(app: &mut FilmcraftApp, id: &str, path: &str) {
+    match id {
+        "file.save" | "file.saveAs" | "file.saveAll" => app.ui.status = tlf!("Project saved to {path}", path),
+        "file.saveCopy" => app.ui.status = tlf!("Copy of the project saved to {path}", path),
+        _ => {}
+    }
+}
+
 /// Run the command `id` chosen in the native menu bar, which takes the Edit menu's key
 /// equivalents (⌘C, ⌘X, ⌘V, ⌘A, ⌘Z, ⇧⌘Z) before any window sees them: while a text field has
 /// the keyboard, in the main window or a floating panel's own window, the field gets the key
 /// and the project command does not run.
 pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Result<Value, String> {
+    // Select All of a graphic's text is already handled in `invoke`
+    if text_field_window(ctx).is_none() && app.ui.gfx_edit.is_some() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") {
+        return Ok(graphic_text_command(app, ctx, id));
+    }
     let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
-        return invoke(app, ctx, id, json!({}));
+        return invoke_command(app, ctx, id, json!({}));
     };
+    // Retain main's immediate Select All for the root window, including Project search. Floating
+    // text fields keep the native event delivery that belongs to their own viewport.
+    if id == "edit.selectAll" && window == egui::ViewportId::ROOT && select_all_in_text_field(ctx) {
+        return Ok(Value::Null);
+    }
     match text {
-        TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
-        TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
+        TextCommand::Paste => {
+            if window == egui::ViewportId::ROOT
+                && app.ui.focused == PanelKind::Script
+                && let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read())
+            {
+                app.synthetic.push(egui::Event::Paste(text));
+                ctx.request_repaint();
+            } else {
+                ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste);
+            }
+        }
+        TextCommand::Events(events) => {
             app.synthetic.extend(events);
             ctx.request_repaint();
         }
-        TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
     }
     Ok(Value::Null)
 }
 
-/// The window whose text field has the keyboard: a floating panel's own OS window, or the main
-/// window.
+fn select_all_in_text_field(ctx: &egui::Context) -> bool {
+    use egui::text::{CCursor, CCursorRange};
+    let Some(id) = ctx.memory(|m| m.focused()) else { return false };
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
+    state.store(ctx, id);
+    true
+}
+
+/// The window whose text field has the keyboard. next's dock tells no floating OS window's text
+/// focus, so only the main window's text fields take the Edit menu's text commands.
 pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
-    craft_ui::docking::typing_window(ctx).or_else(|| ctx.text_edit_focused().then_some(egui::ViewportId::ROOT))
+    ctx.text_edit_focused().then_some(egui::ViewportId::ROOT)
 }
 
 /// Whether a focused text field takes the menu command `id` ([`activate_native`]): the native
 /// menu keeps such items enabled while one has the keyboard, whatever the project allows.
 pub fn edits_text(id: &str) -> bool {
     text_command(id, false).is_some()
+}
+
+/// Whether the graphic text being edited takes the menu command `id` ([`activate_native`]): Copy,
+/// Cut and Paste go to its text instead of copying or pasting the graphic clip (#1953). Select All
+/// already selects its text in [`invoke`], and Undo stays the project's, as each text edit is one.
+/// The native menu keeps these enabled while a graphic's text is edited.
+pub fn edits_graphic_text(id: &str) -> bool {
+    matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.selectAll")
+}
+
+/// Hand a native Edit command to the graphic text being edited (main window). The editor gives the
+/// keyboard to any other focused widget (a Text Properties button) and takes it back once nothing
+/// has it, so that widget lets go first and the text receives the event in the next frame.
+fn graphic_text_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Value {
+    let editor = egui::Id::unique(crate::panels::graphics::TEXT_EDIT_ID);
+    if let Some(other) = ctx.memory(|m| m.focused()).filter(|f| *f != editor) {
+        ctx.memory_mut(|m| m.surrender_focus(other));
+    }
+    match id {
+        "edit.paste" => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::RequestPaste),
+        "edit.cut" => app.synthetic.push(egui::Event::Cut),
+        _ => app.synthetic.push(egui::Event::Copy),
+    }
+    ctx.request_repaint();
+    Value::Null
 }
 
 /// What a focused text field does for an Edit menu command.
@@ -675,6 +946,11 @@ fn text_command(id: &str, mac: bool) -> Option<TextCommand> {
         TextCommand::Events([true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).into())
     };
     Some(match id {
+        "edit.clear" => TextCommand::Events(
+            [true, false]
+                .map(|pressed| egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE })
+                .into(),
+        ),
         "edit.copy" => TextCommand::Events(vec![egui::Event::Copy]),
         "edit.cut" => TextCommand::Events(vec![egui::Event::Cut]),
         "edit.paste" => TextCommand::Paste,
@@ -823,8 +1099,16 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),
             "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
+            "app.language.bosnian" => it.checked = Some(app.ui.language == crate::i18n::Language::Bs),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
+            "app.language.czech" => it.checked = Some(app.ui.language == crate::i18n::Language::Cs),
+            "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
+            "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
+            "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
             _ => {}
+        }
+        if let Some(on) = engine_toggle(&app.session, &it.id) {
+            it.checked = Some(on);
         }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
@@ -834,6 +1118,21 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
     v
+}
+
+/// Checkmark state of the engine's on/off menu commands (`{"on":bool?}`, toggled when invoked from a
+/// menu without parameters). None = not one of them.
+fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> {
+    let st = &session.state;
+    Some(match id {
+        "sequence.snap" => st.snapping,
+        "sequence.linkedSelection" => st.linked_selection,
+        "sequence.selectionFollowsPlayhead" => st.selection_follows_playhead,
+        "sequence.showThroughEdits" => st.show_through_edits,
+        "markers.rippleSequenceMarkers" => st.ripple_sequence_markers,
+        "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
+        _ => return None,
+    })
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),
@@ -905,7 +1204,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     for p in PanelKind::ALL {
         out.push(MenuItem {
             id: panel_command_id(p),
-            label: p.title().into(),
+            label: panel_menu_label(p).into(),
             path: vec!["Window".into()],
             shortcut: session.shortcuts.primary(&panel_command_id(p)),
             enabled: true,
@@ -923,8 +1222,8 @@ pub fn shortcut_text(s: &str) -> String {
 
 /// Parse "Cmd+Shift+K" into the modifiers a chord requires + its key. Off macOS the Control key
 /// is the primary modifier, so `Ctrl` and `Cmd` are one key and both mean `command` (the engine's
-/// `Chord::effective` says the same): a physical Ctrl press carries `command` there, and egui's
-/// matching asks only for what the pattern names, so a `Ctrl+…` chord matches a `Cmd+…` binding
+/// `Chord::effective` says the same): a physical Ctrl press carries `command` there, and
+/// [`chord_held`] treats Ctrl and Cmd as one key, so a `Ctrl+…` chord matches a `Cmd+…` binding
 /// and the other way round (#245). On a Mac they stay two keys.
 pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
     let mut m = egui::Modifiers::NONE;
@@ -983,10 +1282,75 @@ pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     v
 }
 
-/// How many modifiers a chord names: chords naming more are matched first, because egui ignores
-/// extra Shift and Alt when matching a key press.
+/// How many modifiers a chord names: chords naming more are matched first, because a punctuation
+/// or digit key may arrive with an extra Shift or Alt the chord doesn't name (see [`chord_held`]).
 pub fn specificity(m: egui::Modifiers) -> u8 {
     m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8
+}
+
+/// Whether a press of `key` with `held` down is the chord `pattern` (from [`parse_shortcut`]) on
+/// `key`. The held modifiers must be exactly the ones the chord names: Ctrl+Alt+Cmd+N is not
+/// Cmd+Alt+N (File ▸ New ▸ Project), and Cmd+Shift+N is not Cmd+N. egui's own matching
+/// (`Modifiers::matches_logically`, and `matches_exact` too) ignores an extra Ctrl on a Mac, and
+/// `matches_logically` any extra Shift and Alt as well, so a chord the user didn't bind ran a
+/// shorter one instead.
+///
+/// - Off macOS Ctrl and Cmd are one key (a physical Ctrl press carries both `ctrl` and `command`,
+///   and [`parse_shortcut`] reads either as `command`, #245); on a Mac they are two.
+/// - Shift and Alt must match exactly on letters and named keys (arrows, Space, Delete, F-keys…),
+///   where they never change which key arrives. A punctuation or digit key is reached with Shift
+///   or Alt on many layouts (`+` is Shift+= on US, `/` is Shift+7 on German, `[` is Option+5 on a
+///   German Mac, digits need Shift on AZERTY), so there an extra Shift or Alt is allowed, as egui
+///   allows it: Ctrl+Shift+= still arrives as Ctrl+Plus (#2253). [`bindings`] lists the most
+///   specific chords first, so a chord that names that Shift or Alt still wins.
+pub fn chord_held(held: egui::Modifiers, key: egui::Key, pattern: egui::Modifiers) -> bool {
+    chord_held_on(cfg!(target_os = "macos"), held, key, pattern)
+}
+
+/// [`chord_held`] for a Mac (`mac`) or another OS, so both are testable on either.
+fn chord_held_on(mac: bool, held: egui::Modifiers, key: egui::Key, pattern: egui::Modifiers) -> bool {
+    let cmd = |m: egui::Modifiers| m.command || m.mac_cmd;
+    let primary = if mac { cmd(held) == cmd(pattern) && held.ctrl == pattern.ctrl } else { (cmd(held) || held.ctrl) == (cmd(pattern) || pattern.ctrl) };
+    let glyph = layout_may_add_shift_or_alt(key);
+    let shift = held.shift == pattern.shift || (glyph && held.shift);
+    let alt = held.alt == pattern.alt || (glyph && held.alt);
+    primary && shift && alt
+}
+
+/// Punctuation and digit keys: some keyboard layouts only reach them with Shift or Alt held.
+fn layout_may_add_shift_or_alt(key: egui::Key) -> bool {
+    use egui::Key;
+    matches!(
+        key,
+        Key::Colon
+            | Key::Comma
+            | Key::Backslash
+            | Key::Slash
+            | Key::Pipe
+            | Key::Questionmark
+            | Key::Exclamationmark
+            | Key::OpenBracket
+            | Key::CloseBracket
+            | Key::OpenCurlyBracket
+            | Key::CloseCurlyBracket
+            | Key::Backtick
+            | Key::Minus
+            | Key::Period
+            | Key::Plus
+            | Key::Equals
+            | Key::Semicolon
+            | Key::Quote
+            | Key::Num0
+            | Key::Num1
+            | Key::Num2
+            | Key::Num3
+            | Key::Num4
+            | Key::Num5
+            | Key::Num6
+            | Key::Num7
+            | Key::Num8
+            | Key::Num9
+    )
 }
 
 /// The key a US layout reports for `k` with Shift held, when it differs.
@@ -1011,7 +1375,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     let mut v: Vec<CommandInfo> =
         UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
     for p in PanelKind::ALL {
-        v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
+        v.push(CommandInfo::new(&panel_command_id(p), panel_menu_label(p), &["Window"], p.window_shortcut()));
     }
     v
 }
@@ -1019,7 +1383,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("interface-language"), app.ui.language));
-    let items = menu_items(app);
+    let items = menu_items_with_focus(app, ui.ctx());
     // Draw Edit ▸ Label with the user's live palette, not the baked-in label colours.
     let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
@@ -1103,6 +1467,12 @@ pub fn label_color(labels: &filmcraft_engine::settings::LabelPrefs, l: filmcraft
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// The left gutter of a menu row that can carry a checkmark or a label swatch: the label is pushed
+/// right by these spaces and the mark is painted in the room they leave, centred 10 points from the
+/// row's left edge. The two agree at the default font and size; one constant keeps every gutter
+/// (menu bar, right-click menus) the same width.
+const GUTTER: &str = "      ";
+
 /// A label choice in a right-click Label menu (Project panel items, Timeline clips; #786), drawn
 /// as Edit ▸ Label draws it: the user's name for the label with a swatch of its colour in the
 /// left gutter. Registered for automation as `<prefix>.<Label>` (the label's built-in name).
@@ -1115,10 +1485,18 @@ pub fn label_choice(
 ) -> egui::Response {
     let name = labels.name(l);
     let text = crate::i18n::t(&name);
-    let r = ui.button(format!("      {text}"));
+    let r = ui.button(format!("{GUTTER}{text}"));
     auto.add(&format!("{prefix}.{}", l.name()), r.rect, text);
     paint_swatch(ui, r.rect, label_color(labels, l));
     r
+}
+
+/// A checkmark in the left gutter of the menu row `row`.
+fn paint_check(ui: &egui::Ui, row: egui::Rect) {
+    let c = row.left_center() + egui::vec2(10.0, 0.0);
+    let st = egui::Stroke::new(1.5, ui.visuals().text_color());
+    ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
+    ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
 }
 
 /// A label swatch in the left gutter of the menu row `row`.
@@ -1128,36 +1506,70 @@ fn paint_swatch(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
 }
 
+/// Where a menu item's hover hint opens, from the point the pointer entered the item: +x right,
+/// +y down, in points. The hint's top-left corner goes there, so 0, 18 puts it just below the
+/// arrow cursor, lined up with its tip.
+const HINT_NUDGE: egui::Vec2 = egui::vec2(0.0, 18.0);
+
+/// A hover hint that opens like a menu: below the pointer, where the hover began, and stays put
+/// while the pointer moves within the same item.
+fn hint_at_pointer(ui: &egui::Ui, r: &egui::Response, hint: String) {
+    let key = r.id.with("hint-at");
+    let Some(pointer) = r.hover_pos().filter(|_| r.hovered()) else {
+        ui.data_mut(|d| d.remove::<egui::Pos2>(key));
+        return;
+    };
+    let at = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(key, || pointer));
+    let mut tip = egui::Tooltip::for_enabled(r);
+    tip.popup = tip.popup.at_position(at + HINT_NUDGE).align(egui::RectAlign::BOTTOM_START).gap(0.0);
+    tip.show(|ui| {
+        ui.set_max_width(ui.spacing().tooltip_width);
+        ui.label(hint);
+    });
+}
+
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry, labels: &filmcraft_engine::settings::LabelPrefs) -> bool {
     // Checkmarks and label swatches each occupy the same left gutter.
     let swatch = label_menu_swatch(&it.id, labels);
-    let label = if it.checked.is_some() || swatch.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+    let label = if it.checked.is_some() || swatch.is_some() { format!("{GUTTER}{}", it.label) } else { it.label.clone() };
     let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));
     }
-    let mut r = ui.add_enabled(it.enabled, b);
-    // Help items say whether they open the web browser (and which address) or stay in FilmCraft
+    let r = ui.add_enabled(it.enabled, b);
+    // Help items show the address they open, or say what they do inside FilmCraft
     if let Some(hint) = crate::links::menu_hint(&it.id) {
-        r = r.on_hover_text(hint);
+        hint_at_pointer(ui, &r, hint);
     }
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if let Some(color) = swatch {
         paint_swatch(ui, r.rect, color);
     }
     if it.checked == Some(true) {
-        let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
-        let col = ui.visuals().text_color();
-        let st = egui::Stroke::new(1.5, col);
-        ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
-        ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
+        paint_check(ui, r.rect);
     }
     r.clicked()
 }
 
+/// A row of a right-click menu with the menu bar's checkmark gutter, so it lines up with the
+/// checkable rows around it. `checked` is as in [`MenuItem::checked`]: `None` is a command,
+/// reported to accessibility as a plain button; `Some` is a checkable row, reported with its state
+/// and showing the checkmark when true.
+pub fn checked_entry(ui: &mut egui::Ui, label: &str, enabled: bool, checked: Option<bool>) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::Button::new(format!("{GUTTER}{label}")));
+    r.widget_info(|| match checked {
+        Some(checked) => egui::WidgetInfo::selected(egui::Role::Button, enabled, checked, label),
+        None => egui::WidgetInfo::labeled(egui::Role::Button, enabled, label),
+    });
+    if checked == Some(true) {
+        paint_check(ui, r.rect);
+    }
+    r
+}
+
 #[cfg(test)]
 mod parse_shortcut_tests {
-    use super::{label_menu_swatch, parse_shortcut};
+    use super::{chord_held, label_menu_swatch, parse_shortcut};
 
     #[test]
     fn edit_label_menu_swatch_uses_current_custom_palette() {
@@ -1184,19 +1596,90 @@ mod parse_shortcut_tests {
         if cfg!(target_os = "macos") {
             assert_eq!((ctrl.ctrl, ctrl.command), (true, false));
             assert_eq!((cmd.ctrl, cmd.command), (false, true));
-            assert!(!ctrl.matches_logically(cmd) && !cmd.matches_logically(ctrl), "two different keys on a Mac");
+            assert!(!chord_held(ctrl, k, cmd) && !chord_held(cmd, k, ctrl), "two different keys on a Mac");
         } else {
             assert_eq!((ctrl.ctrl, ctrl.command), (false, true));
             assert_eq!(ctrl, cmd, "one key off a Mac");
             // what egui-winit reports for the physical key, and a bare `command` as tests send it
             let physical = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
-            assert!(physical.matches_logically(cmd) && physical.matches_logically(ctrl));
-            assert!(egui::Modifiers::COMMAND.matches_logically(ctrl));
+            assert!(chord_held(physical, k, cmd) && chord_held(physical, k, ctrl));
+            assert!(chord_held(egui::Modifiers::COMMAND, k, ctrl));
         }
-        assert!(!parse_shortcut("Z").unwrap().0.matches_logically(cmd), "a bare key never stands in for the chord");
+        assert!(!chord_held(parse_shortcut("Z").unwrap().0, k, cmd), "a bare key never stands in for the chord");
+        assert!(!chord_held(cmd, k, egui::Modifiers::NONE), "nor the chord for a bare key");
         let (m, k) = parse_shortcut("Cmd+Shift+K").unwrap();
         assert!(m.command && m.shift && !m.alt && k == egui::Key::K);
         assert_eq!(parse_shortcut("+").map(|(_, k)| k), Some(egui::Key::Plus));
+    }
+}
+
+#[cfg(test)]
+mod chord_held_tests {
+    use super::chord_held_on;
+    use egui::{Key, Modifiers};
+
+    /// What egui-winit reports on a Mac for Cmd (`mac_cmd` and `command`) and Control (`ctrl`).
+    const MAC_CMD: Modifiers = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+    /// What egui-winit reports off a Mac for Ctrl: one key, both flags.
+    const PC_CTRL: Modifiers = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+
+    /// The bug: Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N), because egui ignores an extra
+    /// Control on a Mac even in `matches_exact`.
+    #[test]
+    fn an_extra_ctrl_on_a_mac_is_not_the_cmd_chord() {
+        let new_project = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(chord_held_on(true, MAC_CMD | Modifiers::ALT, Key::N, new_project), "Cmd+Opt+N still runs it");
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::ALT | Modifiers::CTRL, Key::N, new_project));
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::N, Modifiers::COMMAND), "Ctrl+Cmd+N is not Cmd+N");
+        assert!(!chord_held_on(true, MAC_CMD, Key::K, Modifiers::CTRL), "Cmd is not Control on a Mac");
+        assert!(chord_held_on(true, Modifiers::CTRL, Key::K, Modifiers::CTRL));
+        assert!(chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::K, Modifiers::COMMAND | Modifiers::CTRL));
+    }
+
+    /// An extra Shift or Alt on a letter or named key is a different chord, on every OS.
+    #[test]
+    fn an_extra_shift_or_alt_on_a_letter_or_named_key_is_another_chord() {
+        for mac in [true, false] {
+            let cmd = if mac { MAC_CMD } else { PC_CTRL };
+            assert!(!chord_held_on(mac, cmd | Modifiers::SHIFT, Key::N, Modifiers::COMMAND), "Cmd+Shift+N is not Cmd+N");
+            assert!(!chord_held_on(mac, cmd | Modifiers::ALT | Modifiers::SHIFT, Key::N, Modifiers::COMMAND | Modifiers::ALT));
+            assert!(!chord_held_on(mac, Modifiers::ALT, Key::I, Modifiers::NONE), "Alt+I is not I");
+            assert!(!chord_held_on(mac, Modifiers::SHIFT, Key::Delete, Modifiers::NONE), "Shift+Delete is not Delete (#680)");
+            assert!(!chord_held_on(mac, Modifiers::ALT, Key::ArrowLeft, Modifiers::NONE));
+            assert!(!chord_held_on(mac, Modifiers::SHIFT, Key::L, Modifiers::NONE), "Shift+L is its own shuttle key");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::L, Modifiers::SHIFT));
+            assert!(!chord_held_on(mac, Modifiers::NONE, Key::L, Modifiers::SHIFT), "a chord's Shift is required");
+            assert!(chord_held_on(mac, Modifiers::NONE, Key::Space, Modifiers::NONE));
+        }
+    }
+
+    /// Off a Mac Ctrl and Cmd are one key: a Ctrl press (both flags), a bare `command` and a bare
+    /// `ctrl` all match a `Cmd+…`/`Ctrl+…` binding (#245).
+    #[test]
+    fn ctrl_and_cmd_stay_one_key_off_a_mac() {
+        for held in [PC_CTRL, Modifiers::COMMAND, Modifiers::CTRL] {
+            assert!(chord_held_on(false, held, Key::Z, Modifiers::COMMAND), "{held:?}");
+            assert!(chord_held_on(false, held, Key::Z, Modifiers::CTRL), "{held:?}");
+            assert!(!chord_held_on(false, held, Key::Z, Modifiers::NONE), "{held:?} is not a bare Z");
+        }
+        assert!(!chord_held_on(false, Modifiers::NONE, Key::Z, Modifiers::COMMAND));
+    }
+
+    /// Punctuation and digits keep egui's allowance for the Shift or Alt a layout needs to type
+    /// them: Ctrl+Shift+= arrives as Ctrl+Plus (#2253), Shift+; as `:`.
+    #[test]
+    fn punctuation_and_digits_allow_the_shift_or_alt_a_layout_needs() {
+        for mac in [true, false] {
+            let cmd = if mac { MAC_CMD } else { PC_CTRL };
+            assert!(chord_held_on(mac, cmd | Modifiers::SHIFT, Key::Plus, Modifiers::COMMAND), "Ctrl+Shift+= is Ctrl+Plus");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::Colon, Modifiers::SHIFT));
+            assert!(chord_held_on(mac, Modifiers::ALT, Key::OpenBracket, Modifiers::NONE), "`[` is Option+5 on a German Mac");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::Num1, Modifiers::NONE), "digits need Shift on AZERTY");
+            assert!(!chord_held_on(mac, Modifiers::NONE, Key::Colon, Modifiers::SHIFT), "a chord's Shift is still required");
+        }
+        // ...but never an extra Ctrl or Cmd
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::Plus, Modifiers::COMMAND));
+        assert!(!chord_held_on(false, PC_CTRL, Key::Plus, Modifiers::NONE));
     }
 }
 
@@ -1237,8 +1720,11 @@ mod tests {
         assert!(items.iter().all(|it| it.path.first().is_some_and(|top| MENUS.contains(&top.as_str()))));
         let ws: Vec<&MenuItem> = items.iter().filter(|it| it.path == ["Window", "Workspaces"]).collect();
         for name in crate::dock::WORKSPACES {
-            assert!(ws.iter().any(|it| it.label == name && it.checked.is_none()), "no workspace {name}");
+            let id = format!("window.workspace.{}", crate::dock::slug(name));
+            assert!(ws.iter().any(|it| it.id == id && it.checked.is_none()), "no workspace {name}");
         }
+        assert!(ws.iter().any(|it| it.id == "window.workspace.script" && it.label == "Lined Script"));
+        assert!(items.iter().any(|it| it.id == "window.panel.Script" && it.path == ["Window"] && it.label == "Lined Script"));
         let editing = ws.iter().position(|it| it.label == "Editing");
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");

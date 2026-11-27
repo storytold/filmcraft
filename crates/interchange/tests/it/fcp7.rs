@@ -300,6 +300,9 @@ fn rich_project() -> (Project, filmcraft_project::ItemId) {
         it.effect_mut("opacity").unwrap().params.insert("opacity".into(), Param::new(ParamValue::Float(75.0)));
         it.effects.push(filmcraft_project::find_effect("gaussian_blur").unwrap().instance());
         it.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(900),
             start: r.tick_of(310),
             duration: r.tick_of(5),
@@ -314,6 +317,9 @@ fn rich_project() -> (Project, filmcraft_project::ItemId) {
         let (_, ai) = q.find_item_mut(a1).unwrap();
         ai.effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-6.0)));
         q.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(901),
             start: r.tick_of(12),
             duration: Tick::ZERO,
@@ -369,6 +375,26 @@ fn rich_roundtrip() {
     let (again, _) = export(q, si, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
     let (imp2, _) = import(&again, Format::Fcp7Xml, None).unwrap();
     assert_eq!(structure(&imp2.project, imp2.sequences[0], TrackKind::Video), structure(&p, s, TrackKind::Video));
+}
+
+/// #1868: renaming the panel does not change an export. FCP7 XML and FCPXML keep writing the
+/// effect name other applications read back, so a file exported today matches one exported before.
+#[test]
+fn grading_keeps_its_interchange_name() {
+    let (mut p, s) = rich_project();
+    let first = p.sequence(s).unwrap().video_tracks[0].items[0].id;
+    let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(first).unwrap();
+    it.effects.push(filmcraft_project::find_effect("lumetri").unwrap().instance());
+    let (fcp7, _) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    let fcp7 = String::from_utf8(fcp7).unwrap();
+    assert!(fcp7.contains("<name>Lumetri Color</name>"), "{fcp7}");
+    assert!(!fcp7.contains("Color Grading"), "{fcp7}");
+    let (fcpxml, _) = export(&p, s, Format::Fcpxml, &ExportOptions::default()).unwrap();
+    let fcpxml = String::from_utf8(fcpxml).unwrap();
+    assert!(fcpxml.contains("name=\"Lumetri Color\""), "{fcpxml}");
+    assert!(!fcpxml.contains("Color Grading"), "{fcpxml}");
+    // the label the user sees is the current one
+    assert_eq!(filmcraft_project::find_effect("lumetri").unwrap().name, "Color Grading");
 }
 
 #[test]
@@ -672,4 +698,134 @@ fn centred_mono_breakout_round_trips_centred() {
     }
     let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
     assert_eq!(balances(&imp), vec![0.0, 0.0], "{xml}");
+}
+
+/// A `timebase` near `i64::MAX` made a rate of ~9e18 per second: with `ntsc` the importer multiplied it by
+/// 1000 (overflow), without it the export overflowed adding 1 to a clamped frame index. The timebase is
+/// limited instead, and the document imports and exports.
+#[test]
+fn absurd_timebase_is_bounded() {
+    for (tb, ntsc) in [("9223372036854775807", "TRUE"), ("9223372036854775807", "FALSE"), ("4294967296", "FALSE"), ("-5", "TRUE")] {
+        let doc = format!(
+            r#"<?xml version="1.0"?><xmeml version="4"><sequence id="s"><name>S</name><rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate>
+<timecode><rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate><string>01:00:00:00</string><frame>90000</frame></timecode>
+<media><video><track><clipitem id="c"><name>A</name><start>0</start><end>100</end><in>0</in><out>100</out>
+<file id="f"><name>a.mov</name><pathurl>file:///tmp/a.mov</pathurl><rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate><media><video/></media></file>
+<marker><name>m</name><in>5</in><out>-1</out></marker></clipitem></track></video></media></sequence></xmeml>"#
+        );
+        let (imported, _) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap_or_else(|e| panic!("{tb} {ntsc}: {e}"));
+        for seq in &imported.sequences {
+            for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Edl, Format::Otio] {
+                export(&imported.project, *seq, format, &ExportOptions::default()).unwrap_or_else(|e| panic!("{tb} {ntsc} {format:?}: {e}"));
+            }
+        }
+    }
+}
+
+/// A start timecode of 18446744073709551615 frames saturates to `i64::MAX`; the EDL export then
+/// overflowed adding frame numbers to it. Out-of-range start timecodes are reset with a warning.
+#[test]
+fn absurd_start_timecode_is_bounded() {
+    let doc = r#"<?xml version="1.0"?><xmeml version="4"><sequence id="s"><name>S</name><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate>
+<timecode><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate><string>00:00:00:00</string><frame>18446744073709551615</frame></timecode>
+<media><video><track><clipitem id="c"><name>A</name><start>0</start><end>100</end><in>0</in><out>100</out>
+<file id="f"><name>a.mov</name><pathurl>file:///tmp/a.mov</pathurl><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate>
+<timecode><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate><string>00:00:00:00</string><frame>18446744073709551615</frame></timecode><media><video/></media></file>
+</clipitem></track></video></media></sequence></xmeml>"#;
+    let (imported, report) = import(doc.as_bytes(), Format::Fcp7Xml, None).expect("import succeeds");
+    for seq in &imported.sequences {
+        for format in [Format::Edl, Format::Fcpxml, Format::Fcp7Xml, Format::Otio] {
+            export(&imported.project, *seq, format, &ExportOptions::default()).unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        }
+        assert_eq!(imported.project.sequence(*seq).map(|s| s.start_timecode), Some(0));
+    }
+    assert!(report.mentions("out-of-range start timecode"), "{report}");
+}
+
+#[test]
+fn deeply_nested_sequence_chain_imports_without_unbounded_recursion() {
+    // sequence-0 uses sequence-1, which uses sequence-2, ... : an acyclic chain of 400
+    // definitions, each one level of native recursion in the importer.
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    assert!(imp.project.sequences().count() > filmcraft_interchange::MAX_NESTING_DEPTH);
+}
+
+#[test]
+fn a_sequence_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
+    // sequence-0 … sequence-65 form a chain. Importing sequence-0 first reaches sequence-63 at the
+    // depth limit, so sequence-64 is left out of it; sequence-63 is also listed on its own, where
+    // sequence-64 fits, and must not keep the incomplete copy.
+    let n = 66;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        let nested = if i + 1 < n {
+            format!(
+                "<clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>",
+                i + 1
+            )
+        } else {
+            String::new()
+        };
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>{nested}</track></video></media></sequence>"
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    let s63 = imp.project.sequences().find(|i| i.name == "S63").and_then(|i| imp.project.sequence(i.id)).unwrap();
+    assert_eq!(s63.video_tracks[0].items.len(), 1, "sequence-63 keeps its nested sequence-64");
+}
+
+#[test]
+fn a_nested_clip_left_out_by_the_depth_limit_stays_as_an_offline_placeholder_with_its_extent() {
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("left out; imported offline"), "{rep:?}");
+    let p = &imp.project;
+    let placeholder = p
+        .sequences()
+        .filter_map(|i| p.sequence(i.id))
+        .flat_map(|s| s.video_tracks.iter().flat_map(|t| t.items.iter()))
+        .find(|ti| p.item(ti.item).and_then(|i| i.as_media()).is_some_and(|m| m.offline))
+        .expect("an offline placeholder");
+    assert!(placeholder.duration > Tick::ZERO, "the clip keeps its length");
+}
+
+#[test]
+fn a_huge_link_group_does_not_write_quadratic_links() {
+    let r = FrameRate::FPS_29_97;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let s = sequence(&mut p, "Main", r, true);
+    let ids: Vec<_> = (0..300).map(|i| clip(&mut p, s, TrackKind::Audio, 0, a, 0..10, i * 10)).collect();
+    link(&mut p, s, &ids);
+    // the truncation warning is reported by the export, so it is the export's report that is checked
+    let (bytes, rep) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).expect("export");
+    let text = String::from_utf8(bytes).expect("utf-8");
+    // only the first 64 clips are linked, each to the 64 members: the other 236 stay unlinked
+    assert_eq!(text.matches("<linkclipref>").count(), 64 * 64);
+    assert!(rep.has_warnings(), "{rep}");
 }

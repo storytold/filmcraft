@@ -1,4 +1,5 @@
 use super::layout::Row;
+use super::menus::{run_track_menu, track_column_menu, track_header_popup};
 use super::{
     Align2, Color32, CursorIcon, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_HEADER_TINT, Tokens, TrackKind, Value, json,
     label_color, pos2, vec2,
@@ -40,6 +41,13 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
     let tg = app.session.targeting();
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut vo_action = None;
+    // a command picked in a track header's menu, run after the headers are drawn
+    let mut header_menu: Option<(String, Value)> = None;
+    // right-click on the empty part of the header column (above the top video track, below the last
+    // audio track) offers the dialogs; each track's header, added after it, keeps its own menu
+    let column = Rect::from_min_max(pos2(rect.min.x, vclip.min.y), pos2(rect.min.x + hw, aclip.max.y));
+    let column_resp = ui.interact(column, egui::Id::unique("hdr-column-menu"), Sense::click());
+    column_resp.context_menu(|ui| track_column_menu(app, ui, &mut header_menu));
     for r in rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -50,6 +58,12 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         }
         let p = ui.painter().with_clip_rect(visible);
         p.rect_filled(hrect, 0.0, t.tl_header_bg);
+        let label = format!("{}{}", if r.kind == TrackKind::Video { "V" } else { "A" }, r.index + 1);
+        // right-click anywhere on the header: add or delete tracks, here or through the dialogs of
+        // Sequence ▸ Add Tracks… / Delete Tracks… (#1117). Added before the colour strip and the
+        // buttons so they win where they overlap; a right-click on one still opens the menu, since it
+        // takes only the click. Automation ids `timeline.track.<V1|A1…>.menu.<item>`.
+        track_header_popup(app, ui, visible, &label, r.track, r.kind == TrackKind::Video, &mut header_menu);
         // 0. colour label (#1186): a tint over the header, and the strip at its left edge, which
         // opens the colour menu
         let strip = Rect::from_min_max(hrect.min, pos2(hrect.min.x + 9.0, hrect.max.y));
@@ -84,7 +98,6 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         if r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len() {
             p.line_segment([pos2(hrect.min.x, hrect.min.y + 0.5), pos2(hrect.max.x, hrect.min.y + 0.5)], Stroke::new(1.0, t.separator));
         }
-        let label = format!("{}{}", if r.kind == TrackKind::Video { "V" } else { "A" }, r.index + 1);
         let btn_rect = |x0: f32| Rect::from_min_max(pos2(hrect.min.x + x0, hrect.min.y + 1.0), pos2(hrect.min.x + x0 + 24.0, hrect.max.y - 2.0));
         // 1. source patch (absent when unpatched)
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
@@ -191,6 +204,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             app.ui.status = e.to_string();
         }
     }
+    run_track_menu(app, ui, header_menu);
     if let Some(a) = vo_action {
         crate::panels::voiceover::run(app, &ui.ctx().clone(), a);
     }
@@ -240,9 +254,10 @@ fn header_line_buttons(
         }
     } else {
         let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
-        let mresp = crate::widgets::letter_toggle(
+        let mresp = crate::widgets::letter_toggle_clipped(
             ui,
-            mr.intersect(visible),
+            mr,
+            visible,
             "M",
             tr.muted,
             Color32::from_rgb(0x2d, 0x9d, 0x78),
@@ -254,15 +269,8 @@ fn header_line_buttons(
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
         }
         let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
-        let so = crate::widgets::letter_toggle(
-            ui,
-            s2.intersect(visible),
-            "S",
-            tr.solo,
-            Color32::from_rgb(0xf0, 0xf0, 0x4f),
-            t,
-            egui::Id::unique(("solo", r.track.0)),
-        );
+        let so =
+            crate::widgets::letter_toggle_clipped(ui, s2, visible, "S", tr.solo, Color32::from_rgb(0xf0, 0xf0, 0x4f), t, egui::Id::unique(("solo", r.track.0)));
         app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
         if so.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));

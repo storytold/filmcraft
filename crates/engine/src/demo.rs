@@ -48,14 +48,14 @@ pub fn add_generator(p: &mut Project, pool: &MediaPool, src: GeneratorSource, na
 pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
     build_demo(pool).unwrap_or_else(|| {
         // Only reachable if the built-in items could not be placed: an empty demo, not a crash.
-        let mut p = Project::new("FilmCraft Demo");
+        let mut p = Project::new("FilmCraft – Demo Project");
         let seq = p.new_sequence("Main Edit", SequenceSettings::default(), 3, 3, None);
         (p, seq)
     })
 }
 
 fn build_demo(pool: &MediaPool) -> Option<(Project, ItemId)> {
-    let mut p = Project::new("FilmCraft Demo");
+    let mut p = Project::new("FilmCraft – Demo Project");
     let footage = p.add_bin("Footage", None);
     let audio_bin = p.add_bin("Audio", None);
     let gfx = p.add_bin("Graphics", None);
@@ -208,6 +208,9 @@ fn build_demo(pool: &MediaPool) -> Option<(Project, ItemId)> {
             .enumerate()
     {
         s.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(800_000 + i as u64),
             start: r.snap(Tick::from_seconds_f64(*sec)),
             duration: Tick::ZERO,

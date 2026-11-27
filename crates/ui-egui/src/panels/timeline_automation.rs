@@ -211,7 +211,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let hot = resp.hovered() || dragging.is_some();
             icons::paint(&p, Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, if hot { Color32::WHITE } else { LANE_COL });
             app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}"), hr, &format!("{name} keyframe {v:.1}"));
-            if resp.drag_started()
+            if resp.drag_started_by(egui::PointerButton::Primary)
                 && let Some(pp) = pointer
             {
                 ui.data_mut(|d| d.insert_temp(drag_id(), KfDrag { track: r.track.0, index: i, orig: k.time, grab: pp - c }));
@@ -220,7 +220,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 && let Some(d) = dragging
             {
                 // egui ends a drag on Escape: that stop abandons it (#580)
-                if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if !crate::framework::escape_pressed(ui.ctx()) {
                     let nt = layout.tick_at(c.x).max(Tick::ZERO);
                     let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
                     acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));

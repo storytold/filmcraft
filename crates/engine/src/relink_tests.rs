@@ -5,10 +5,11 @@
 use filmcraft_media::DemoScene;
 use filmcraft_project::ItemId;
 use filmcraft_render::offline::{OfflineReason, slate_rgba8};
+use filmcraft_time::FrameRate;
 use serde_json::json;
 
 use crate::Session;
-use crate::media_test_util::{frame_rgba, make_movie, psnr, session_with, tmp_dir};
+use crate::media_test_util::{frame_rgba, make_movie, make_movie_at, psnr, session_with, tmp_dir};
 use crate::relink::{apply_remap, derive_remap};
 
 const W: u32 = 160;
@@ -108,6 +109,42 @@ fn auto_relink_by_prefix_and_by_folder_search() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// An EDL line with no `* SOURCE FILE:` names its file by clip name only. Imported away from the
+// file, the clip is missing like any file that isn't found: the folder search and Relink Others
+// find it, and opening the project asks for it. It was made offline, which all three skip.
+#[test]
+fn edl_clips_named_only_by_clip_name_are_missing_not_made_offline() {
+    let root = tmp_dir("relink-edl-reel");
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    make_movie(&media.join("a.mov"), DemoScene::Aurora, W, H, 24);
+    make_movie(&media.join("b.mov"), DemoScene::CityNight, W, H, 24);
+    let edit = root.join("Edit");
+    std::fs::create_dir_all(&edit).unwrap();
+    let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n\
+        001  A        V     C        00:00:00:00 00:00:00:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: a.mov\n\n\
+        002  B        V     C        00:00:00:00 00:00:00:12 01:00:00:12 01:00:01:00\n* FROM CLIP NAME: b.mov\n";
+    std::fs::write(edit.join("cut.edl"), edl).unwrap();
+    let mut s = Session::default();
+    s.execute("file.import", json!({"paths": [edit.join("cut.edl").to_string_lossy()]})).unwrap();
+    let m = s.execute("media.findMissing", json!({})).unwrap();
+    let statuses: Vec<&str> = m["missing"].as_array().unwrap().iter().map(|r| r["status"].as_str().unwrap()).collect();
+    assert_eq!(statuses, ["missing", "missing"], "{m}");
+    let path = root.join("p.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    assert!(open(&path).offline.prompt, "opening the project asks for the missing files");
+
+    // The EDL gives neither a duration nor a picture size, so those checks are off.
+    let checks = json!({"duration": false, "metadata": false});
+    let r = s.execute("media.autoRelink", json!({"folder": media.to_string_lossy(), "match": checks})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "{r}");
+    let mut s = open(&path);
+    let (item, name) = (m["missing"][0]["item"].as_u64().unwrap(), m["missing"][0]["fileName"].as_str().unwrap());
+    let r = s.execute("media.relink", json!({"item": item, "path": media.join(name).to_string_lossy(), "match": checks})).unwrap();
+    assert_eq!(r["remaining"], json!([]), "relinking one finds the other in its folder: {r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn fingerprint_mismatch_is_refused_unless_forced() {
     let root = tmp_dir("relink-mismatch");
@@ -126,6 +163,158 @@ fn fingerprint_mismatch_is_refused_unless_forced() {
     assert_eq!(r["relinked"].as_array().unwrap().len(), 1);
     assert_eq!(r["remaining"], json!([items[1].0]));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn script_marks_follow_same_file_relink_but_block_unverified_forced_replacement() {
+    let root = tmp_dir("relink-script-marks");
+    let (path, items) = saved_project(&root);
+    let mut s = open(&path);
+    let script = s.execute("script.importText", json!({"name":"Script","text":"a line"})).unwrap()["item"].as_u64().unwrap();
+    let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+    let take = s.execute("script.addTake", json!({"item":script,"source":items[0].0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+    s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
+    s.execute("file.save", json!({"path":path})).unwrap();
+
+    let moved = root.join("Moved");
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let mut s = open(&path);
+    let same = moved.join("a.mov").to_string_lossy().into_owned();
+    s.execute("media.relink", json!({"item":items[0].0,"path":same,"relinkOthers":false})).unwrap();
+    let script_take =
+        |session: &Session| session.project.item(ItemId(script)).unwrap().as_script().unwrap().take(filmcraft_project::ScriptTakeId(take)).unwrap().clone();
+    assert_eq!(script_take(&s).marks[0].source_time.0, 0);
+    assert_eq!(script_take(&s).source_identity, s.project.item(items[0]).unwrap().as_media().unwrap().identity);
+
+    let other = root.join("Other");
+    std::fs::create_dir_all(&other).unwrap();
+    make_movie(&other.join("a.mov"), DemoScene::Dunes, W, H, 12);
+    let replacement = other.join("a.mov").to_string_lossy().into_owned();
+    let err = s.execute("media.relink", json!({"item":items[0].0,"path":replacement,"force":true,"relinkOthers":false})).unwrap_err().to_string();
+    assert!(err.contains(crate::relink::SCRIPT_MARKS_RELINK_REVIEW), "{err}");
+    assert_eq!(script_take(&s).marks.len(), 1);
+    assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().media, filmcraft_project::MediaRef::File { path: same });
+
+    // The command accepts a user's explicit same-footage assertion. The engine cannot infer
+    // visual equivalence from bytes; the UI requires a separate review before sending it.
+    s.execute("media.relink", json!({"item":items[0].0,"path":replacement,"force":true,"confirmScriptSameFootage":true,"relinkOthers":false})).unwrap();
+    assert_eq!(script_take(&s).marks.len(), 1);
+    assert_eq!(script_take(&s).source_identity, s.project.item(items[0]).unwrap().as_media().unwrap().identity);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn confirming_one_script_relink_does_not_confirm_automatically_found_sources() {
+    let root = tmp_dir("relink-script-review-each-source");
+    let (path, items) = saved_project(&root);
+    let mut s = open(&path);
+    let script = s.execute("script.importText", json!({"name":"Script","text":"A\nB"})).unwrap()["item"].as_u64().unwrap();
+    let lines: Vec<u64> = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines.iter().map(|line| line.id.0).collect();
+    let takes: Vec<u64> = items
+        .iter()
+        .zip(&lines)
+        .map(|(source, line)| {
+            let take = s.execute("script.addTake", json!({"item":script,"source":source.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+            s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
+            take
+        })
+        .collect();
+    {
+        let project = std::sync::Arc::make_mut(&mut s.project);
+        let doc = project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap();
+        for take in &takes {
+            doc.take_mut(filmcraft_project::ScriptTakeId(*take)).unwrap().source_identity = None;
+        }
+        // An older project can have no stored identity for an automatically matched clip.
+        project.item_mut(items[1]).unwrap().as_media_mut().unwrap().identity = None;
+    }
+    s.execute("file.save", json!({"path":path})).unwrap();
+    drop(s);
+
+    let moved = root.join("Moved");
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let mut s = open(&path);
+    let result = s
+        .execute(
+            "media.relink",
+            json!({
+                "item":items[0].0,
+                "path":moved.join("a.mov").to_string_lossy(),
+                "relinkOthers":true,
+                "confirmScriptSameFootage":true
+            }),
+        )
+        .unwrap();
+    assert_eq!(result["relinked"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["remaining"], json!([items[1].0]));
+    assert_eq!(result["needsReview"][0]["item"], items[1].0);
+    let second = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(filmcraft_project::ScriptTakeId(takes[1])).unwrap();
+    assert_eq!(second.source_identity, None);
+    assert_eq!(second.marks.len(), 1);
+
+    s.execute(
+        "media.relink",
+        json!({
+            "item":items[1].0,
+            "path":moved.join("b.mov").to_string_lossy(),
+            "relinkOthers":false,
+            "confirmScriptSameFootage":true
+        }),
+    )
+    .unwrap();
+    let second = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(filmcraft_project::ScriptTakeId(takes[1])).unwrap();
+    assert!(second.source_identity.is_some());
+    assert_eq!(second.marks.len(), 1);
+    drop(s);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn auto_relink_reports_script_review_without_blocking_other_sources() {
+    for folder_search in [false, true] {
+        let root = tmp_dir("auto-relink-script-review");
+        let (path, items) = saved_project(&root);
+        let mut s = open(&path);
+        let script = s.execute("script.importText", json!({"name":"Script","text":"Line"})).unwrap()["item"].as_u64().unwrap();
+        let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+        let take = s.execute("script.addTake", json!({"item":script,"source":items[0].0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+        s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
+        let take_id = filmcraft_project::ScriptTakeId(take);
+        let project = std::sync::Arc::make_mut(&mut s.project);
+        project.item_mut(items[0]).unwrap().as_media_mut().unwrap().identity = None;
+        project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap().take_mut(take_id).unwrap().source_identity = None;
+        s.execute("file.save", json!({"path":path})).unwrap();
+        drop(s);
+        let moved = root.join("Moved");
+        std::fs::rename(root.join("Media"), &moved).unwrap();
+        let mut s = open(&path);
+        let original = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(take_id).unwrap().clone();
+        let params = if folder_search {
+            json!({"folder":moved.to_string_lossy()})
+        } else {
+            json!({"from":root.join("Media").to_string_lossy(),"to":moved.to_string_lossy()})
+        };
+        let result = s.execute("media.autoRelink", params).unwrap();
+        assert_eq!(result["relinked"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["relinked"][0]["item"], items[1].0);
+        assert_eq!(result["needsReview"].as_array().unwrap().len(), 1);
+        assert_eq!(result["needsReview"][0]["item"], items[0].0);
+        assert_eq!(result["failed"], json!([]));
+        assert_eq!(result["remaining"], json!([items[0].0]));
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(take_id).unwrap(), &original);
+        let path_for = |session: &Session| {
+            let filmcraft_project::MediaRef::File { path } = &session.project.item(items[1]).unwrap().as_media().unwrap().media else {
+                panic!("relinked media must remain file-based");
+            };
+            std::path::PathBuf::from(path)
+        };
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(path_for(&s), root.join("Media").join("b.mov"));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(path_for(&s), moved.join("b.mov"));
+        drop(s);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[test]
@@ -452,4 +641,90 @@ fn new_offline_file_keeps_only_the_file_name() {
         let m = s.project.item(id).unwrap().as_media().unwrap();
         assert_eq!(m.media, filmcraft_project::MediaRef::File { path: want.to_string() }, "{given}");
     }
+}
+
+// Offline All must be saved with the project: reopening it should not ask for the files again
+// (Premiere behaves this way). It used to only close the dialog, so every open asked again.
+#[test]
+fn offline_all_is_saved_and_reopening_does_not_ask_again() {
+    let root = tmp_dir("relink-offline-all");
+    let (path, items) = saved_project(&root);
+    std::fs::remove_dir_all(root.join("Media")).unwrap();
+    let mut s = open(&path);
+    assert!(s.offline.prompt, "setup: missing media asks");
+    s.execute("media.offlineAll", json!({})).unwrap();
+    assert!(!s.offline.prompt);
+    assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+    s.execute("file.save", json!({})).unwrap();
+
+    let s = open(&path);
+    assert!(!s.offline.prompt, "reopening after Offline All must not show Link Media again");
+    assert_eq!(s.offline.missing.len(), 2, "File ▸ Link Media… still lists them");
+
+    // media that goes missing later still asks on the next open
+    let mut s = open(&path);
+    s.edit("relink b", |p, _| {
+        let m = p.item_mut(items[1]).unwrap().as_media_mut().unwrap();
+        m.offline = false;
+        Ok(())
+    })
+    .unwrap();
+    s.execute("file.save", json!({})).unwrap();
+    assert!(open(&path).offline.prompt, "newly missing media asks again");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The first video clip of the active sequence: (its media item, its source in-point).
+fn first_clip(s: &Session) -> (ItemId, filmcraft_time::Tick) {
+    let seq = s.project.sequence(s.state.active_sequence.unwrap()).unwrap();
+    let ti = &seq.video_tracks[0].items[0];
+    (ti.item, ti.source_in)
+}
+
+// An EDL's source times are timecodes. Imported next to its media, a clip lands on the file's
+// own time. Imported elsewhere and relinked with Align Timecode, it kept the timecode as media
+// time, so it showed the file's last frame.
+#[test]
+fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
+    // The EDL is read at 24 fps. Its file runs at 24 fps, or at 25, where each timecode counts in
+    // its own file's frames.
+    for (fps, rate) in [(24, FrameRate::FPS_24), (25, FrameRate::FPS_25)] {
+        edl_media_relinked_at(fps, rate);
+    }
+}
+
+fn edl_media_relinked_at(fps: i64, rate: FrameRate) {
+    let root = tmp_dir(&format!("relink-edl-timecode-{fps}"));
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    // 2 s from 01:00:00:00; the EDL cuts in at 01:00:01:00, one second in
+    let file = media.join("A001.mxf");
+    make_movie_at(&file, DemoScene::Aurora, W, H, rate, 2 * fps, 3600 * fps);
+    let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n001  A001     V     C        01:00:01:00 01:00:01:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: A001.mxf\n";
+    let import = |dir: &std::path::Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("cut.edl"), edl).unwrap();
+        let mut s = Session::default();
+        s.execute("file.import", json!({"paths": [dir.join("cut.edl").to_string_lossy()]})).unwrap();
+        s
+    };
+
+    let mut next_to_media = import(&media);
+    assert_eq!(first_clip(&next_to_media).1, FrameRate::FPS_24.tick_of(24), "one second into the {fps} fps file");
+
+    let mut s = import(&root.join("Edit"));
+    let (item, _) = first_clip(&s);
+    let m = s.execute("media.findMissing", json!({})).unwrap();
+    assert_eq!(m["missing"][0]["item"], json!(item.0), "setup: the media is not next to the EDL: {m}");
+    // The EDL gives neither a duration nor a picture size, so those checks are off.
+    let r = s
+        .execute(
+            "media.relink",
+            json!({"item": item.0, "path": file.to_string_lossy(), "alignTimecode": true, "match": {"duration": false, "metadata": false}}),
+        )
+        .unwrap();
+    assert_eq!(r["remaining"], json!([]), "{r}");
+    assert_eq!(first_clip(&s).1, first_clip(&next_to_media).1, "{fps} fps");
+    assert_eq!(frame_rgba(&mut s, 6, 1.0).2, frame_rgba(&mut next_to_media, 6, 1.0).2, "same picture at {fps} fps");
+    let _ = std::fs::remove_dir_all(&root);
 }

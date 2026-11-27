@@ -374,6 +374,27 @@ fn build_effects() -> Vec<EffectDef> {
             ],
         ),
         video(
+            "three_way_color",
+            "Three-Way Color Corrector",
+            vfx::OBSOLETE,
+            vec![
+                grp(fs("shadow_hue", "Shadow Hue", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "Shadows"),
+                grp(f("shadow_balance", "Shadow Balance", 0.0, 0.0, 100.0, ""), "Shadows"),
+                grp(f("shadow_level", "Shadow Level", 0.0, -100.0, 100.0, ""), "Shadows"),
+                grp(fs("mid_hue", "Midtone Hue", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "Midtones"),
+                grp(f("mid_balance", "Midtone Balance", 0.0, 0.0, 100.0, ""), "Midtones"),
+                grp(f("mid_level", "Midtone Level", 0.0, -100.0, 100.0, ""), "Midtones"),
+                grp(fs("hi_hue", "Highlight Hue", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "Highlights"),
+                grp(f("hi_balance", "Highlight Balance", 0.0, 0.0, 100.0, ""), "Highlights"),
+                grp(f("hi_level", "Highlight Level", 0.0, -100.0, 100.0, ""), "Highlights"),
+                grp(f("shadow_threshold", "Shadow Threshold", 33.0, 0.0, 100.0, ""), "Tonal Range"),
+                grp(f("shadow_softness", "Shadow Softness", 30.0, 0.0, 100.0, ""), "Tonal Range"),
+                grp(f("hi_threshold", "Highlight Threshold", 66.0, 0.0, 100.0, ""), "Tonal Range"),
+                grp(f("hi_softness", "Highlight Softness", 30.0, 0.0, 100.0, ""), "Tonal Range"),
+                fs("saturation", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1),
+            ],
+        ),
+        video(
             "leave_color",
             "Leave Color",
             vfx::OBSOLETE,
@@ -397,7 +418,7 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video(
             "lumetri",
-            "Lumetri Color",
+            "Color Grading",
             COLOR_CORR,
             vec![
                 grp(b("basic_on", "Basic Correction", true), "Basic Correction"),
@@ -725,15 +746,25 @@ fn build_effects() -> Vec<EffectDef> {
                 fs("feather", "Edge Feather", 0.0, (0.0, 50.0), (0.0, 50.0), "", 1),
             ],
         ),
-        video("luma_key", "Luma Key", KEYING, vec![f("threshold", "Threshold", 0.0, 0.0, 100.0, "%"), f("cutoff", "Cutoff", 0.0, 0.0, 100.0, "%")]),
+        video(
+            "luma_key",
+            "Luma Key",
+            KEYING,
+            vec![f("threshold", "Threshold", 0.0, 0.0, 100.0, "%"), f("cutoff", "Cutoff", 0.0, 0.0, 100.0, "%"), b("invert", "Key Out Brights", false)],
+        ),
         video(
             "four_color_gradient",
             "4-Color Gradient",
             GENERATE,
             vec![
+                // NaN: the gradient's own position (a quarter in from each corner of the frame)
+                pt("p1", "Point 1", f64::NAN, f64::NAN),
                 col("c1", "Color 1", [1.0, 1.0, 0.0, 1.0]),
+                pt("p2", "Point 2", f64::NAN, f64::NAN),
                 col("c2", "Color 2", [0.0, 1.0, 0.0, 1.0]),
+                pt("p3", "Point 3", f64::NAN, f64::NAN),
                 col("c3", "Color 3", [1.0, 0.0, 1.0, 1.0]),
+                pt("p4", "Point 4", f64::NAN, f64::NAN),
                 col("c4", "Color 4", [0.0, 0.0, 1.0, 1.0]),
                 f("blend", "Blend", 100.0, 1.0, 1000.0, ""),
                 f("opacity", "Opacity", 100.0, 0.0, 100.0, "%"),
@@ -864,7 +895,32 @@ pub fn find_effect(id: &str) -> Option<&'static EffectDef> {
 /// Case-insensitive lookup by id or display name.
 pub fn find_effect_by_name(name: &str) -> Option<&'static EffectDef> {
     let n = name.to_ascii_lowercase();
-    effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n)
+    // Old human-readable names are import/automation aliases, never display labels.
+    let legacy_id = match n.as_str() {
+        "lumetri" | "lumetri color" | "color grade" => Some("lumetri"),
+        _ => None,
+    };
+    legacy_id.and_then(find_effect).or_else(|| effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n))
+}
+
+/// Names a user may still type into the Effects panel search for an effect whose display label
+/// changed (`"Lumetri"` → Color Grading). Search terms only: never display labels, never written
+/// to a project or an interchange file.
+pub fn search_aliases(def: &EffectDef) -> &'static [&'static str] {
+    match def.id {
+        "lumetri" => &["Lumetri", "Lumetri Color", "Color Grade"],
+        _ => &[],
+    }
+}
+
+/// The name an interchange file (FCP7 XML, FCPXML, EDL) writes for an effect: the name it had
+/// before the UI rename, so a rename never changes an export. Display labels come from
+/// [`EffectDef::name`]; this is the stable name other applications read back.
+pub fn interchange_name(def: &EffectDef) -> &'static str {
+    match def.id {
+        "lumetri" => "Lumetri Color",
+        _ => def.name,
+    }
 }
 
 /// Intrinsic video effects every video track item carries (Motion, Opacity, Time Remapping).
@@ -891,5 +947,41 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn descriptive_names_preserve_legacy_lookup_and_project_ids() {
+        for (id, old, label) in [
+            ("lumetri", "Lumetri Color", "Color Grading"),
+            ("lumetri", "Color Grade", "Color Grading"),
+            ("ultra_key", "Ultra Key", "Ultra Key"),
+            ("warp_stabilizer", "Warp Stabilizer", "Warp Stabilizer"),
+            ("morph_cut", "Morph Cut", "Morph Cut"),
+        ] {
+            let def = find_effect(id).unwrap();
+            assert_eq!(def.name, label);
+            assert_eq!(find_effect_by_name(old).unwrap().id, id);
+            assert_eq!(find_effect_by_name(&old.to_uppercase()).unwrap().id, id);
+            assert_eq!(find_effect_by_name(label).unwrap().id, id);
+            let saved = serde_json::to_value(def.instance()).unwrap();
+            assert_eq!(saved["effect"], id);
+            let loaded: EffectInstance = serde_json::from_value(saved).unwrap();
+            assert_eq!(loaded, def.instance());
+        }
+    }
+
+    #[test]
+    fn interchange_names_keep_exports_stable_across_the_rename() {
+        // FCP7 XML, FCPXML and EDL write the name other applications read back, so renaming a
+        // display label must not change a byte of an export.
+        let lumetri = find_effect("lumetri").unwrap();
+        assert_eq!(lumetri.name, "Color Grading");
+        assert_eq!(interchange_name(lumetri), "Lumetri Color");
+        for id in ["gaussian_blur", "cross_dissolve", "ultra_key", "warp_stabilizer"] {
+            let def = find_effect(id).unwrap();
+            assert_eq!(interchange_name(def), def.name, "{id}");
+        }
+        // and a file naming the old label still imports as the same effect
+        assert_eq!(find_effect_by_name(interchange_name(lumetri)).unwrap().id, "lumetri");
     }
 }

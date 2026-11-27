@@ -3,7 +3,7 @@ use super::output::{AudioWriter, Out, SharedBuf, write_output};
 use super::still_encode::encode_still_with;
 use super::{
     Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project, Report, Result,
-    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, pcm, pipeline, stepped,
+    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, mp3_out, pcm, pipeline, stepped,
 };
 
 /// The range to export (settings → In/Out → whole sequence).
@@ -66,6 +66,49 @@ fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
     rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("filmcraft-export-{i}")).build().ok()
 }
 
+/// Run `f`, a background job's exports, on the background pool: one thread per core, shared by
+/// every background job, so two at once (an export and Render Previews) split the cores instead
+/// of each taking them all. A job capped below the cores (`max_threads`, 0 = no cap) gets a pool
+/// of that many threads of its own. From a plain thread an export renders on the global pool,
+/// where the monitors render their frames: those then queue behind the export's work for as long
+/// as it runs. Each thread runs the hook of [`crate::register_background_thread_start`] as it
+/// starts (the platform layer lowers its priority). Runs `f` where it is called in the browser,
+/// or when no pool can be made.
+pub fn on_own_threads<T: Send>(max_threads: u32, f: impl FnOnce() -> T + Send) -> T {
+    static SHARED: std::sync::Mutex<Option<Arc<rayon::ThreadPool>>> = std::sync::Mutex::new(None);
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let pool = match usize::try_from(max_threads) {
+        Ok(cap) if cap > 0 && cap < cores => background_pool(cap).map(Arc::new),
+        _ => made_once(&SHARED, || background_pool(cores)),
+    };
+    match pool {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
+}
+
+/// What `slot` holds, or what `make` makes, kept in `slot`. A `make` that fails (no threads to be
+/// had for now) leaves the slot empty, so the next call tries again.
+pub(crate) fn made_once<T>(slot: &std::sync::Mutex<Option<Arc<T>>>, make: impl FnOnce() -> Option<T>) -> Option<Arc<T>> {
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.is_none() {
+        *held = make().map(Arc::new);
+    }
+    held.clone()
+}
+
+fn background_pool(threads: usize) -> Option<rayon::ThreadPool> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("filmcraft-export-{i}"))
+        .start_handler(|_| super::registry::background_thread_start())
+        .build()
+        .ok()
+}
+
 /// Run an export (blocking; call from a worker thread). With `settings.max_threads` set it runs on
 /// a pool of that many threads, so its rendering and software encoding use at most that many cores.
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
@@ -95,6 +138,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
         Format::Aac => aac_out::export(project, seq, settings, range, sources, progress)?,
+        Format::Mp3 => mp3_out::export(project, seq, settings, range, sources, progress)?,
         Format::Wav | Format::Aiff | Format::Flac => {
             let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             let (ch, sr, fmt) = (a.channels as u16, a.sr, settings.audio.sample_format());
@@ -102,16 +146,16 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
             // the sizes are known up front: refuse an AIFF that cannot hold them before measuring
             let mut writer = match settings.format {
                 Format::Flac => {
-                    let mut cfg = filmcraft_flac::EncoderConfig::new(sr, ch as u8, fmt.bits() as u8);
+                    let mut cfg = craft_audio::flac::EncoderConfig::new(sr, ch as u8, fmt.bits() as u8);
                     cfg.level = settings.audio.flac_level.min(8);
-                    AudioWriter::Flac(Box::new(filmcraft_flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?))
+                    AudioWriter::Flac(Box::new(craft_audio::flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?))
                 }
                 Format::Wav => AudioWriter::Pcm(pcm::PcmContainer::Wav),
                 _ => AudioWriter::Pcm(pcm::PcmContainer::Aiff),
             };
             let head = match &writer {
                 AudioWriter::Pcm(c) => pcm::header(*c, ch, sr, fmt, frames).map_err(ExportError::Unsupported)?,
-                AudioWriter::Flac(enc) => enc.header(),
+                AudioWriter::Flac(enc) => enc.header(&[]),
             };
             // one second per chunk: memory stays flat however long the range is
             let chunk = i64::from(sr.max(1));
@@ -149,7 +193,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
                     out.write_all(&enc.finish()).map_err(io)?;
                     // the frame sizes and MD5 are known now: fill them into STREAMINFO
                     use std::io::{Seek, SeekFrom};
-                    out.seek(SeekFrom::Start(filmcraft_flac::STREAMINFO_OFFSET)).map_err(io)?;
+                    out.seek(SeekFrom::Start(craft_audio::flac::STREAMINFO_OFFSET)).map_err(io)?;
                     out.write_all(&enc.streaminfo()).map_err(io)?;
                     out.seek(SeekFrom::End(0)).map_err(io)?;
                 }
@@ -244,5 +288,8 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
         progress.finished.store(true, Ordering::Relaxed);
         progress.set_status(format!("Done in {secs:.1}s"));
     }
-    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
+    // an image sequence writes numbered stills, never `settings.path` itself: report its first
+    // still, the name `file.import` and `probe --image-sequence` take for the sequence (#4009)
+    let path = if settings.format.is_image_sequence() && nframes > 0 { pcm::image_sequence_path(&settings.path, 0, nframes) } else { settings.path.clone() };
+    Ok(Report { path, frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), ..Default::default() })
 }

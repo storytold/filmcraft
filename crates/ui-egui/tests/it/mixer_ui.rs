@@ -5,19 +5,13 @@
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write PNGs
 //! there (`mixer-*.png`); without it no GPU is needed.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, build, builder, demo_session, driver, start, with_snapshots};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
@@ -25,77 +19,25 @@ impl Driver {
     }
 
     fn demo_with_step_dt(step_dt: Option<f32>) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = builder();
         if let Some(dt) = step_dt {
             b = b.with_step_dt(dt);
         }
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        let harness = build(with_snapshots(b), app);
+        start(Driver { harness, tx })
     }
 
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
+    /// Press on `id`, move `dy` pixels over several frames (calling `between` before each move and
+    /// once more, with `steps`, before the release), release.
+    fn drag_frames(&mut self, id: &str, dy: f32, steps: usize, between: impl FnMut(&mut Self, usize)) {
+        self.drag_frames_by(id, egui::vec2(0.0, dy), steps, between);
     }
 
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn element(&mut self, id: &str) -> Option<[f32; 4]> {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array()?.iter().find(|e| e["id"] == id).map(|e| {
-            let r = &e["rect"];
-            [r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32]
-        })
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    /// Press on `id`, move `dy` pixels over several frames (calling `between` before each move),
-    /// release.
-    fn drag_frames(&mut self, id: &str, dy: f32, steps: usize, mut between: impl FnMut(&mut Self, usize)) {
+    /// [`drag_frames`](Self::drag_frames) moving by `delta` in both directions.
+    fn drag_frames_by(&mut self, id: &str, delta: egui::Vec2, steps: usize, mut between: impl FnMut(&mut Self, usize)) {
         let r = self.element(id).unwrap_or_else(|| panic!("no element {id}"));
         let mut p = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
         let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
@@ -105,55 +47,22 @@ impl Driver {
         self.frames(1);
         for i in 0..steps {
             between(self, i);
-            p.y += dy / steps as f32;
+            p += delta / steps as f32;
             push(self, egui::Event::PointerMoved(p));
             self.frames(1);
         }
+        between(self, steps);
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(2);
+    }
+
+    fn undo_len(&mut self) -> usize {
+        self.exec("history.list", json!({}))["undo"].as_array().unwrap().len()
     }
 
     fn strip(&mut self, r: &str) -> Value {
         let m = self.exec("mixer.inspect", json!({}));
         m["strips"].as_array().unwrap().iter().find(|s| s["ref"] == r).cloned().unwrap_or(Value::Null)
-    }
-
-    /// Offscreen render of the window (or the bounding box of the elements under `prefix`).
-    fn snapshot(&mut self, name: &str, prefix: Option<&str>) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        let crop = prefix.map(|p| {
-            let v = self.ok("ui.elements", json!({"prefix": p}));
-            let mut bb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-            for e in v.as_array().unwrap() {
-                let r = &e["rect"];
-                let (x, y, w, h) = (r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32);
-                bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x + w), bb[3].max(y + h)];
-            }
-            bb
-        });
-        self.frames(2);
-        let img = match self.harness.render() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("snapshot {name} skipped: {e}");
-                return;
-            }
-        };
-        let ppp = img.width() as f32 / 1600.0;
-        let img = match crop {
-            Some(bb) => {
-                let x0 = ((bb[0] - 24.0) * ppp).max(0.0) as u32;
-                let y0 = ((bb[1] - 30.0) * ppp).max(0.0) as u32;
-                let x1 = (((bb[2] + 16.0) * ppp) as u32).min(img.width());
-                let y1 = (((bb[3] + 46.0) * ppp) as u32).min(img.height());
-                image::imageops::crop_imm(&img, x0, y0, x1 - x0, y1 - y0).to_image()
-            }
-            None => img,
-        };
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        img.save(&path).unwrap();
-        eprintln!("snapshot: {}", path.display());
     }
 }
 
@@ -502,4 +411,84 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         assert!(labels(&quiet).iter().all(|label| label.contains("-90.0")), "{workspace}: {:?}", labels(&quiet));
         d.snapshot(&format!("meters-{workspace}-paused-silent"), None);
     }
+}
+
+/// #3765: the Mix row of the Timeline sets the Mix fader. Its level is hot text: a drag changes
+/// the master in one undo step, a typed value sets it, and it shows the fader at the playhead
+/// (automation included).
+#[test]
+fn timeline_mix_level_sets_the_master() {
+    let mut d = Driver::demo();
+    let mix = |d: &mut Driver| d.harness.state().session.active_sequence().unwrap().master_volume_db;
+    let label = |d: &mut Driver| {
+        d.frames(2);
+        let v = d.ok("ui.elements", json!({"prefix": "timeline.mix.volume"}));
+        v.as_array().unwrap().iter().find(|e| e["id"] == "timeline.mix.volume").expect("the Mix level is a control")["label"].as_str().unwrap().to_string()
+    };
+    assert_eq!(label(&mut d), "0.0");
+    // drag to the right: louder, one undo step
+    d.ok("ui.drag", json!({"from": {"id": "timeline.mix.volume"}, "to": {"id": "timeline.mix.volume", "fx": 3.0}, "steps": 12}));
+    d.frames(3);
+    let up = mix(&mut d);
+    assert!(up > 0.5, "the drag raised the Mix fader: {up}");
+    assert_eq!(label(&mut d), format!("{up:.1}"));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(mix(&mut d), 0.0, "the drag is one undo step");
+    // type a value
+    d.ok("ui.click", json!({"id": "timeline.mix.volume"}));
+    d.frames(3);
+    d.ok("ui.type", json!({"text": "-6"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(mix(&mut d), -6.0, "typed");
+    // automation: the row shows the fader at the playhead
+    d.exec("mixer.setKeyframe", json!({"strip": "Mix", "time": 0, "value": -12.0}));
+    d.exec("playhead.set", json!({"time": 0}));
+    assert_eq!(label(&mut d), "-12.0");
+}
+
+/// During playback (an automation pass) a drag of the Timeline's Mix level is one held gesture:
+/// with nothing to record it changes the level once, as one undo step; in Touch it is written as
+/// automation when the pass ends and returns from where it was let go.
+#[test]
+fn timeline_mix_drag_during_playback_is_one_gesture() {
+    use filmcraft_project::mixer::{LANE_VOLUME, MASTER_STRIP};
+    let mut d = Driver::demo();
+    let mix = |d: &mut Driver| d.harness.state().session.active_sequence().unwrap().master_volume_db;
+    d.frames(2);
+    // Read, no automation: a plain control
+    d.exec("mixer.recordStart", json!({}));
+    let before = d.undo_len();
+    d.drag_frames_by("timeline.mix.volume", egui::vec2(-60.0, 0.0), 6, |_, _| {});
+    assert_eq!(d.undo_len(), before + 1, "one undo step for the drag");
+    let down = mix(&mut d);
+    assert!(down < -0.5, "the drag lowered the Mix fader: {down}");
+    d.exec("mixer.recordStop", json!({}));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(mix(&mut d), 0.0);
+    // Touch: held while the playhead moves, written when the pass ends
+    d.exec("mixer.setStrip", json!({"strip": "Mix", "mode": "Touch"}));
+    d.exec("playhead.set", json!({"seconds": 1.0}));
+    d.exec("mixer.recordStart", json!({}));
+    // the last call moves the playhead after the last drag update, before the release
+    let (mut held, mut last_move, mut released) = (None, 0, 0);
+    d.drag_frames_by("timeline.mix.volume", egui::vec2(-60.0, 0.0), 6, |d, i| {
+        last_move = released;
+        d.exec("playhead.set", json!({"seconds": 1.0 + 0.1 * i as f64}));
+        let s = &d.harness.state().session;
+        released = s.playhead().0;
+        held = s.previews.live.get(MASTER_STRIP, LANE_VOLUME).map(|o| o.value);
+    });
+    let held = held.expect("the drag holds the Mix fader");
+    assert!(held < -0.5, "{held}");
+    assert!(released > last_move, "the playhead moved between the last drag update and the release");
+    assert!(d.strip("Mix")["lanes"].as_object().is_none_or(|m| m.is_empty()), "nothing written until the pass ends");
+    d.exec("playhead.set", json!({"seconds": 3.0}));
+    let r = d.exec("mixer.recordStop", json!({}));
+    assert_eq!(r["lanes"], 1, "{r}");
+    let kfs = d.strip("Mix")["lanes"]["volume"].as_array().unwrap().clone();
+    assert!(kfs.len() >= 3, "{kfs:?}");
+    // the return starts where the control was let go: the release time holds the released value
+    let at = kfs.iter().find(|k| k[0].as_i64() == Some(released)).unwrap_or_else(|| panic!("no keyframe at the release: {kfs:?}"));
+    assert!((at[1].as_f64().unwrap() - held).abs() < 1e-6, "{at:?} vs {held}");
 }

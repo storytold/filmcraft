@@ -20,7 +20,8 @@ Options:
   --data-dir <dir>   folder for auto-save, crash recovery and logs
                      (also: FILMCRAFT_DATA_DIR)
   --graphics <mode>  start with this graphics mode and keep it: default,
-                     dx12 (Windows), software (Windows, Linux);
+                     dx12 (Windows), low-power (Linux),
+                     software (Windows, Linux);
                      `--graphics default` undoes an automatic fallback
   --version          print the version and exit
   -h, --help         print this help and exit
@@ -91,7 +92,7 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = Os
             "--no-recover" => l.recover = Some(false),
             "--data-dir" => l.data_dir = Some(args.next().map(PathBuf::from).ok_or("--data-dir needs a folder")?),
             "--graphics" => {
-                let name = args.next().ok_or("--graphics needs a mode: default, dx12 or software")?;
+                let name = args.next().ok_or("--graphics needs a mode: default, dx12, low-power or software")?;
                 l.graphics = Some(graphics_mode(&name.to_string_lossy())?);
             }
             // everything after `--` is a file, whatever it looks like
@@ -204,7 +205,7 @@ mod tests {
     /// A bad `FILMCRAFT_CONTROL_PORT` used to start the app without the control server, silently.
     #[test]
     fn a_bad_port_in_the_environment_is_an_error_like_a_bad_control_flag() {
-        for bad in ["abc", "70000", "-1", "98 76", "9876x", "\u{fffd}"] {
+        for bad in ["abc", "70000", "-1", "98 76", "9886x", "\u{fffd}"] {
             let e = parse_env(Some(bad), &[]).unwrap_err();
             assert!(e.contains("FILMCRAFT_CONTROL_PORT") && e.contains(bad), "{bad}: {e}");
             assert!(parse_env(Some(bad), &["--empty", "a.mp4"]).is_err(), "{bad}");
@@ -238,8 +239,8 @@ mod tests {
                 graphics: None
             }
         );
-        let l = launch(&["--control", "9876", "--empty", "--no-recover", "--data-dir", "/tmp/fc", "cut.fcproj", "a.mp4"]);
-        assert_eq!(l.control_port, Some(9876));
+        let l = launch(&["--control", "9886", "--empty", "--no-recover", "--data-dir", "/tmp/fc", "cut.fcproj", "a.mp4"]);
+        assert_eq!(l.control_port, Some(9886));
         assert_eq!((l.demo, l.startup_flag, l.recover), (false, true, Some(false)));
         assert_eq!(l.data_dir, Some(std::path::PathBuf::from("/tmp/fc")));
         assert_eq!(l.files, ["cut.fcproj", "a.mp4"]);
@@ -297,10 +298,10 @@ mod tests {
 
     #[test]
     fn isolated_input_is_explicit_and_requires_a_control_server() {
-        assert!(!launch(&["--control", "9876"]).control_input_only);
+        assert!(!launch(&["--control", "9886"]).control_input_only);
         assert!(parse_args(&["--control-input-only"]).is_err());
-        assert!(launch(&["--control-input-only", "--control", "9876"]).control_input_only);
-        assert!(matches!(parse_env(Some("9876"), &["--control-input-only"]), Ok(Cli::Run(Launch { control_input_only: true, control_port: Some(9876), .. }))));
+        assert!(launch(&["--control-input-only", "--control", "9886"]).control_input_only);
+        assert!(matches!(parse_env(Some("9886"), &["--control-input-only"]), Ok(Cli::Run(Launch { control_input_only: true, control_port: Some(9886), .. }))));
         assert_eq!(parse_args(&["--control-input-only", "--help"]), Ok(Cli::Help));
         assert!(USAGE.contains("--control-input-only"));
     }
@@ -314,7 +315,7 @@ mod tests {
             assert_eq!(launch(&["--graphics", mode.name()]).graphics, Some(*mode));
         }
         // a mode this platform has not is refused, not ignored
-        for mode in [Mode::Dx12, Mode::Software].into_iter().filter(|m| !LADDER.contains(m)) {
+        for mode in [Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().filter(|m| !LADDER.contains(m)) {
             assert!(parse_args(&["--graphics", mode.name()]).unwrap_err().contains("not available"));
         }
         assert!(parse_args(&["--graphics"]).is_err(), "missing mode");

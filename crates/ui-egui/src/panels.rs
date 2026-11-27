@@ -4,6 +4,7 @@
 pub mod audio_fx_editor;
 pub mod caption_export;
 pub mod clip_dialogs;
+pub mod clip_mismatch;
 pub mod color_dialogs;
 pub mod dialogs;
 pub mod effect_controls;
@@ -29,6 +30,7 @@ pub mod misc;
 pub mod mixer;
 pub mod monitor;
 pub mod monitor_view;
+pub mod motion_path;
 pub mod multicam;
 pub mod notes;
 pub mod panel_state;
@@ -39,9 +41,11 @@ pub mod project_views;
 pub mod reference;
 pub mod remix;
 pub mod scopes;
+pub mod script;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
+pub mod slip_monitor;
 pub mod text;
 pub mod timecode;
 pub mod timeline;
@@ -64,6 +68,65 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::theme::Tokens;
 
+/// The status bar's job text as last shown. It changes at most every [`JobText::EVERY`] seconds,
+/// and the room it takes only grows while the job runs, so where it starts stays put.
+pub struct JobText {
+    pub job: u64,
+    /// [`FilmcraftApp::now`] when `text` was made.
+    pub at: f64,
+    /// `Exporting… 46% · 56:11 left`.
+    pub text: String,
+    /// The same without the verb, for agents (`status.job.progress`).
+    pub label: String,
+    /// The widest the text has been for this job.
+    pub width: f32,
+}
+
+impl JobText {
+    /// More often than about once a second, a changing number is flicker rather than news.
+    pub const EVERY: f64 = 1.0;
+}
+
+/// The texts of running jobs elsewhere (an export queue item, a row of the Progress panel) as last
+/// shown, by key: each changes at most every [`JobText::EVERY`] seconds.
+#[derive(Default)]
+pub struct SteadyTexts(std::collections::HashMap<String, (f64, String)>);
+
+impl SteadyTexts {
+    /// The text last shown under `key`, or `make`'s when that is [`JobText::EVERY`] old at `now`.
+    /// Texts no longer asked for (their job ended) are let go.
+    pub fn get(&mut self, key: &str, now: f64, make: impl FnOnce() -> String) -> String {
+        self.0.retain(|_, (at, _)| (*at..*at + 10.0 * JobText::EVERY).contains(&now));
+        if let Some((at, text)) = self.0.get(key)
+            && (*at..*at + JobText::EVERY).contains(&now)
+        {
+            return text.clone();
+        }
+        let text = make();
+        self.0.insert(key.to_owned(), (now, text.clone()));
+        text
+    }
+}
+
+#[cfg(test)]
+mod steady_text_tests {
+    use super::SteadyTexts;
+
+    #[test]
+    fn a_text_is_made_again_once_a_second_and_forgotten_when_no_longer_asked_for() {
+        let mut texts = SteadyTexts::default();
+        assert_eq!(texts.get("a", 5.0, || "1".into()), "1");
+        assert_eq!(texts.get("a", 5.9, || "2".into()), "1");
+        assert_eq!(texts.get("b", 5.9, || "x".into()), "x", "each key has its own");
+        assert_eq!(texts.get("a", 6.0, || "3".into()), "3");
+        // a clock that went back (a test, a new session) makes the text again
+        assert_eq!(texts.get("a", 1.0, || "4".into()), "4");
+        // "b", last made at 5.9, ended long ago
+        texts.get("a", 100.0, || "5".into());
+        assert_eq!(texts.0.len(), 1);
+    }
+}
+
 /// ` · 2:05 left`: the time a job has left, as it follows a percentage.
 pub fn left_text(d: std::time::Duration) -> String {
     tlf!(" · {time} left", time = filmcraft_engine::export::format_eta(d))
@@ -76,6 +139,7 @@ pub fn eta_suffix(job: &serde_json::Value) -> String {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
+        PanelKind::Program if slip_monitor::active(app) => slip_monitor::show(app, ui, rect),
         PanelKind::Program if !app.session.state.edit_points.is_empty() => trim_monitor::show(app, ui, rect),
         PanelKind::Program => monitor::show(app, ui, rect, monitor::Which::Program),
         PanelKind::Source => monitor::show(app, ui, rect, monitor::Which::Source),
@@ -103,6 +167,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Progress => events::progress(app, ui, rect),
         PanelKind::ReferenceMonitor => reference::show(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
+        PanelKind::Script => script::show(app, ui, rect),
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),
@@ -162,20 +227,15 @@ pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
 }
-/// Prefix of a dragged effect payload that names a Lumetri preset rather than an effect id.
+/// Prefix of a dragged effect payload that names a Color Grading preset rather than an effect id.
 pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
-/// A Lumetri preset (Effects ▸ Lumetri Presets) dragged onto a clip: an effect payload
+/// A Color Grading preset (Effects ▸ Color Grading Presets) dragged onto a clip: an effect payload
 /// `lumetri:<name>` the Timeline applies with `lumetri.applyPreset`.
 pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
     start_drag_effect(ui, &format!("{LUMETRI_PRESET_PREFIX}{name}"));
 }
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
-
-/// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
-pub(crate) fn dragging(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
-}
 
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
     ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
@@ -236,7 +296,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
     let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(ctx) {
         cancel_drag(ui);
         return;
     }
@@ -287,19 +347,39 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
 }
 
-/// The panel "≡" menu.
+/// The main window's share of the panel "≡" menu pass: the drag ghost, the bins in their own
+/// windows, and the menu itself when it was opened in the main window.
 pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     drag_ghost(app, ui);
     // bins opened in new windows (Project panel)
     project::floating(app, ui.ctx());
+    panel_menu_area(app, ui);
+}
+
+/// The panel "≡" menu, drawn in the viewport that owns the click that opened it: a panel in its
+/// own OS window opens its menu in that window, at that window's coordinates (#3633).
+pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let id = egui::Id::unique("panel-menu");
-    let Some((p, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
+    let viewport = ui.ctx().viewport_id();
+    let Some((p, pos, owner)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2, egui::ViewportId)>(id)) else { return };
+    if owner != viewport {
+        // a click in another window dismisses the menu, as a click elsewhere in its own window does
+        if ui.ctx().input(|i| i.pointer.any_pressed()) {
+            ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id));
+        }
+        return;
+    }
+    // its elements are registered in the window that draws them
+    let outer = std::mem::replace(&mut app.auto.viewport, viewport);
     let mut close = false;
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             let scroll =
                 egui::ScrollArea::vertical().id_salt("panel-menu-scroll").max_height((ui.ctx().content_rect().height() - 16.0).max(0.0)).show(ui, |ui| {
-                    ui.set_min_width(190.0);
+                    // a small window (a floated panel can be narrower than the menu) takes the menu at its width
+                    let width = ui.ctx().content_rect().width() - 16.0;
+                    ui.set_min_width(190.0_f32.min(width.max(0.0)));
+                    ui.set_max_width(width.max(0.0));
                     // the Timeline's tabs are its open sequences: Close Panel closes the active one and
                     // keeps the panel (Premiere's wording and behaviour)
                     if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
@@ -346,8 +426,9 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // the menu, and must not close it again in the same frame.
     let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::unique("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
     if close || (!fresh && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
-        ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
+        ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id));
     }
+    app.auto.viewport = outer;
 }
 
 /// The panel's own items, each section after a separator: the Timeline's sequence and track
@@ -363,8 +444,14 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
             let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
             close = true;
         }
-        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
-        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        let r = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
+        app.auto.add("panel.menu.Timeline.videoThumbnails", r.rect, "Video Thumbnails");
+        let r = ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        app.auto.add("panel.menu.Timeline.audioWaveforms", r.rect, "Audio Waveforms");
+        let r = ui.checkbox(&mut app.ui.timeline.show_video_names, tl!("Video Names"));
+        app.auto.add("panel.menu.Timeline.videoNames", r.rect, "Video Names");
+        let r = ui.checkbox(&mut app.ui.timeline.show_audio_names, tl!("Audio Names"));
+        app.auto.add("panel.menu.Timeline.audioNames", r.rect, "Audio Names");
         let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
         let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
         app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
@@ -386,6 +473,10 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
         ui.separator();
         close |= monitor::source_panel_menu(app, ui);
     }
+    if p == PanelKind::LumetriColor {
+        ui.separator();
+        close |= lumetri::panel_menu(app, ui);
+    }
     if p == PanelKind::History {
         ui.separator();
         close |= misc::history_panel_menu(app, ui);
@@ -394,3 +485,9 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
 }
 
 pub(crate) mod transcript_cache;
+
+pub mod custom_colors;
+pub mod marker_properties;
+
+pub mod markers_panel;
+pub mod palette_manager;

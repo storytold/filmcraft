@@ -1,4 +1,4 @@
-//! Headless UI tests of the M8.9 / M12.6 panels: Lumetri Scopes (layouts, the settings menu,
+//! Headless UI tests of the M8.9 / M12.6 panels: Video Scopes (layouts, the settings menu,
 //! footer), Metadata (edit a field by typing, undo), Timecode, Events, Progress and the Reference
 //! Monitor, each opened from Window ▸ and driven by automation id through the control channel.
 //!
@@ -7,86 +7,34 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, builder, demo_session, driver, painted_texts, with_snapshots};
 use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn with(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(session, with_snapshots(builder()))
     }
-
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         Self::with(session)
     }
 
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
+    /// The id and rect of each automation element whose id starts with `prefix`.
+    fn rects(&mut self, prefix: &str) -> Vec<(String, egui::Rect)> {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        self.ids(id).iter().any(|i| i == id)
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+                (e["id"].as_str().unwrap().to_string(), egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
+            })
+            .collect()
     }
 
     fn label(&mut self, id: &str) -> String {
@@ -94,64 +42,8 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered (frames render on worker threads), for at most two
-    /// minutes of wall-clock time.
-    fn wait_for(&mut self, id: &str) {
-        let t0 = std::time::Instant::now();
-        while t0.elapsed().as_secs() < 120 {
-            if self.has(id) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            self.frames(1);
-        }
-        panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap()));
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn ui_panels(&mut self) -> Value {
         self.ok("ui.inspect", json!({}))["ui"]["panels"].clone()
-    }
-
-    /// Offscreen render of the window (or the bounding box of the elements under `prefix`).
-    fn snapshot(&mut self, name: &str, prefix: Option<&str>) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        let crop = prefix.map(|p| {
-            let v = self.ok("ui.elements", json!({"prefix": p}));
-            let mut bb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-            for e in v.as_array().unwrap() {
-                let r = &e["rect"];
-                let (x, y, w, h) = (r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32);
-                bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x + w), bb[3].max(y + h)];
-            }
-            bb
-        });
-        self.frames(2);
-        let img = match self.harness.render() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("snapshot {name} skipped: {e}");
-                return;
-            }
-        };
-        let ppp = img.width() as f32 / 1600.0;
-        let img = match crop {
-            Some(bb) => {
-                let x0 = ((bb[0] - 24.0) * ppp).max(0.0) as u32;
-                let y0 = ((bb[1] - 30.0) * ppp).max(0.0) as u32;
-                let x1 = (((bb[2] + 16.0) * ppp) as u32).min(img.width());
-                let y1 = (((bb[3] + 46.0) * ppp) as u32).min(img.height());
-                image::imageops::crop_imm(&img, x0, y0, x1 - x0, y1 - y0).to_image()
-            }
-            None => img,
-        };
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        img.save(&path).unwrap();
-        eprintln!("snapshot: {}", path.display());
     }
 }
 
@@ -161,7 +53,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Video Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
@@ -252,17 +144,77 @@ fn history_panel_menu_deletes_redoable_actions_and_clears_the_history() {
     assert!(!d.app().session.is_enabled("history.clear"), "an empty history has nothing to clear");
 }
 
+/// Each History row shows the icon of the command that made its step, oldest first, and an undone
+/// step keeps its icon. The Open row has none. Clicking a row still moves the project to it.
+#[test]
+fn history_rows_show_the_command_icon() {
+    let mut d = Driver::demo();
+    let n0 = d.app().session.history.undo.len();
+    d.exec("file.newBin", json!({"name": "A"}));
+    d.exec("markers.add", json!({}));
+    d.exec("edit.undo", json!({}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.History"}));
+    d.frames(3);
+    let (bin, marker) = (format!("history.row.{}", n0 + 1), format!("history.row.{}", n0 + 2));
+    assert_eq!(d.label("history.row.0"), "Open");
+    assert!(!d.has("history.row.0.icon"), "the starting state is not an action");
+    assert_eq!(d.label(&format!("{bin}.icon")), "Folder");
+    assert_eq!(d.label(&format!("{marker}.icon")), "Marker", "an undone step keeps its icon");
+    assert!(!d.has(&format!("history.row.{}", n0 + 3)));
+
+    d.click(&marker);
+    assert_eq!(d.app().session.history.redo.len(), 0, "clicking the undone row redoes it");
+    assert_eq!(d.label(&format!("{marker}.icon")), "Marker");
+    d.click(&bin);
+    assert_eq!(d.app().session.history.redo.len(), 1);
+    assert_eq!(d.label(&format!("{marker}.icon")), "Marker", "the icon stays with its row through undo");
+}
+
+/// On a History row partly scrolled out of the panel, the `.icon` target is the part of the drawn
+/// icon that still shows: it lies inside its row, at the drawn icon's left edge, and it is not
+/// registered once the icon itself is scrolled out.
+#[test]
+fn history_icon_targets_follow_rows_scrolled_part_out() {
+    let mut d = Driver::demo();
+    for i in 0..60 {
+        d.exec("file.newBin", json!({"name": format!("Bin {i}")}));
+    }
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.History"}));
+    d.frames(3);
+    let mut clipped = 0;
+    for _ in 0..40 {
+        let rects = d.rects("history.row.");
+        let rows: Vec<&(String, egui::Rect)> = rects.iter().filter(|(id, _)| !id.ends_with(".icon")).collect();
+        for (id, row) in &rows {
+            let icon = rects.iter().find(|(i, _)| *i == format!("{id}.icon")).map(|(_, r)| *r);
+            if row.height() < 19.5 {
+                clipped += 1;
+            }
+            let Some(icon) = icon else { continue };
+            let inside = row.expand(0.01).contains_rect(icon);
+            assert!(inside, "{id}: icon {icon:?} outside its row {row:?}");
+            assert!((icon.min.x - (row.min.x + 6.0)).abs() < 0.01, "{id}: icon {icon:?} is not at the drawn icon's left edge in {row:?}");
+            assert!(icon.height() <= 14.01 && icon.height() > 0.0, "{id}: icon {icon:?}");
+        }
+        let Some((last, _)) = rows.last() else { panic!("no History rows") };
+        let last = last.clone();
+        d.ok("ui.scroll", json!({"id": last, "dy": -7.0}));
+        d.frames(3);
+    }
+    assert!(clipped > 0, "no row was ever partly scrolled out");
+}
+
 /// The wheel over a tab strip switches that group's tab: down = next, up = previous, one tab per
 /// notch, smaller trackpad steps adding up to a notch, stopping at the ends. Over the panel's
 /// content the wheel leaves the tabs alone.
 #[test]
 fn wheel_over_a_tab_strip_switches_tabs() {
-    use craft_ui::docking::Node;
+    use craft_behavior::dock::Node;
     use filmcraft_ui_egui::dock::PanelKind;
     fn shown(d: &mut Driver) -> PanelKind {
         fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Tabs { panels, active, .. } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
                 Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
                 _ => None,
             }
@@ -466,7 +418,7 @@ fn events_and_progress_panels() {
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Events"}));
     d.frames(2);
     // a failed command shows up as an error row
-    let r = d.call("engine.execute", json!({"command": "clip.rename", "params": {}}));
+    let r = d.call("engine.execute", json!({"command": "presets.rename", "params": {}}));
     assert_eq!(r["ok"], json!(false));
     d.frames(2);
     let rows = d.ids("events.row.");
@@ -777,9 +729,11 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     let history = d.exec("history.list", json!({}));
     let revision = d.app().session.revision;
 
-    d.ok("ui.click", json!({"id":"panel.tab.Project", "button":"middle"}));
+    // The dock closes a tab by a middle click only where its tabs show close buttons, which
+    // FilmCraft's do not: the inactive tab closes from its panel command instead.
+    d.ok("ui.panel.close", json!({"panel": "Project"}));
     d.frames(3);
-    assert!(!d.has("panel.tab.Project"), "middle-click closes the inactive tab");
+    assert!(!d.has("panel.tab.Project"), "closing the inactive tab removes it");
     assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
     assert_eq!(d.exec("state.inspect", json!({})), state);
     assert_eq!(d.exec("history.list", json!({})), history);
@@ -791,7 +745,7 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
 
 /// #2329: in the Effects panel what a folder holds is indented under it: an effect's label starts
 /// right of its sub-folder's, a sub-folder's right of its top folder's, and the same for presets
-/// and Lumetri presets.
+/// and Color Grading presets.
 #[test]
 fn effects_are_indented_under_their_folders() {
     fn text_x(d: &mut Driver, text: &str) -> f32 {
@@ -808,7 +762,9 @@ fn effects_are_indented_under_their_folders() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Effects"}));
     d.frames(3);
-    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Presets", "Lumetri Presets", "Lumetri Presets/Monochrome"] {
+    // Presets is opened last: its Import/Scan rows push the Color Grading sub-folders below the
+    // panel's visible area, where they can no longer be clicked.
+    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Color Grading Presets", "Color Grading Presets/Monochrome", "Presets"] {
         d.click(&format!("effects.folder.{folder}"));
     }
     d.frames(2);
@@ -818,7 +774,7 @@ fn effects_are_indented_under_their_folders() {
         ("Video Effects", "Blur & Sharpen"),
         ("Blur & Sharpen", "Gaussian Blur"),
         ("Presets", preset.as_str()),
-        ("Lumetri Presets", "Monochrome"),
+        ("Color Grading Presets", "Monochrome"),
         ("Monochrome", lumetri),
     ] {
         let (a, b) = (text_x(&mut d, outer), text_x(&mut d, inner));
@@ -826,22 +782,50 @@ fn effects_are_indented_under_their_folders() {
     }
 }
 
+/// #2719: opening the Presets folder scans `<data dir>/Effect Presets`, so a preset file copied
+/// there while the app is running shows up without choosing Scan or restarting.
+#[test]
+fn opening_presets_folder_scans_the_library() {
+    let data = tempfile::tempdir().unwrap();
+    let mut session = demo_session();
+    session.presets.set_dir(data.path());
+    let library = session.presets.library_dir().unwrap();
+    let mut d = Driver::with(session);
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+
+    let name = "Dropped While Running";
+    let mut preset = serde_json::to_value(&d.app().session.presets.all()[0]).unwrap();
+    preset["name"] = json!(name);
+    let file = json!({"format": "filmcraft.effect-presets", "version": 1, "presets": [preset]});
+    std::fs::write(library.join("dropped.json"), serde_json::to_vec(&file).unwrap()).unwrap();
+    d.frames(2);
+    assert!(!d.app().session.presets.all().iter().any(|p| p.name == name), "nothing scans before the folder opens");
+
+    d.click("effects.folder.Presets");
+    assert!(d.app().session.presets.all().iter().any(|p| p.name == name), "opening Presets loads the dropped file");
+    assert!(d.ids("effects.preset.").iter().any(|id| id.ends_with(name)), "{:?}", d.ids("effects.preset."));
+}
+
+#[test]
+fn effects_search_matches_turkish_casing() {
+    let mut d = Driver::demo();
+    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "tr"}));
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    for query in ["IŞIK", "ışık", "Işık"] {
+        d.ok("ui.set", json!({"effectsSearch": query}));
+        d.frames(2);
+        assert!(d.has("effects.item.light_leaks"), "query `{query}` through Effects search caller must find `light_leaks`");
+    }
+}
+
 /// The font of the first run of every text shape drawn this frame, with the text, position and colour.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Pos2, egui::FontId, egui::Color32)> {
-    fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Pos2, egui::FontId, egui::Color32)>) {
-        match s {
-            egui::Shape::Text(t) => {
-                if let Some(sec) = t.galley.job.sections.first() {
-                    out.push((t.galley.text().to_string(), t.pos, sec.format.font_id.clone(), sec.format.color));
-                }
-            }
-            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    d.harness.output().shapes.iter().for_each(|c| walk(&c.shape, &mut out));
-    out
+    painted_texts(&d.harness)
+        .iter()
+        .filter_map(|t| t.galley.job.sections.first().map(|sec| (t.galley.text().to_string(), t.pos, sec.format.font_id.clone(), sec.format.color)))
+        .collect()
 }
 
 // Regression test for #130: the big blue timecodes over the timeline and under the monitors were
@@ -895,4 +879,46 @@ fn menu_bar_menus_use_the_13pt_menu_text() {
             .unwrap_or_else(|| panic!("`{label}` is not drawn in {rect:?}"));
         assert_eq!(font.size, 13.0, "`{label}` in the File menu");
     }
+}
+
+/// #3669: opening a clip in the Source monitor must also focus it, so Space plays that clip.
+#[test]
+fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.click("panel.tab.Project");
+    // what a double-click on a Project item runs
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert_eq!(d.app().session.state.source_item, Some(a));
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source, "Source takes focus");
+    assert!(!d.app().source_playback.clock.playing);
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
+}
+
+/// #3669: a closed Source panel is reopened (not left hidden) when a clip opens in it.
+#[test]
+fn opening_a_clip_in_source_reopens_a_closed_source_panel() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.ok("ui.panel.close", json!({"panel": PanelKind::Source.id()}));
+    d.frames(2);
+    assert!(!d.app().ui.dock.contains(&PanelKind::Source), "Source is closed");
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert!(d.app().ui.dock.contains(&PanelKind::Source), "Source is docked again");
+    assert_eq!(d.app().ui.focused, PanelKind::Source);
+}
+
+/// #3669: another maximized panel no longer hides the Source monitor that just got focus.
+#[test]
+fn opening_a_clip_in_source_clears_another_panels_maximize() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.app().ui.keys.maximized = Some(PanelKind::Project);
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert_eq!(d.app().ui.keys.maximized, None, "the maximize is cleared so Source is visible");
+    assert_eq!(d.app().ui.focused, PanelKind::Source);
 }

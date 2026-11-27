@@ -33,11 +33,12 @@ impl StreamResampler {
         (self.from, self.to)
     }
 
-    /// The source frame whose sample lands at (or just before) output frame `out`.
-    fn source_index(&self, out: i64) -> (i64, f32) {
+    /// The source frame whose sample lands at (or just before) output frame `out`, and the
+    /// remainder of the exact position in units of `1 / to` source frames.
+    fn source_index(&self, out: i64) -> (i64, i64) {
         let p = out as i128 * self.from as i128;
         let to = self.to as i128;
-        (p.div_euclid(to) as i64, (p.rem_euclid(to) as f64 / to as f64) as f32)
+        (p.div_euclid(to) as i64, p.rem_euclid(to) as i64)
     }
 
     /// Output frames `[out, out + n)`, planar. `pull(start, frames)` returns source frames
@@ -47,7 +48,7 @@ impl StreamResampler {
         if n == 0 {
             return vec![Vec::new(); self.held.len().max(1)];
         }
-        let (first, _) = self.source_index(out);
+        let (first, first_rem) = self.source_index(out);
         let (last, _) = self.source_index(out.saturating_add(n as i64 - 1));
         // interpolation reads source frames first - 1 ..= last
         if self.next_out != Some(out) || self.held.is_empty() {
@@ -67,8 +68,11 @@ impl StreamResampler {
             }
         }
         let mut dst = vec![vec![0.0f32; n]; self.held.len()];
-        for (i, frame) in (out..).take(n).enumerate() {
-            let (s, frac) = self.source_index(frame);
+        let to = self.to as i64;
+        let (step, rem_step) = ((self.from / self.to) as i64, (self.from % self.to) as i64);
+        let (mut s, mut rem) = (first, first_rem);
+        for i in 0..n {
+            let frac = (rem as f64 / to as f64) as f32;
             // held starts at first - 1, so the earlier frame is always held
             let k = usize::try_from(s - self.held_start).unwrap_or(0);
             for (d, h) in dst.iter_mut().zip(&self.held) {
@@ -77,6 +81,12 @@ impl StreamResampler {
                 if let Some(x) = d.get_mut(i) {
                     *x = a + (b - a) * frac;
                 }
+            }
+            s = s.wrapping_add(step);
+            rem += rem_step;
+            if rem >= to {
+                rem -= to;
+                s = s.wrapping_add(1);
             }
         }
         // keep what the next block can still read: from its first frame - 1 on
@@ -129,6 +139,80 @@ mod tests {
             for blocks in [&[512][..], &[333], &[1, 7, 512, 64]] {
                 let (cut, _) = convert(from, to, blocks, 20_000);
                 assert_eq!(cut, whole, "{from}→{to} in blocks {blocks:?}");
+            }
+        }
+    }
+
+    /// `process` as it was with one i128 division per output sample.
+    fn reference_process(r: &mut StreamResampler, out: i64, n: usize, mut pull: impl FnMut(i64, usize) -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+        let (from, to) = (r.from as i128, r.to as i128);
+        let index = |out: i64| {
+            let p = out as i128 * from;
+            (p.div_euclid(to) as i64, (p.rem_euclid(to) as f64 / to as f64) as f32)
+        };
+        if n == 0 {
+            return vec![Vec::new(); r.held.len().max(1)];
+        }
+        let (first, _) = index(out);
+        let (last, _) = index(out.saturating_add(n as i64 - 1));
+        if r.next_out != Some(out) || r.held.is_empty() {
+            r.held_start = first - 1;
+            r.held.clear();
+        }
+        let held_end = r.held_start + r.held.first().map_or(0, Vec::len) as i64;
+        if last + 1 > held_end {
+            let want = ((last + 1 - held_end) as usize).min(MAX_RESAMPLE_SOURCE_SPAN);
+            let got = pull(held_end, want);
+            if r.held.is_empty() {
+                r.held = vec![Vec::new(); got.len().max(1)];
+            }
+            for (c, h) in r.held.iter_mut().enumerate() {
+                let src = got.get(c).map(Vec::as_slice).unwrap_or_default();
+                h.extend((0..want).map(|i| src.get(i).copied().unwrap_or(0.0)));
+            }
+        }
+        let mut dst = vec![vec![0.0f32; n]; r.held.len()];
+        for (i, frame) in (out..).take(n).enumerate() {
+            let (s, frac) = index(frame);
+            let k = usize::try_from(s - r.held_start).unwrap_or(0);
+            for (d, h) in dst.iter_mut().zip(&r.held) {
+                let a = k.checked_sub(1).and_then(|j| h.get(j)).copied().unwrap_or(0.0);
+                let b = h.get(k).copied().unwrap_or(0.0);
+                if let Some(x) = d.get_mut(i) {
+                    *x = a + (b - a) * frac;
+                }
+            }
+        }
+        let (next_first, _) = index(out.saturating_add(n as i64));
+        let drop = (next_first - 1 - r.held_start).clamp(0, r.held.first().map_or(0, Vec::len) as i64) as usize;
+        for h in &mut r.held {
+            h.drain(..drop);
+        }
+        r.held_start += drop as i64;
+        r.next_out = Some(out.saturating_add(n as i64));
+        dst
+    }
+
+    #[test]
+    fn stepped_source_positions_are_bit_identical_to_per_sample_division() {
+        let bits = |b: &[Vec<f32>]| b.iter().map(|c| c.iter().map(|v| v.to_bits()).collect::<Vec<_>>()).collect::<Vec<_>>();
+        for (from, to) in
+            [(48_000, 44_100), (44_100, 48_000), (96_000, 48_000), (48_000, 48_000), (48_000, 96_000), (44_100, 22_050), (7, 384_000), (176_400, 1_001)]
+        {
+            let (mut new, mut old) = (StreamResampler::new(from, to), StreamResampler::new(from, to));
+            let mut k = 0;
+            for start in [0i64, -5_000, 1_000_000_007, -3, i64::MAX / 2_000_000] {
+                let mut pos = start;
+                for _ in 0..12 {
+                    let n = [1, 7, 333, 512, 64][k % 5];
+                    k += 1;
+                    let (mut pa, mut pb) = (Vec::new(), Vec::new());
+                    let a = new.process(pos, n, sine(440.0, from, &mut pa));
+                    let b = reference_process(&mut old, pos, n, sine(440.0, from, &mut pb));
+                    assert_eq!(bits(&a), bits(&b), "{from}→{to} at {pos} + {n}");
+                    assert_eq!(pa, pb);
+                    pos += n as i64;
+                }
             }
         }
     }

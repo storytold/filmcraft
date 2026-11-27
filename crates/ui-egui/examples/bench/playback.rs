@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use filmcraft_engine::Session;
 use filmcraft_project::{ItemId, ParamValue, Project, SequenceSettings, TrackKind, find_effect, resolve_auto_points};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
-use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
+use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, Lookback, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
 use serde_json::{Value, json};
 
 use crate::fixtures::fixture;
@@ -119,7 +119,8 @@ pub struct Display {
 impl Display {
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
-            let instance = eframe::wgpu::Instance::default();
+            // wgpu's instance environment variables apply (`WGPU_BACKEND`, ...), as for the app's window
+            let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle().with_env());
             let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
             adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
                 let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
@@ -136,7 +137,10 @@ impl Display {
     }
 
     fn target(&self, seq: ItemId) -> Target {
-        if self.gpu.is_some() { Target::SequencePlan(seq) } else { Target::Sequence(seq) }
+        match &self.gpu {
+            Some((c, _)) => Target::SequencePlan(seq, c.caps()),
+            None => Target::Sequence(seq),
+        }
     }
 
     /// Show the exact frame, or the nearest earlier cached one; returns whether it was exact.
@@ -147,7 +151,7 @@ impl Display {
         if let Some((comp, dev)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, Lookback::backward(6)))
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
@@ -813,10 +817,15 @@ pub fn cli_main() {
                         // Live play (effects rendered per frame), render previews, then play twice.
                         reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("live")));
                         let t0 = Instant::now();
-                        s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).expect("render previews");
-                        eprintln!("  rendered previews in {:.1}s (load {})", t0.elapsed().as_secs_f64(), load_avg());
-                        reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("1st after")));
-                        reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("2nd after")));
+                        // every segment, not only red ones: the bench compares playing previews with playing live
+                        match s.execute("sequence.renderInToOut", json!({"wait": true})) {
+                            Ok(_) => {
+                                eprintln!("  rendered previews in {:.1}s (load {})", t0.elapsed().as_secs_f64(), load_avg());
+                                reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("1st after")));
+                                reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("2nd after")));
+                            }
+                            Err(e) => eprintln!("  rendering previews failed, so no runs after it: {e}"),
+                        }
                         s.previews.delete(None);
                     }
                     _ => reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("play"))),

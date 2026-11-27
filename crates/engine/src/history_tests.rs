@@ -64,6 +64,69 @@ fn clear_history_forgets_every_step_and_keeps_the_project() {
     assert_eq!(*s.project, *project);
 }
 
+/// The command ids stored with the undo and redo steps, oldest first.
+fn origins(s: &Session) -> (Vec<Option<&str>>, Vec<Option<&str>>) {
+    (s.history.undo.iter().map(|h| h.2.as_deref()).collect(), s.history.redo.iter().map(|h| h.2.as_deref()).collect())
+}
+
+/// Rename the project's root bin: an undoable edit made without a command.
+fn rename(s: &mut Session, name: &str) -> crate::Result<()> {
+    s.edit("Rename", |p, _| {
+        p.root.name = name.to_string();
+        Ok(())
+    })
+}
+
+/// Each undo step keeps the id of the command that made it (the History panel draws its icon),
+/// through undo and redo, the history limit, merged and grouped steps. An edit made outside a
+/// command has none.
+#[test]
+fn undo_steps_keep_the_command_that_made_them() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.history.clear();
+    s.execute("file.newBin", json!({"name": "A"})).unwrap();
+    s.execute("markers.add", json!({})).unwrap();
+    assert_eq!(origins(&s), (vec![Some("file.newBin"), Some("markers.add")], vec![]));
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(origins(&s), (vec![Some("file.newBin")], vec![Some("markers.add")]), "undo keeps the command");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(origins(&s), (vec![Some("file.newBin"), Some("markers.add")], vec![]), "redo keeps the command");
+
+    rename(&mut s, "Direct").unwrap();
+    assert_eq!(origins(&s).0.last(), Some(&None), "an edit outside a command has no command");
+    assert_eq!(s.command_origin, None, "the command is forgotten when it ends");
+
+    s.history.limit = 3;
+    s.execute("file.newBin", json!({"name": "B"})).unwrap();
+    assert_eq!(origins(&s).0, vec![Some("markers.add"), None, Some("file.newBin")], "the oldest step goes, the rest keep theirs");
+
+    s.command_origin = Some("test.merged".into());
+    for name in ["M1", "M2"] {
+        s.edit_merged("Merged", "merge-key", |p, _| {
+            p.root.name = name.to_string();
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert_eq!(origins(&s).0.last(), Some(&Some("test.merged")), "a merged step keeps its command");
+
+    s.command_origin = Some("test.group".into());
+    let steps = s.history.undo.len();
+    s.edit_group("Group", |s| {
+        rename(s, "G1")?;
+        rename(s, "G2")
+    })
+    .unwrap();
+    s.command_origin = None;
+    assert_eq!(s.history.undo.len(), steps, "the group is one step and the limit drops the oldest");
+    assert_eq!(origins(&s).0.last(), Some(&Some("test.group")), "a grouped step keeps its command");
+    assert_eq!(s.history.undo.last().map(|h| h.0.as_str()), Some("Group"));
+}
+
 #[test]
 fn history_commands_ignore_unexpected_parameters() {
     for p in [json!(null), json!([1, 2]), json!({"deleted": -1}), json!("x")] {

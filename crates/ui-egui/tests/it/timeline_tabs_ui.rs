@@ -3,101 +3,28 @@
 //! that do not fit are in a list; a project reopens with its tabs. Premiere's behaviour was
 //! observed in Premiere Pro 26.5.2.
 
-use std::path::PathBuf;
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_snapshot, with_snapshots};
 use filmcraft_engine::project::ItemId;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    /// `FILMCRAFT_UI_SNAPSHOT_DIR`: where to write PNGs of the window (rendered with wgpu).
-    snapshots: Option<PathBuf>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
     fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // the control channel's clicks and keys enter through the input hook
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
+        <Self as Launch>::open(demo_session(), with_snapshots(builder()))
     }
 }
 
 impl Driver {
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(3);
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                img.save(dir.join(format!("{name}.png"))).unwrap();
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
+        save_snapshot(self, 3, &format!("{name}.png"));
     }
 
     fn rect(&mut self, id: &str) -> Option<[f64; 4]> {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id))?.clone();
-        let r = e["rect"].as_array().unwrap();
-        Some([r[0].as_f64().unwrap(), r[1].as_f64().unwrap(), r[2].as_f64().unwrap(), r[3].as_f64().unwrap()])
+        self.element_rect(id)
     }
 
     fn has(&mut self, id: &str) -> bool {

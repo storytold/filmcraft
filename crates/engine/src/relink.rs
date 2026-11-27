@@ -27,6 +27,9 @@ use crate::{EngineError, MediaPool, Result, Services, Session};
 /// Bytes hashed at each end of the file.
 pub const FINGERPRINT_SPAN: usize = 1 << 20;
 
+/// A command-visible reason that lets the Link Media UI offer an explicit review step.
+pub const SCRIPT_MARKS_RELINK_REVIEW: &str = "Script marks require review";
+
 /// 64-bit hash of `size`, `head` and `tail` (a simple multiply–xorshift over 8-byte words).
 pub fn fingerprint(size: u64, head: &[u8], tail: &[u8]) -> u64 {
     let mut h: u64 = 0x243f_6a88_85a3_08d3 ^ size.wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -320,13 +323,42 @@ struct Plan {
     cand: Candidate,
 }
 
+fn script_users(s: &Session, media: ItemId) -> Vec<ItemId> {
+    s.project.items.keys().copied().filter(|source| s.project.resolve_media(*source).is_some_and(|(root, _, _)| root == media)).collect()
+}
+
+fn needs_script_review(s: &Session, media: ItemId, identity: Option<MediaIdentity>) -> bool {
+    let users = script_users(s, media);
+    s.project.items.values().filter_map(|item| item.as_script()).any(|doc| doc.unverified_marked_takes(&users, identity) > 0)
+}
+
 /// Apply planned relinks as one undo step.
-fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -> Result<Vec<Value>> {
+fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, confirmed_item: Option<ItemId>, label: &str) -> Result<Vec<Value>> {
+    // A Script take, like a sequence clip, refers to a Project item. Resolve all subclips
+    // before changing any media so both direct and nested references are checked together.
+    let script_sources: Vec<_> = plans
+        .iter()
+        .map(|plan| {
+            let sources = script_users(s, plan.item);
+            (sources, plan.cand.identity)
+        })
+        .collect();
+    if plans.iter().zip(&script_sources).any(|(plan, (sources, identity))| {
+        Some(plan.item) != confirmed_item
+            && s.project.items.values().filter_map(|item| item.as_script()).any(|doc| doc.unverified_marked_takes(sources, *identity) > 0)
+    }) {
+        return Err(bad(
+            "media.relink",
+            format!(
+                "{SCRIPT_MARKS_RELINK_REVIEW}: the file is not identity-confirmed as the same footage; retry with `confirmScriptSameFootage:true` only after review, or rebind the Script take"
+            ),
+        ));
+    }
     let rows: Vec<Value> = plans.iter().map(|p| json!({"item": p.item.0, "path": p.cand.path})).collect();
     let sources: Vec<(ItemId, String, filmcraft_media::SharedSource)> =
         plans.iter().filter_map(|p| p.cand.source.clone().map(|src| (p.item, p.cand.path.clone(), src))).collect();
     s.edit(label, |proj, _| {
-        for p in &plans {
+        for (p, (users, identity)) in plans.iter().zip(&script_sources) {
             let Some(m) = proj.item_mut(p.item).and_then(|i| i.as_media_mut()) else { continue };
             let old_tc = m.info.start_timecode;
             let rate = m.info.frame_rate();
@@ -339,12 +371,20 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             if let Some(info) = &p.cand.info {
                 let new_tc = info.start_timecode;
                 if align_timecode && let (Some(a), Some(b)) = (old_tc, new_tc) {
-                    // what was at old timecode a + t sits at new media time t + (a - b)
-                    shift = rate.tick_of(b - a);
+                    // what was at old timecode a + t sits at new media time t + (a - b), each
+                    // timecode in its own file's frames (an EDL item's are at the list's rate)
+                    shift = info.frame_rate().tick_of(b) - rate.tick_of(a);
                 }
                 m.info = info.clone();
             }
             proj.shift_media_time(p.item, shift);
+            for item in proj.items.values_mut() {
+                if let ItemKind::Script(doc) = &mut item.kind
+                    && doc.slates.iter().flat_map(|slate| &slate.takes).any(|take| take.source.is_some_and(|source| users.contains(&source)))
+                {
+                    std::sync::Arc::make_mut(doc).relink_sources(users, *identity);
+                }
+            }
             if p.cand.info.is_some() {
                 // The item's size is now the file's own. Clips that came from an interchange import
                 // while the file was missing still have an "auto" (NaN) anchor waiting for it:
@@ -426,11 +466,19 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         c.source = Some(src);
     }
     let mut plans = vec![Plan { item, cand: c }];
+    let mut needs_review = Vec::new();
     if o.relink_others {
-        plans.extend(others(s, item, &old, &path, &o));
+        for plan in others(s, item, &old, &path, &o) {
+            if needs_script_review(s, plan.item, plan.cand.identity) {
+                needs_review.push(json!({"item": plan.item.0, "path": plan.cand.path, "reason": SCRIPT_MARKS_RELINK_REVIEW}));
+            } else {
+                plans.push(plan);
+            }
+        }
     }
-    let rows = apply(s, plans, o.align_timecode, "Link Media")?;
-    Ok(json!({"relinked": rows, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
+    let confirmed_item = bool_p(p, "confirmScriptSameFootage").unwrap_or(false).then_some(item);
+    let rows = apply(s, plans, o.align_timecode, confirmed_item, "Link Media")?;
+    Ok(json!({"relinked": rows, "needsReview": needs_review, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// `media.autoRelink`: `{from, to}` remaps a folder prefix; `{folder}` searches a folder tree.
@@ -469,9 +517,18 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("media.autoRelink", "need `from` and `to`, or `folder`"));
     }
-    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, "Link Media")? };
+    let mut needs_review = Vec::new();
+    plans.retain(|plan| {
+        if needs_script_review(s, plan.item, plan.cand.identity) {
+            needs_review.push(json!({"item": plan.item.0, "path": plan.cand.path, "reason": SCRIPT_MARKS_RELINK_REVIEW}));
+            false
+        } else {
+            true
+        }
+    });
+    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, None, "Link Media")? };
     refresh(s);
-    Ok(json!({"relinked": rows, "failed": failed, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
+    Ok(json!({"relinked": rows, "failed": failed, "needsReview": needs_review, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// Files under `root` by lower-case file name (breadth-first, at most `limit` files).
@@ -530,7 +587,11 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
                 continue;
             }
             for f in paths {
-                if let Ok(c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                if let Ok(mut c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                    // results are listed, not played: holding every candidate's decoder (and a
+                    // decoded still for each alias of one image) kept them all in memory;
+                    // relinking reopens the chosen file
+                    c.source = None;
                     cands.push(c);
                 }
             }
@@ -642,6 +703,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"missing": list}))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.status",
@@ -658,6 +720,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(Value::Array(ids.into_iter().filter_map(|i| status_json(s, i)).collect()))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.linkMedia",
@@ -672,16 +735,18 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"missing": list}))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.relink",
             label: "Relink Media",
             menu: &[],
             shortcut: None,
-            params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
+            params: r#"{"item":id,"path":str,"force":bool=false,"confirmScriptSameFootage":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
             enabled: always,
             run: relink,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.refreshChanged",
@@ -692,6 +757,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: crate::media_watch::refresh_changed,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.replaceFootage",
@@ -707,6 +773,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 relink(s, &q)
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.autoRelink",
@@ -717,6 +784,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: auto_relink,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.search",
@@ -727,6 +795,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: |s, p| search(s, p),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.makeOffline",
@@ -744,21 +813,38 @@ pub fn commands() -> Vec<CommandSpec> {
             },
             run: make_offline,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.offlineAll",
             label: "Offline All",
             menu: &[],
             shortcut: None,
-            params: "{}  (leave every missing file offline and close the Link Media dialog)",
+            params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
-            run: |s, _| {
-                s.offline.prompt = false;
-                Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
-            },
-            journal: false,
+            run: offline_all,
+            journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
+}
+
+/// `media.offlineAll`: mark every missing item offline on purpose, so the project remembers the
+/// choice and reopening it does not ask again (as in Premiere). Relinking clears the mark.
+fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
+    let ids: Vec<ItemId> = s.offline.missing.iter().copied().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline)).collect();
+    if !ids.is_empty() {
+        s.edit("Offline All", |proj, _| {
+            for i in &ids {
+                if let Some(m) = proj.item_mut(*i).and_then(|it| it.as_media_mut()) {
+                    m.offline = true;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    s.offline.prompt = false;
+    Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// After a project opens: find missing files and ask for them.
@@ -770,9 +856,11 @@ pub fn on_open(s: &mut Session) -> usize {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
         s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
-    s.offline.prompt = !s.offline.missing.is_empty();
-    if !s.offline.missing.is_empty() {
-        s.toast(format!("{} media file(s) are missing; File > Link Media… reconnects them", s.offline.missing.len()));
+    // Items made offline on purpose (Make Offline / Offline All) don't ask again.
+    let missing = list.iter().filter(|m| m.status == "missing").count();
+    s.offline.prompt = missing > 0;
+    if missing > 0 {
+        s.toast(format!("{missing} media file(s) are missing; File > Link Media… reconnects them"));
     }
     list.len()
 }

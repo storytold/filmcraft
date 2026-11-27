@@ -4,22 +4,15 @@
 //! transition where it was until the release deletes it (Premiere) — an Option-drag adds a
 //! traveling copy while the original stays.
 
+use crate::support::{builder, demo_session, with_snapshots};
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
-fn step(h: &mut Harness<'static, FilmcraftApp>) {
-    let ctx = h.ctx.clone();
-    let mut raw = std::mem::take(h.input_mut());
-    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
-    *h.input_mut() = raw;
-    ctx.request_repaint();
-    h.step();
-}
+pub(super) use super::support::step_repaint as step;
 
-fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
+pub(super) fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
     h.input_mut().events.push(Event::PointerMoved(pos));
     if let Some(pressed) = pressed {
         h.input_mut().events.push(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -27,18 +20,15 @@ fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bo
     step(h);
 }
 
-fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
+pub(super) fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
     let [x, y, w, height] = h.state().auto.elements.iter().find(|e| e.id == id).unwrap_or_else(|| panic!("missing {id}")).rect;
     Rect::from_min_size(pos2(x, y), vec2(w, height))
 }
 
-fn build(s: Session) -> Harness<'static, FilmcraftApp> {
-    let app = FilmcraftApp::new(s);
-    let mut builder = Harness::builder().with_size(vec2(1600.0, 980.0)).with_max_steps(10_000);
-    if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
-        builder = builder.wgpu();
-    }
-    let mut h = builder.build_eframe(move |_cc| app);
+/// `app` in the usual window (wgpu when snapshots are on) after its first frames, the Timeline at
+/// 60 px a second.
+pub(super) fn zoomed(app: FilmcraftApp) -> Harness<'static, FilmcraftApp> {
+    let mut h = crate::support::build(with_snapshots(builder()), app);
     for _ in 0..4 {
         step(&mut h);
     }
@@ -52,9 +42,8 @@ fn build(s: Session) -> Harness<'static, FilmcraftApp> {
 
 /// A sequence with a cross dissolve: between two clips at 0..48f and 48..96f, or a fade-in on the
 /// single clip at 0..48f when `single`.
-fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+pub(super) fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
+    let mut s = demo_session();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();
     let rate = s.sequence_rate();
     for (at, frames) in if single { vec![(0, 48)] } else { vec![(0, 48), (48, 48)] } {
@@ -63,13 +52,12 @@ fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
     let seq = s.active_sequence().unwrap().clone();
     let clip = seq.video_tracks[0].items[if single { 0 } else { 1 }].id;
     s.execute("effects.apply", json!({"effect": "cross_dissolve", "clip": clip.0, "edge": "in"})).unwrap();
-    build(s)
+    zoomed(FilmcraftApp::new(s))
 }
 
 /// XYZ with a cut transition on each cut: X↔Y and Y↔Z.
 fn harness_xyz() -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let mut s = demo_session();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();
     let rate = s.sequence_rate();
     for (at, frames) in [(0, 48), (48, 48), (96, 48)] {
@@ -80,7 +68,7 @@ fn harness_xyz() -> Harness<'static, FilmcraftApp> {
     for clip in [y, z] {
         s.execute("effects.apply", json!({"effect": "cross_dissolve", "clip": clip.0, "edge": "in"})).unwrap();
     }
-    build(s)
+    zoomed(FilmcraftApp::new(s))
 }
 
 /// A drag preview that keeps a transition's offset to its clip (it follows, not lags), and a drop
@@ -235,4 +223,51 @@ fn dragging_one_side_to_another_track_drops_the_transition() {
     let q1 = h.state().session.active_sequence().unwrap().clone();
     assert!(q1.video_tracks[0].transitions.is_empty(), "the clip moved to V2 and its transition was dropped");
     assert!(q1.video_tracks.iter().any(|t| t.items.iter().any(|i| i.id == a0.id && t.id == v2)), "the clip landed on V2");
+}
+
+/// A fade rides with its clip even onto another track: the preview draws it on the destination
+/// row while dragging (it used to vanish until the drop — its home row skipped it and the
+/// destination row never drew it), and the drop puts it there.
+#[test]
+fn dragging_a_clip_to_another_track_carries_its_fade_in_the_preview() {
+    let mut h = harness(true);
+    let q0 = h.state().session.active_sequence().unwrap().clone();
+    // a clip far to the right on V2 marks that track's row
+    let (v2, rate) = (q0.video_tracks[1].id, h.state().session.sequence_rate());
+    h.state_mut().session.execute("timeline.place", json!({"item":5,"time":rate.tick_of(200).0,"duration":rate.tick_of(24).0,"track": v2.0})).unwrap();
+    step(&mut h);
+    let q0 = h.state().session.active_sequence().unwrap().clone();
+    let (a0, tr0) = (q0.video_tracks[0].items[0].clone(), q0.video_tracks[0].transitions[0].clone());
+    let (a_rect, tr_rect, v2_rect) = (
+        rect(&h, &format!("timeline.clip.{}", a0.id.0)),
+        rect(&h, &format!("timeline.transition.{}", tr0.id.0)),
+        rect(&h, &format!("timeline.clip.{}", q0.video_tracks[1].items[0].id.0)),
+    );
+    assert_eq!(tr0.to, Some(a0.id), "the fade-in sits on the dragged clip");
+    let gap_before = tr_rect.min.x - a_rect.min.x;
+    let y = a_rect.center().y;
+    // press clear of the fade band (it covers the left 75 px of the clip) and of the edge zones
+    let x0 = a_rect.left() + 110.0;
+    pointer(&mut h, pos2(x0, y), Some(true));
+    for i in 1..=6 {
+        // move into the V2 row first (track crossing), so the pointer ends up there
+        let p = pos2(x0 + 20.0 * i as f32, y + (v2_rect.center().y - y) * i as f32 / 6.0);
+        pointer(&mut h, p, None);
+    }
+    // mid-drag: the fade previews where the drop will put it, on the V2 row, still keeping its
+    // offset to the clip
+    let tr_mid = rect(&h, &format!("timeline.transition.{}", tr0.id.0));
+    let clip_mid = rect(&h, &format!("timeline.clip.{}", a0.id.0));
+    // a transition's band starts 17 px into its row (the clip body starts 1 px past the row edges)
+    let band = v2_rect.min.y + 16.0;
+    assert!((tr_mid.min.y - band).abs() < 1.0, "fade not previewed on the destination row: {tr_mid:?} (band at {band})");
+    let gap_mid = tr_mid.min.x - clip_mid.min.x;
+    assert!((gap_mid - gap_before).abs() < 1.0, "fade lagged: gap {gap_before} -> {gap_mid}");
+    pointer(&mut h, pos2(x0 + 140.0, v2_rect.center().y), Some(false));
+    let q1 = h.state().session.active_sequence().unwrap().clone();
+    assert!(q1.video_tracks[0].transitions.is_empty(), "the fade left V1");
+    let v2t = q1.video_tracks.iter().find(|t| t.id == v2).unwrap();
+    assert!(v2t.items.iter().any(|i| i.id == a0.id), "the clip landed on V2");
+    let (a1, tr1) = (v2t.items.iter().find(|i| i.id == a0.id).unwrap(), &v2t.transitions[0]);
+    assert_eq!(tr1.start.0 - tr0.start.0, a1.start.0 - a0.start.0, "the committed transition moved with the clip");
 }

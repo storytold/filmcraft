@@ -32,6 +32,9 @@ pub(super) fn breakout_to_mono(s: &mut Session, p: &Value) -> Result<Value> {
                 mm.markers.clear();
                 mm.proxy = None;
                 let id = pr.add_item(&format!("{} {suffix}", it.name), it.label, ItemKind::Media(Box::new(mm)), bin);
+                if let Some(copy) = pr.item_mut(id) {
+                    copy.custom_label_color = it.custom_label_color;
+                }
                 made.push(id);
             }
         }
@@ -63,7 +66,9 @@ pub(super) fn extract_audio(s: &mut Session, p: &Value) -> Result<Value> {
                 .and_then(|x| std::path::Path::new(x).parent())
                 .map(|d| d.to_string_lossy().into_owned())
                 .or_else(|| match &m.media {
-                    MediaRef::File { path } => std::path::Path::new(path).parent().map(|d| d.to_string_lossy().into_owned()),
+                    MediaRef::File { path } => {
+                        s.media.follow(path).ok().and_then(|f| std::path::Path::new(&f).parent().map(|d| d.to_string_lossy().into_owned()))
+                    }
                     _ => None,
                 })
                 .ok_or_else(|| EngineError::Other("save the project first: extracted audio is written next to it".into()))?,

@@ -2,85 +2,18 @@
 //! Subclip, Frame Hold Options, Modify ▸ Audio Channels, the Close Project prompt, and nested
 //! menus (Clip ▸ Video Options ▸ Time Interpolation).
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, driver};
 use filmcraft_engine::project::{ItemKind, Label};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
-    fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // the control channel's clicks and keys enter through the input hook
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn menu(&mut self, id: &str) -> Value {
-        let r = self.ok("ui.menu.invoke", json!({"id": id}));
-        self.frames(3);
-        r
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn v1(&mut self, i: usize) -> filmcraft_engine::project::TrackItem {
         self.app().session.active_sequence().unwrap().video_tracks[0].items[i].clone()
     }
@@ -111,7 +44,7 @@ impl Driver {
 
 #[test]
 fn paste_attributes_dialog() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (a, b) = (d.v1(0), d.v1(2));
     d.exec("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "rotation", "value": 45.0}));
     d.exec("effects.setParam", json!({"clip": a.id.0, "effect": "opacity", "param": "opacity", "value": 25.0}));
@@ -143,9 +76,66 @@ fn paste_attributes_dialog() {
     assert_eq!(d.v1(2).effect("motion").unwrap().param("rotation").unwrap().value.as_f64(), Some(0.0));
 }
 
+/// #3789: the dialog says that ticked attributes are removed; an effect on the selected clip is
+/// offered ticked, unticking it keeps it, and OK with the defaults removes it.
+#[test]
+fn remove_attributes_dialog_removes_the_clips_effect() {
+    let mut d = Driver::demo();
+    let a = d.v1(0);
+    d.exec("effects.apply", json!({"clips": [a.id.0], "effect": "focus_blur"}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    // unticked: the effect stays
+    d.menu("edit.removeAttributes");
+    d.click("removeAttributes.effect.focus_blur");
+    d.click("removeAttributes.ok");
+    assert!(d.v1(0).effect("focus_blur").is_some(), "an unticked effect is kept");
+    // the defaults: removed
+    assert_eq!(d.menu("edit.removeAttributes")["dialog"], "removeAttributes");
+    let hint = d.ok("ui.elements", json!({"prefix": "removeAttributes.hint"}));
+    assert_eq!(hint[0]["label"], "Ticked attributes are removed from the selected clips.");
+    assert!(d.has("removeAttributes.effect.focus_blur"));
+    let params = d.app().ui.clip_dialog.as_ref().unwrap().params.clone();
+    assert_eq!(params["effects"], json!(["focus_blur"]), "the effect is offered ticked: {params}");
+    d.click("removeAttributes.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "closed on OK");
+    assert!(d.v1(0).effect("focus_blur").is_none(), "the effect is removed");
+}
+
+/// The effects Essential Sound adds are not offered: Remove Attributes keeps them, so a ticked box
+/// for one would promise a removal that does not happen. The same effect added by hand is offered.
+#[test]
+fn remove_attributes_dialog_leaves_out_essential_sound_effects() {
+    let mut d = Driver::demo();
+    let a1 = |d: &mut Driver| d.app().session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+    let clip = a1(&mut d).id;
+    d.exec("essentialSound.setType", json!({"clips": [clip.0], "type": "dialogue"}));
+    d.exec("essentialSound.set", json!({"clips": [clip.0], "values": {"repair.noise.on": true, "clarity.eq.on": true}}));
+    let essential: Vec<String> = a1(&mut d).effects.iter().filter(|e| e.essential).map(|e| e.effect.clone()).collect();
+    assert!(!essential.is_empty(), "Dialogue adds its effects");
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    let offered = d.app().ui.clip_dialog.as_ref().unwrap().params["effects"].clone();
+    assert_eq!(offered, json!([]), "Essential Sound's effects are not offered: {offered}");
+    for id in &essential {
+        assert!(!d.has(&format!("removeAttributes.effect.{id}")), "{id}");
+    }
+    d.click("removeAttributes.ok");
+    assert_eq!(a1(&mut d).effects.iter().filter(|e| e.essential).count(), essential.len(), "OK keeps them");
+    // the same effect added from the Effects panel is offered and removed
+    let manual = essential[0].clone();
+    d.exec("effects.apply", json!({"clips": [clip.0], "effect": manual}));
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["effects"], json!([manual]));
+    d.click("removeAttributes.ok");
+    let left = a1(&mut d);
+    assert_eq!(left.effects.iter().filter(|e| e.effect == manual).count(), 1, "the Essential Sound one stays");
+    assert!(left.effects.iter().filter(|e| e.effect == manual).all(|e| e.essential));
+}
+
 #[test]
 fn make_subclip_frame_hold_and_audio_channel_dialogs() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let ocean = d.item_named("Ocean_Sunset.mp4");
     d.exec("source.open", json!({"item": ocean}));
     d.exec("project.setMarks", json!({"item": ocean, "in": filmcraft_time::FrameRate::FPS_23_976.tick_of(24).0}));
@@ -187,7 +177,7 @@ fn make_subclip_frame_hold_and_audio_channel_dialogs() {
 
 #[test]
 fn close_project_prompt_and_nested_menus() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     // nested menu paths reach the menu list
     let menus = d.ok("ui.menu.list", json!({}));
     let item = menus.as_array().unwrap().iter().find(|m| m["id"] == "clip.timeInterpolation.frameBlending").unwrap().clone();
@@ -213,7 +203,7 @@ fn close_project_prompt_and_nested_menus() {
 
 #[test]
 fn subclip_in_the_source_monitor_and_project_menu() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let r24 = filmcraft_time::FrameRate::FPS_23_976;
     let ocean = d.item_named("Ocean_Sunset.mp4");
     d.exec("project.setMarks", json!({"item": ocean, "in": r24.tick_of(24).0, "out": r24.tick_of(71).0}));
@@ -244,6 +234,25 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     }
     let row = format!("project.item.{sub}");
     if d.has(&row) {
+        // next's dock gives the Project panel a shorter body than the old dock did: the row sits
+        // at the bottom of the list, under its horizontal scroll bar, so scroll it into view
+        let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
+        let p: Vec<f64> = panel
+            .as_array()
+            .and_then(|a| a.iter().find(|e| e["id"] == "panel.Project"))
+            .map_or_else(Vec::new, |e| e["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect());
+        assert_eq!(p.len(), 4, "the Project panel: {panel}");
+        let mut last = None;
+        for _ in 0..20 {
+            let item = d.ok("ui.elements", json!({"prefix": row.clone()}));
+            let y = item.as_array().and_then(|a| a.iter().find(|e| e["id"] == row.as_str())).and_then(|e| e["rect"][1].as_f64());
+            if y.is_none_or(|y| y <= p[1] + p[3] * 0.6) || last == y {
+                break;
+            }
+            last = y;
+            d.ok("ui.scroll", json!({"x": p[0] + p[2] / 2.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            d.frames(2);
+        }
         d.ok("ui.click", json!({"id": row, "button": "right"}));
         d.frames(3);
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
@@ -263,7 +272,7 @@ fn subclip_in_the_source_monitor_and_project_menu() {
 /// applies the speed typed there, Cancel leaves the clip alone.
 #[test]
 fn speed_duration_from_the_clip_menu_opens_the_dialog() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let c = d.v1(0);
     d.exec("timeline.select", json!({"clips": [c.id.0]}));
     d.ok("ui.click", json!({"id": format!("timeline.clip.{}", c.id.0), "button": "right"}));
@@ -289,11 +298,58 @@ fn speed_duration_from_the_clip_menu_opens_the_dialog() {
     assert_eq!(got.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
 }
 
+/// The Properties panel's speed footer opens Clip ▸ Speed/Duration… on click instead of doing
+/// nothing; Cancel leaves the clip alone.
+#[test]
+fn the_properties_speed_button_opens_the_speed_dialog() {
+    let mut d = Driver::demo();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(3);
+    assert!(d.has("properties.speed"), "the speed button is laid out");
+    // the demo project's panel is short: the footer sits below the fold (#1322)
+    d.ok("ui.scroll", json!({"id": "panel.Properties", "dy": -2000.0}));
+    d.frames(3);
+    d.click("properties.speed");
+    let dlg = d.app().ui.clip_dialog.clone().expect("the dialog opened");
+    assert_eq!(dlg.command, "clip.speedDuration");
+    assert_eq!(dlg.params["speed"], json!(100.0), "starts at the clip's speed");
+    d.click("speedDuration.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves the clip alone");
+}
+
+#[test]
+fn speed_duration_reopens_with_the_clips_reverse_state() {
+    let mut d = Driver::demo();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.exec("clip.speedDuration", json!({"speed": 200, "reverse": true}));
+    assert!(d.v1(0).reverse);
+
+    d.menu("clip.speedDuration");
+    let draft = d.app().ui.clip_dialog.as_ref().expect("the dialog opened");
+    assert_eq!(draft.params["reverse"], true, "uses the stored direction, not the positive speed magnitude");
+    assert_eq!(draft.params["speed"], 200.0);
+    d.click("speedDuration.cancel");
+    assert!(d.v1(0).reverse, "Cancel retains reverse playback");
+
+    d.menu("clip.speedDuration");
+    d.click("speedDuration.ok");
+    assert!(d.v1(0).reverse, "accepting unchanged settings retains reverse playback");
+    assert_eq!(d.v1(0).speed, 2.0);
+    d.menu("clip.speedDuration");
+    d.click("speedDuration.reverse");
+    d.click("speedDuration.ok");
+    assert!(!d.v1(0).reverse, "the checkbox can explicitly restore forward playback");
+}
+
 /// #786: the clip's right-click Label menu lists the labels by the user's names (with their
 /// colours, as Edit ▸ Label does) and each choice labels the clip.
 #[test]
 fn the_clip_menu_label_choices_use_the_user_names() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let key = filmcraft_engine::settings::label_id(Label::Iris);
     d.app().session.prefs.labels.colors.get_mut(&key).unwrap().name = "Interviews".into();
     let c = d.v1(0);
@@ -310,7 +366,7 @@ fn the_clip_menu_label_choices_use_the_user_names() {
 /// #1018: Scene Edit Detection… is in the clip's right-click menu and opens its dialog.
 #[test]
 fn scene_edit_detection_from_the_clip_menu_opens_the_dialog() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let c = d.v1(0);
     d.exec("timeline.select", json!({"clips": [c.id.0]}));
     d.ok("ui.click", json!({"id": format!("timeline.clip.{}", c.id.0), "button": "right"}));
@@ -325,7 +381,7 @@ fn scene_edit_detection_from_the_clip_menu_opens_the_dialog() {
 
 #[test]
 fn quitting_with_unsaved_changes_asks_to_save() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     d.edit();
     // the close is cancelled and the prompt asks instead
     d.request_close();
@@ -351,7 +407,7 @@ fn quitting_with_unsaved_changes_asks_to_save() {
 /// changes that closes the window through the prompt instead of quitting outright.
 #[test]
 fn native_menu_quit_with_unsaved_changes_asks_to_save() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     d.edit();
     let (tx, rx) = channel();
     d.app().command_inbox = Some(rx);
@@ -371,7 +427,7 @@ fn native_menu_quit_with_unsaved_changes_asks_to_save() {
 fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_ask() {
     let path = std::env::temp_dir().join(format!("fc-quit-save-{}.fcproj", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     d.app().session.path = None;
     d.edit();
     let picked = path.to_string_lossy().into_owned();
@@ -390,7 +446,7 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
     d.request_close();
     assert!(!d.sent(&egui::ViewportCommand::CancelClose));
     // the control channel's app.quit quits without the prompt
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     d.edit();
     d.ok("app.quit", json!({}));
     assert!(d.app().quit_confirmed);
@@ -400,7 +456,7 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
 /// Escape with no drag still closes it.
 #[test]
 fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let c = d.v1(0);
     d.exec("timeline.select", json!({"clips": [c.id.0]}));
     d.menu("clip.speedDuration");
@@ -424,7 +480,10 @@ fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
         for k in 1..=10 {
             send(egui::Event::PointerMoved(from + egui::vec2(4.0 * k as f32, 0.0)));
             if escape && k == 5 {
+                // a press and its release: the runtime reads a press of a key still down as a repeat, and a
+                // repeated Escape cancels nothing, so a press never let go would leave the dialog's Escape below
                 send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+                send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
             }
         }
         send(button(from + egui::vec2(40.0, 0.0), false));
@@ -441,9 +500,70 @@ fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
 }
 
 #[test]
+fn enter_confirms_and_submits_clip_dialog() {
+    let mut d = Driver::demo();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter closes the dialog and commits OK");
+    assert_eq!(d.v1(0).speed, 2.0, "the speed change was applied");
+}
+
+#[test]
+fn enter_on_focused_cancel_cancels_clip_dialog() {
+    let mut d = Driver::demo();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["speed"], json!(200.0));
+    d.ok("ui.focus", json!({"id": "speedDuration.cancel"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter on focused Cancel closes the dialog");
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves speed unchanged");
+}
+
+#[test]
+fn shortcuts_suppressed_while_clip_dialog_open() {
+    let mut d = Driver::demo();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+
+    // Timeline shortcut: Backspace (edit.clear) must not reach the timeline while the dialog is open
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_some(), "clip dialog remains open");
+    let seq = d.app().session.active_sequence().unwrap();
+    assert!(!seq.video_tracks[0].items.is_empty(), "selected clip is not deleted by Backspace shortcut");
+    assert_eq!(seq.video_tracks[0].items[0].id, c.id, "clip remains on timeline");
+
+    // Global shortcut: Space (playback.toggle) must not start playback while the dialog is open
+    assert!(!d.app().playback.playing, "playback is stopped initially");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(!d.app().playback.playing, "Space key does not trigger playback while clip dialog is open");
+    assert!(d.app().ui.clip_dialog.is_some(), "clip dialog remains open");
+}
+
+#[test]
 fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
     for audio in [false, true] {
-        let mut d = Driver::new();
+        let mut d = Driver::demo();
         d.exec("markers.clearAll", json!({}));
         d.exec("playhead.set", json!({"frame": 35}));
         let seq = d.app().session.active_sequence().unwrap();
@@ -465,4 +585,270 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         d.exec("edit.redo", json!({}));
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
+}
+
+/// #1885: Project panel ▸ right-click one of several selected clips ▸ Proxy ▸ Create Proxies…
+/// makes proxies for all of them, as in Premiere; a clip right-clicked outside the selection gets
+/// one for itself only.
+#[test]
+fn create_proxies_from_the_item_menu_takes_the_whole_selection() {
+    let mut d = Driver::demo();
+    let wav: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&[0.0; 9_600], 48_000).into();
+    let mut items = Vec::new();
+    for name in ["/takes/a.wav", "/takes/b.wav", "/takes/c.wav"] {
+        items.push(filmcraft_engine::commands::import_bytes(&mut d.app().session, name, wav.clone(), None).unwrap().0);
+    }
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.select", json!({"items": [items[0], items[1]]}));
+    d.frames(4);
+    let create_from = |d: &mut Driver, item: u64| -> Vec<u64> {
+        d.ok("ui.click", json!({"id": format!("project.item.{item}"), "button": "right"}));
+        d.frames(3);
+        d.click("project.itemMenu.proxy");
+        d.click("project.itemMenu.proxy.create");
+        let draft = d.app().ui.create_proxies.take().map(|p| p.items);
+        draft.unwrap_or_else(|| panic!("Create Proxies… did not open its dialog"))
+    };
+    // right-click the second of the two selected clips: both get a proxy
+    assert_eq!(create_from(&mut d, items[1]), vec![items[0], items[1]]);
+    assert_eq!(d.app().session.state.project_selection.iter().map(|i| i.0).collect::<Vec<_>>(), vec![items[0], items[1]], "the selection stays");
+    // right-click a clip that is not selected: only that one
+    assert_eq!(create_from(&mut d, items[2]), vec![items[2]]);
+}
+
+/// File ▸ Close All Projects with unsaved changes refused ("save it first, or pass force"); like
+/// Close Project, it asks Save / Don't Save / Cancel, and closes right away when nothing is unsaved.
+#[test]
+fn close_all_projects_asks_to_save() {
+    let mut d = Driver::demo();
+    d.edit();
+    assert_eq!(d.menu("file.closeAllProjects")["dialog"], "closeProject");
+    assert!(d.has("closeProject.save") && d.has("closeProject.dontSave") && d.has("closeProject.cancel"));
+    d.click("closeProject.cancel");
+    assert!(!d.app().session.project.items.is_empty() && d.app().session.is_dirty(), "Cancel keeps the project");
+    d.menu("file.closeAllProjects");
+    d.click("closeProject.dontSave");
+    assert!(d.app().session.project.items.is_empty(), "closed without saving");
+    assert!(d.app().ui.clip_dialog.is_none());
+    // nothing unsaved: no question
+    d.exec("file.openDemoProject", json!({}));
+    let path = std::env::temp_dir().join(format!("fc-close-all-{}.fcproj", std::process::id()));
+    d.exec("file.saveAs", json!({"path": path.to_string_lossy()}));
+    assert!(!d.app().session.is_dirty());
+    d.menu("file.closeAllProjects");
+    let _ = std::fs::remove_file(&path);
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty(), "closed at once");
+}
+/// Clip ▸ Rename… asked for nothing and failed with "need `name`": it opens a Rename dialog with
+/// the selected clip's name (its linked partner is renamed with it), or the selected Project item's
+/// when the Project panel has focus, and says what to select when nothing is.
+#[test]
+fn clip_rename_menu_opens_a_rename_dialog() {
+    let mut d = Driver::demo();
+    let (picture, sound) = {
+        let q = d.app().session.active_sequence().unwrap();
+        let v = q.video_tracks[0].items[0].clone();
+        let a = q.audio_tracks.iter().flat_map(|t| &t.items).find(|a| a.link.is_some() && a.link == v.link).unwrap().clone();
+        (v, a)
+    };
+    let name = |d: &mut Driver, c: filmcraft_engine::project::ClipId| d.app().session.active_sequence().unwrap().find_item(c).unwrap().1.name.clone();
+    // nothing selected: an explanation, no dialog
+    d.exec("edit.deselectAll", json!({}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    assert!(d.call("ui.menu.invoke", json!({"id": "clip.rename"}))["ok"] != json!(true));
+    assert!(d.app().ui.clip_dialog.is_none());
+    // a linked clip: both halves, with the current name filled in
+    d.exec("timeline.select", json!({"clips": [picture.id.0]}));
+    let undo = d.app().session.history.undo.len();
+    d.menu("clip.rename");
+    assert!(d.has("rename.name") && d.has("rename.ok"));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["name"], json!(picture.name));
+    d.ok("ui.set", json!({"clipDialog": {"name": "Opening shot"}}));
+    d.click("rename.ok");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(name(&mut d, picture.id), "Opening shot");
+    assert_eq!(name(&mut d, sound.id), "Opening shot", "the linked sound is renamed with its picture");
+    assert_eq!(d.app().session.history.undo.len(), undo + 1, "one undo step");
+    // the Project panel: its selected item
+    let item = d.app().session.project.items.values().find(|i| i.as_media().is_some()).map(|i| i.id).unwrap();
+    d.exec("project.select", json!({"items": [item.0]}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.menu("clip.rename");
+    d.ok("ui.set", json!({"clipDialog": {"name": "Renamed media"}}));
+    d.click("rename.ok");
+    assert_eq!(d.app().session.project.item(item).unwrap().name, "Renamed media");
+}
+
+/// #2191: Duration is editable, updates Speed, and applies through the undoable command.
+#[test]
+fn duration_text_edits_speed_and_rejects_invalid_input() {
+    let mut d = Driver::demo();
+    let original = d.v1(0);
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let target = rate.tick_of(rate.frame_at(original.duration) / 2);
+    d.exec("timeline.select", json!({"clips": [original.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.has("speedDuration.duration"), "Duration must be an editable automation field");
+    /// Replace the duration through keyboard input and settle the dialog's draft state.
+    fn type_duration(d: &mut Driver, text: &str) {
+        d.click("speedDuration.duration");
+        d.ok("ui.key", json!({"key": "Cmd+A"}));
+        d.ok("ui.type", json!({"text": text}));
+        d.frames(3);
+    }
+    for invalid in ["abc", "00:00:00:00", "-100"] {
+        type_duration(&mut d, invalid);
+        d.click("speedDuration.ok");
+        assert!(d.app().ui.clip_dialog.is_some(), "invalid duration must not apply");
+        assert_eq!(d.v1(0).duration, original.duration);
+    }
+    type_duration(&mut d, &filmcraft_time::format_timecode_frames(rate.frame_at(target), rate, false));
+    let speed = d.app().ui.clip_dialog.as_ref().unwrap().params["speed"].as_f64().unwrap();
+    assert!((speed - original.duration.0 as f64 * 100.0 / target.0 as f64).abs() < 1e-8);
+    assert_eq!(d.v1(0).duration, original.duration, "typing only edits the draft");
+
+    d.click("speedDuration.ok");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!((d.v1(0).duration.0 - target.0).abs() <= 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.v1(0).duration, original.duration);
+    d.exec("edit.redo", json!({}));
+    assert!((d.v1(0).duration.0 - target.0).abs() <= 1);
+
+    d.menu("clip.speedDuration");
+    type_duration(&mut d, "00:00:01:00");
+    d.click("speedDuration.cancel");
+    assert!((d.v1(0).duration.0 - target.0).abs() <= 1, "Cancel leaves the clip unchanged");
+    d.menu("clip.speedDuration");
+    d.app().ui.clip_dialog.as_mut().unwrap().params["duration"] = json!("00:00:01:00");
+    d.frames(3);
+    d.click("speedDuration.ok");
+    assert!((d.v1(0).duration.0 - rate.tick_of(filmcraft_time::parse_timecode("00:00:01:00", rate, false, 0).unwrap()).0).abs() <= 1);
+}
+
+/// Speed edits retain the command's one-frame minimum without changing the requested speed.
+#[test]
+fn speed_edits_preserve_one_frame_minimum() {
+    let mut d = Driver::demo();
+    let original = d.v1(0);
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    d.exec("timeline.trim", json!({"clip": original.id.0, "edge": "out", "deltaFrames": 1 - rate.frame_at(original.duration)}));
+    assert_eq!(d.v1(0).duration, rate.tick_of(1));
+    d.exec("timeline.select", json!({"clips": [original.id.0]}));
+    for percent in [200.0, 100_000.0] {
+        d.menu("clip.speedDuration");
+        d.app().ui.clip_dialog.as_mut().unwrap().params["speed"] = json!(percent);
+        d.frames(3);
+        assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["duration"], json!("00:00:00:01"));
+        d.click("speedDuration.ok");
+        assert!(d.app().ui.clip_dialog.is_none(), "a valid speed edit must apply");
+        assert_eq!(d.v1(0).speed, percent / 100.0);
+        assert_eq!(d.v1(0).duration, rate.tick_of(1));
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.v1(0).speed, 1.0);
+    }
+}
+
+/// A file the OS dropped on the window, as the native integration hands it to egui.
+#[derive(Debug)]
+struct OsFile(std::path::PathBuf);
+
+impl egui::DroppedFile for OsFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+impl Driver {
+    /// Drop `paths` on the window: one frame carries them, as egui reports a drop once.
+    fn drop_files(&mut self, paths: &[&std::path::Path]) {
+        for p in paths {
+            self.harness.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(p.to_path_buf())));
+        }
+        self.frames(1);
+        self.harness.input_mut().dropped_files.clear();
+        self.frames(3);
+    }
+
+    fn path(&mut self) -> Option<String> {
+        self.app().session.path.clone()
+    }
+}
+
+/// #3843: a project file dropped on the window opens, as File ▸ Open does, instead of being
+/// imported (which did nothing). With unsaved changes Save / Don't Save / Cancel is asked first,
+/// as it now is for File ▸ Open and Open Recent too.
+#[test]
+fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let (a, b) = (dir.join("A.fcproj"), dir.join("B.FCPROJ"));
+    let mut d = Driver::demo();
+    d.exec("file.saveCopy", json!({"path": b.to_string_lossy()}));
+    d.exec("file.saveAs", json!({"path": a.to_string_lossy()}));
+    let a_path = d.path().expect("saved as A");
+    let items = d.app().session.project.items.len();
+
+    // Save on a never-saved project: Save As first, then the dropped project opens
+    let saved = dir.join("saved-from-prompt.fcproj");
+    let saved_path = saved.to_string_lossy().into_owned();
+    let mut fresh = Driver::demo();
+    fresh.app().session.path = None;
+    fresh.app().hooks.pick_save = Some(Box::new(move |_| Some(saved_path.clone())));
+    fresh.edit();
+    fresh.drop_files(&[&b]);
+    fresh.click("openProject.save");
+    assert!(saved.exists(), "saved to the chosen file");
+    assert!(fresh.path().is_some_and(|p| p.ends_with("B.FCPROJ")), "opened {:?}", fresh.path());
+    assert!(!fresh.app().session.is_dirty());
+
+    // unsaved changes: the prompt, and Cancel keeps the project and its changes
+    d.edit();
+    d.drop_files(&[&b]);
+    assert!(d.has("openProject.save") && d.has("openProject.dontSave") && d.has("openProject.cancel"));
+    d.click("openProject.cancel");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()), "still the first project");
+    assert!(d.app().session.is_dirty(), "its changes are kept");
+    assert!(d.app().ui.clip_dialog.is_none());
+    // Don't Save: the dropped project opens; nothing was imported into either project
+    d.drop_files(&[&b]);
+    d.click("openProject.dontSave");
+    assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")), "opened {:?}", d.path());
+    assert!(!d.app().session.is_dirty());
+    assert_eq!(d.app().session.project.items.len(), items, "the project file was not imported as media");
+
+    // nothing unsaved: the dropped project opens at once; media dropped with it is not imported
+    let media = dir.join("note.txt");
+    std::fs::write(&media, "not a project").unwrap();
+    d.drop_files(&[&media, &a]);
+    assert!(d.app().ui.clip_dialog.is_none(), "no prompt without unsaved changes");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()));
+    assert_eq!(d.app().session.project.items.len(), items);
+
+    // a project file that fails to open: Don't Save keeps the open project and its changes
+    let broken = dir.join("broken.fcproj");
+    std::fs::write(&broken, "not a project").unwrap();
+    d.edit();
+    d.drop_files(&[&broken]);
+    d.click("openProject.dontSave");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()), "still the open project");
+    assert!(d.app().session.is_dirty(), "its changes are kept");
+    assert!(d.app().ui.status.contains("broken.fcproj"), "the reason is shown: {}", d.app().ui.status);
+
+    // Open Recent and File ▸ Open ask the same question
+    assert_eq!(d.menu("file.openRecent.1")["dialog"], "openProject");
+    d.click("openProject.cancel");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()));
+    let picked = b.to_string_lossy().into_owned();
+    d.app().hooks.pick_open_project = Some(Box::new(move || Some(picked.clone())));
+    d.menu("file.open");
+    assert!(d.has("openProject.dontSave"), "File ▸ Open asks too");
+    d.click("openProject.dontSave");
+    assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")));
 }

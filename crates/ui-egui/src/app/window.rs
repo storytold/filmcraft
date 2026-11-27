@@ -5,6 +5,48 @@ impl FilmcraftApp {
         self.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join(dock::WORKSPACES_FILE))
     }
 
+    /// Keep the layout in use as the one to reopen with (`workspaces.json` ▸ `last`), so panel
+    /// changes made without Save Changes to this Workspace survive a restart (#2421). Called when
+    /// the app closes; a layout that does not validate, or is already remembered, writes nothing.
+    pub fn remember_layout(&mut self) {
+        // closed before the first frame brought the workspace back: `ui` still holds the defaults
+        if !self.workspace_restored {
+            return;
+        }
+        let Ok(last) = dock::SavedWorkspace::new(&self.ui.workspace, &self.ui.dock) else { return };
+        if self.workspaces.last.as_ref() == Some(&last) && self.workspaces.current == self.ui.workspace {
+            return;
+        }
+        let mut next = self.workspaces.clone();
+        // the workspace in use too: it is only recorded on a switch, and a launch that never
+        // switched would otherwise not know which workspace the layout belongs to
+        next.current = self.ui.workspace.clone();
+        next.last = Some(last);
+        if let Err(e) = self.set_workspaces(next) {
+            log::warn!("{e}");
+        }
+    }
+
+    /// Drop the layout remembered for `workspace` (Reset to Saved Layout): the saved layout is the
+    /// one to reopen with until the app closes again.
+    pub fn forget_remembered_layout(&mut self, workspace: &str) -> Result<(), String> {
+        if !self.workspaces.last.as_ref().is_some_and(|l| l.name == workspace) {
+            return Ok(());
+        }
+        let mut next = self.workspaces.clone();
+        next.last = None;
+        self.set_workspaces(next)
+    }
+
+    /// At launch, after the workspace in use came back: its remembered layout, when the one
+    /// remembered belongs to it (a layout of another workspace, or one that does not read back,
+    /// leaves the saved layout in place).
+    pub(crate) fn restore_remembered_layout(&mut self, workspace: &str) {
+        if let Some(saved) = self.workspaces.last.as_ref().filter(|l| l.name == workspace).and_then(dock::read_saved) {
+            self.ui.dock = saved.layout().clone();
+        }
+    }
+
     /// Replace the saved workspaces and write them to the data directory.
     pub fn set_workspaces(&mut self, w: dock::WorkspacePrefs) -> Result<(), String> {
         self.workspaces = w;
@@ -17,7 +59,7 @@ impl FilmcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = dock::saved_docking(&self.workspaces, name);
-        self.pending_panel_raise = None;
+        self.dock_focus = None;
         self.ui.keys.maximized = None;
         if self.workspaces.current != name {
             let mut next = self.workspaces.clone();
@@ -57,6 +99,7 @@ impl FilmcraftApp {
                 | PanelKind::LumetriScopes
                 | PanelKind::AudioTrackMixer
                 | PanelKind::Text
+                | PanelKind::Script
                 | PanelKind::ReferenceMonitor
                 | PanelKind::Timecode => PanelKind::Source,
                 _ => PanelKind::Project,
@@ -65,20 +108,20 @@ impl FilmcraftApp {
         }
         if let Some(rect) = refloat.filter(|r| r.iter().all(|v| v.is_finite())) {
             let rect = [rect[0], rect[1], rect[2].max(160.0), rect[3].max(120.0)];
-            if let Err(e) = self.apply_dock(craft_ui::docking::Action::Float { panel: p, rect }) {
+            if let Err(e) = self.apply_dock(craft_behavior::dock::Action::float(p, dock::rect_of(rect))) {
                 // refused (it is the only docked panel left): it stays docked, and its floating
                 // place is kept rather than lost
                 log::warn!("could not float {} again: {e}", p.id());
                 self.ui.closed_floating.push((p, rect));
             }
         }
-        let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: p });
+        let _ = self.apply_dock(craft_behavior::dock::Action::activate(p));
         self.ui.focused = p;
     }
 
     /// Reveal in Project: bring the Project panel forward, showing the bin that holds `item` with
     /// the search cleared, so the (already selected) item is on show.
-    pub(super) fn reveal_in_project(&mut self, item: filmcraft_project::ItemId) {
+    pub(crate) fn reveal_in_project(&mut self, item: filmcraft_project::ItemId) {
         // the bins on the way down to the item (bounded: a project file can nest bins arbitrarily deep)
         fn path(b: &filmcraft_project::Bin, item: filmcraft_project::ItemId, depth: usize, out: &mut Vec<u64>) -> bool {
             if depth > 256 {
@@ -114,6 +157,8 @@ impl FilmcraftApp {
         }
         self.ui.project_panel.active_tab = None;
         self.ui.project_panel.selected_bin = None;
+        // the item's row may be below or above what the panel shows: it scrolls there (#4760)
+        self.ui.project_panel.reveal = found.then_some(item.0);
         self.ui.project_search.clear();
         self.show_panel(PanelKind::Project);
     }

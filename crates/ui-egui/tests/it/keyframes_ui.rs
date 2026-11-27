@@ -5,37 +5,20 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the tests also render the UI with wgpu and write PNGs there.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, builder, demo_session, driver, reveal_in_effect_controls, save_settled_shot, with_shots};
+use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_project::{ClipId, Interpolation, Param};
 use filmcraft_time::Tick;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The demo project with its first video clip selected and both panels showing.
     fn demo() -> (Self, Clip) {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
+        let session = demo_session();
+        // frames 1/60 s apart, so that two clicks make a double-click
+        let mut d = Driver::open(session, with_shots(builder().with_step_dt(1.0 / 60.0)));
         let seq = d.exec("sequence.inspect", json!({}));
         let c = &seq["video"][0]["items"][0];
         let clip = Clip { id: c["clip"].as_u64().unwrap(), start: c["start"].as_i64().unwrap(), duration: c["duration"].as_i64().unwrap() };
@@ -46,44 +29,18 @@ impl Driver {
         d.frames(3);
         (d, clip)
     }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-    /// The element's rect `[x, y, w, h]`, or `None` when it is not on screen.
     fn find(&mut self, id: &str) -> Option<[f64; 4]> {
         self.frames(2);
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id)?;
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        Some([r[0], r[1], r[2], r[3]])
+        self.element_rect(id)
     }
     fn rect(&mut self, id: &str) -> [f64; 4] {
         self.find(id).unwrap_or_else(|| panic!("no element {id}"))
+    }
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits in
+    /// the panel's upper part, where the user sees it: next's dock gives a panel a shorter body
+    /// than the old dock did. Stops when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str) {
+        reveal_in_effect_controls(self, id, Self::rect);
     }
     fn click(&mut self, id: &str) {
         self.rect(id);
@@ -142,14 +99,7 @@ impl Driver {
         self.frames(3);
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        for _ in 0..40 {
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+        save_settled_shot(self, &format!("{name}.png"));
     }
 }
 
@@ -234,6 +184,32 @@ fn effect_controls_reset_button_keeps_keyframes() {
     let (keys, value) = d.scale(&clip);
     assert_eq!(keys.len(), 2, "the keyframe stays and the default is keyed at the playhead: {keys:?}");
     assert_eq!(value, 100.0);
+}
+
+/// Double-clicking a property's name resets it, as its reset button does; a single click doesn't.
+#[test]
+fn effect_controls_double_clicking_a_property_name_resets_it() {
+    let (mut d, clip) = Driver::demo();
+    d.exec("effects.setParam", json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": 150.0}));
+    d.frames(2);
+    let [x, y, w, h] = d.rect("effectControls.motion.0.scale.name");
+    let (x, y) = (x + w * 0.3, y + h * 0.5);
+    d.ok("ui.click", json!({"x": x, "y": y}));
+    d.frames(3);
+    assert_eq!(d.scale(&clip).1, 150.0, "a single click leaves the value");
+    // half a second later, or egui counts the next clicks as a triple click
+    d.frames(30);
+    d.ok("ui.click", json!({"x": x, "y": y, "count": 2}));
+    d.frames(3);
+    let (keys, value) = d.scale(&clip);
+    assert!(keys.is_empty(), "{keys:?}");
+    assert_eq!(value, 100.0);
+    // the double-click neither folds nor renames anything: the row is still there
+    d.rect("effectControls.motion.0.scale.name");
+    // and the reset is one undo step
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(d.scale(&clip).1, 150.0, "one undo brings the value back");
 }
 
 /// Crop is not on a clip until it is used: its diamond applies the effect, then adds the keyframe.
@@ -459,7 +435,7 @@ fn center(rect: [f64; 4]) -> egui::Pos2 {
 fn select_keys(d: &mut Driver, keys: &[filmcraft_ui_egui::state::KeyframeRef]) {
     for (i, key) in keys.iter().enumerate() {
         let id = key_id(d, key);
-        d.rect(&id);
+        d.reveal(&id);
         d.ok("ui.click", json!({"id":id,"modifiers":{"shift":i>0}}));
         d.frames(3);
     }
@@ -490,6 +466,32 @@ fn selected_keyframes_move_together_and_undo_as_one_edit() {
     assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), before);
     d.exec("edit.redo", json!({}));
     assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), after);
+}
+
+/// #1916: with three Scale keyframes selected, the interpolation chosen in the right-click menu
+/// applies to all three as one undo step, not only to the keyframe under the pointer. A fourth,
+/// unselected keyframe is left alone, and right-clicking it changes only that one.
+#[test]
+fn keyframe_menu_interpolation_applies_to_every_selected_keyframe() {
+    let (mut d, clip) = Driver::demo();
+    let keys = lane_keys(&mut d, &clip, &[("scale", 0.5), ("scale", 1.5), ("scale", 2.5), ("scale", 3.5)]);
+    select_keys(&mut d, &keys[..3]);
+    let before = d.parameter(&clip, "motion", "scale");
+    assert!(before.keyframes.iter().all(|k| k.interp == Interpolation::Linear));
+    let undo = d.undo_len();
+    d.right_click(&key_id(&d, &keys[1]));
+    d.click("effectControls.keyframeMenu.bezier");
+    let changed = d.parameter(&clip, "motion", "scale");
+    let interps: Vec<_> = changed.keyframes.iter().map(|k| k.interp).collect();
+    assert_eq!(interps, [Interpolation::Bezier, Interpolation::Bezier, Interpolation::Bezier, Interpolation::Linear]);
+    assert_eq!(d.undo_len(), undo + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), before, "one undo reverts all three");
+
+    d.right_click(&key_id(&d, &keys[3]));
+    d.click("effectControls.keyframeMenu.hold");
+    let interps: Vec<_> = d.parameter(&clip, "motion", "scale").keyframes.iter().map(|k| k.interp).collect();
+    assert_eq!(interps, [Interpolation::Linear, Interpolation::Linear, Interpolation::Linear, Interpolation::Hold]);
 }
 
 #[test]
@@ -748,4 +750,82 @@ fn effect_dropped_on_effect_controls_applies_to_the_selected_clip() {
     d.frames(3);
     assert!(effects_of(&d, clip.id).contains(&"gaussian_blur".to_string()), "applied to the selected clip");
     assert_eq!(d.undo_len(), undo + 1, "one undo step");
+}
+
+/// Scale keyframes at 1 s and 2 s and a Position keyframe at 1 s; the first Scale keyframe eases
+/// in. Returns the lane diamond of that first Scale keyframe and its media time.
+fn three_keyframes_first_easing_in(d: &mut Driver, clip: &Clip) -> (String, i64) {
+    d.seek(1.0);
+    for param in ["scale", "position"] {
+        d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": param}));
+    }
+    d.seek(2.0);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    let time = d.scale(clip).0[0];
+    d.exec("effects.setInterpolation", json!({"clip": clip.id, "effect": "motion", "param": "scale", "mediaTime": time, "interpolation": "easeIn"}));
+    (format!("effectControls.motion.scale.keyframe.{time}"), time)
+}
+
+/// The rows of the keyframe menu, as accessibility reports them: each row's label and whether it
+/// is checked (`None` for a command, which is never checked).
+fn row_checks(d: &mut Driver) -> Vec<(&'static str, Option<egui::accesskit::Toggled>)> {
+    d.frames(2);
+    ["Clear", "Linear", "Bezier", "Auto Bezier", "Continuous Bezier", "Hold", "Ease In", "Ease Out"]
+        .into_iter()
+        .map(|label| (label, d.harness.get_by_label(label).accesskit_node().toggled()))
+        .collect()
+}
+
+/// #265: right-clicking a keyframe shows Premiere's rows in Premiere's order (Clear, the five
+/// temporal interpolations, then Ease In and Ease Out), with no heading, and the keyframe's own
+/// interpolation checked, on the lane's diamonds and on the graph's points alike. Clear is a
+/// plain command: accessibility does not report it as an unchecked toggle.
+#[test]
+fn keyframe_menu_has_premieres_rows_and_checks_the_current_interpolation() {
+    use egui::accesskit::Toggled;
+    let (mut d, clip) = Driver::demo();
+    let (diamond, time) = three_keyframes_first_easing_in(&mut d, &clip);
+    d.right_click(&diamond);
+    d.shot("keyframe-menu");
+    let expected = ["clear", "linear", "bezier", "autoBezier", "continuousBezier", "hold", "easeIn", "easeOut"];
+    let mut shown: Vec<(f64, &str)> = expected.iter().filter_map(|k| Some((d.find(&format!("effectControls.keyframeMenu.{k}"))?[1], *k))).collect();
+    shown.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(shown.iter().map(|r| r.1).collect::<Vec<_>>(), expected, "the rows top to bottom");
+    assert!(d.harness.query_by_label_contains("Temporal Interpolation").is_none(), "Premiere's menu has no heading");
+
+    let eased = |label: &str| match label {
+        "Clear" => None,
+        "Ease In" => Some(Toggled::True),
+        _ => Some(Toggled::False),
+    };
+    for (label, toggled) in row_checks(&mut d) {
+        assert_eq!(toggled, eased(label), "lane menu: {label}");
+    }
+
+    d.click("effectControls.motion.scale.graphs");
+    assert!(d.find("effectControls.keyframeMenu.clear").is_none(), "the click closed the lane's menu");
+    d.right_click(&format!("effectControls.scale.graph.keyframe.{time}"));
+    for (label, toggled) in row_checks(&mut d) {
+        assert_eq!(toggled, eased(label), "graph menu: {label}");
+    }
+}
+
+/// #265: with every keyframe selected (⌘A in Effect Controls), Clear from a keyframe's menu still
+/// deletes only the right-clicked keyframe. This pins today's behaviour; Clear acting on the whole
+/// selection, as in Premiere, comes with Select All back in the menu.
+#[test]
+fn keyframe_menu_clear_deletes_only_the_clicked_keyframe_of_a_selection() {
+    let (mut d, clip) = Driver::demo();
+    let (diamond, time) = three_keyframes_first_easing_in(&mut d, &clip);
+    let selected = |d: &mut Driver| d.ok("ui.inspect", json!({}))["ui"]["keyframe_selection"].as_array().map_or(0, Vec::len);
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.frames(2);
+    d.right_click(&diamond);
+    assert_eq!(selected(&mut d), 3, "the right-clicked keyframe is part of the whole selection");
+    d.click("effectControls.keyframeMenu.clear");
+    let scale = d.scale(&clip).0;
+    let position = d.parameter(&clip, "motion", "position").keyframes.len();
+    assert_eq!((scale.len(), position), (1, 1), "2 of 3 keyframes remain: {scale:?}");
+    assert!(!scale.contains(&time), "the right-clicked Scale keyframe is the one deleted");
 }
