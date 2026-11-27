@@ -350,7 +350,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
   replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more
   than the workers can render in real time (CPU effects), it starts only frames that can still be
-  on time and spaces them evenly (`playback_plan`). When decoding is what falls behind, each job
+  on time and spaces them evenly (`playback_plan`). When one decoder cannot produce the frame rate (a
+  slow 4K source; `source_cannot_keep_up`, estimated from the source time of the recent jobs that
+  fetched from the source being played), playback
+  asks for only the next `SOURCE_BOUND_AHEAD` (3) frames, because the decoder is the serialized
+  stage and a longer queue only adds latency, and the monitor shows the newest picture the source
+  has (`plan_lookback`: behind the playhead in the play direction by the measured picture latency,
+  at most one second) instead of
+  freezing on one. When decoding is what falls behind, each job
   tells its sources which frames are already late (`filmcraft_media::cancel::with_catch_up`: the
   playhead's distance, two seconds for a scrubbed-to frame), and the GOP cache skips
   non-reference pictures of late frames on the way (`VideoDecoder::is_disposable`, H.264
@@ -604,7 +611,11 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
   values above SDR white are never sent to the display. The scopes of an HDR sequence show the
-  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
+  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope). The Video Scopes
+  panel computes its signal and images on the UI's scope worker (`crates/ui-egui/src/scope_worker.rs`),
+  never in the UI pass: the newest request per scope wins and the last result stays on screen until
+  the next lands. An HDR scope render (the frame rendered again, in working space) starts at most
+  every 100 ms while playing.
 - **LUTs.** Color Grading Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for

@@ -57,18 +57,14 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
-| 18 | Script items and camera RAW | Script builds stored screenplay rows, linked takes, marks, and thumbnail positions. Camera RAW builds stored per-item settings at `interpret.raw`. |
-| 19 | Script and RAW compatibility | Reads both v18 shapes and retains Script items and camera RAW settings on save. Existing projects need no data rewrite. |
-
-FilmCraft preserves saved camera RAW white balance, exposure, highlight handling, demosaic quality,
-and output color space as project data. Support for applying or editing those settings is separate.
+| 18 | Camera raw Source Settings | Per-item settings at `interpret.raw` survive opening and saving the project. Editing and rendering these settings are tracked in #1078. Builds from before the craft-libs pin move also wrote Script items as v18; those files upgrade normally; no-op step |
+| 19 | Script items | Preserves screenplay rows, linked takes, marks, and independent thumbnail positions. Existing projects need no data rewrite; no-op step |
 
 ### Migrations
 
-Older files are upgraded on load, in memory, by a chain of single-step functions in the shared format
-library (`filmcraft_format::MIGRATIONS`, where entry *i* upgrades v*i+1* to v*i+2*). FilmCraft can
-also read and write its own current schema when the shared migrations cover all preceding versions
-and the app version needs no structural migration. To change the schema:
+Older files are upgraded on load, in memory, by a chain of single-step functions
+(`filmcraft_format::MIGRATIONS`, where entry *i* upgrades v*i+1* to v*i+2*). Each step rewrites the JSON
+document; after the last one the result is deserialized into the current model. To change the schema:
 
 1. add a function `vN_to_vN1(doc: Value) -> Result<Value, String>` and append it to `MIGRATIONS`
    (`SCHEMA_VERSION` follows automatically);
@@ -252,7 +248,7 @@ Bezier curves, and keyframe scaling/anchoring modes.
 The UI thread only gives the worker thread an `Arc<Project>`: the immutable snapshot the engine
 already keeps for undo, passed through a channel. JSON encoding and all file I/O run on the
 `filmcraft-autosave` thread. Measured on the development Mac (release build) with a 2,000-clip project
-(`cargo test --release -p filmcraft-format --test it fixtures::large_project_roundtrip_and_timing -- --nocapture`):
+(`cargo test --release -p filmcraft-format --test fixtures -- --nocapture`):
 
 | Step | Time | Size |
 |---|---|---|

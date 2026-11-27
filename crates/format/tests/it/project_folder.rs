@@ -27,8 +27,7 @@ fn legacy_roundtrips_match_ordinary_migration() {
         unpack(&folder, &out).unwrap();
         let result = fs::read(out).unwrap();
         let schema = craft_fcproj_format::detect_bytes(&bytes).unwrap();
-        let mut expected = craft_fcproj_format::migrate_with(craft_fcproj_format::MIGRATIONS, serde_json::from_slice(&bytes).unwrap(), schema).unwrap();
-        expected["schema_version"] = SCHEMA_VERSION.into();
+        let expected = craft_fcproj_format::migrate_with(craft_fcproj_format::MIGRATIONS, serde_json::from_slice(&bytes).unwrap(), schema).unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&result).unwrap(), expected);
         assert_eq!(filmcraft_format::decode(&result).unwrap().project, filmcraft_format::decode(&bytes).unwrap().project);
     }
