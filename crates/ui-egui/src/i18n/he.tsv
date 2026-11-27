@@ -3427,3 +3427,4 @@
 	{current} of {count}	{current} מתוך {count}
 	Choose linked take ({count})	בחירת טייק מקושר ({count})
 	Line {current} of {total}	שורה {current} מתוך {total}
+	Final Draft export:\n    • macOS: File → Export → Script → Avid Script-Based Editing (.txt).\n    • Windows: File → Export → Document → Save as Type → Avid Script-Based Editing (.txt).	ייצוא מ-Final Draft:\n    • macOS: File → Export → Script → Avid Script-Based Editing (.txt).\n    • Windows: File → Export → Document → Save as Type → Avid Script-Based Editing (.txt).
