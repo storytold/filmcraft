@@ -404,11 +404,11 @@ mod export_recording_tests {
         let mut app = FilmcraftApp::new(session);
         app.audio = None;
         app.ui.mode = state::Mode::Edit;
-        panels::voiceover::toggle(&mut app, None).unwrap();
+        let ctx = egui::Context::default();
+        panels::voiceover::toggle(&mut app, &ctx, None).unwrap();
         app.end_preroll(0.0);
         assert!(app.playback.playing && app.session.voiceover.recording());
         assert!(app.session.mixrec.active(), "normal Edit playback still records automation");
-        let ctx = egui::Context::default();
         crate::menus::invoke(&mut app, &ctx, "mode.export", json!({})).unwrap();
         assert_eq!(app.ui.mode, state::Mode::Export);
         assert!(!app.playback.playing);
