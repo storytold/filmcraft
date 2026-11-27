@@ -1419,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "craft-fcproj-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=3af2280ee3434a2c860012df2f440652621c2c81#3af2280ee3434a2c860012df2f440652621c2c81"
+source = "git+https://github.com/storytold/craft-libs?rev=33fb95c7189686cab2fc0a6dbc1882ce7237e2c2#33fb95c7189686cab2fc0a6dbc1882ce7237e2c2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3045,6 +3045,7 @@ dependencies = [
  "filmcraft-tts",
  "image",
  "log",
+ "rayon",
  "roxmltree",
  "serde",
  "serde_json",
@@ -3141,6 +3142,7 @@ dependencies = [
 name = "filmcraft-gpu"
 version = "0.20.1"
 dependencies = [
+ "bytemuck",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
@@ -3238,6 +3240,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
+ "libc",
  "libloading",
  "log",
  "objc2-core-foundation",

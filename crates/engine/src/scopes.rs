@@ -15,14 +15,27 @@ use crate::{Result, Session};
 pub fn scope_signal(s: &Session, t: Tick, scale: f32, hdr: bool) -> Option<Signal> {
     let seq = s.state.active_sequence?;
     let provider = s.media.provider(s.project.clone(), s.services.clone());
+    Some(scope_signal_of(&s.project, seq, &provider, t, scale, hdr))
+}
+
+/// [`scope_signal`] of sequence `seq` with its own source provider, for a caller that renders
+/// away from the session (the UI's scope worker thread).
+pub fn scope_signal_of(
+    project: &filmcraft_project::Project,
+    seq: filmcraft_project::ItemId,
+    provider: &dyn filmcraft_render::SourceProvider,
+    t: Tick,
+    scale: f32,
+    hdr: bool,
+) -> Signal {
     if hdr {
         let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
-        let img = filmcraft_render::render_sequence(&s.project, seq, t, opts, &provider);
-        return Some(Signal::from_rgba_f32_with(img.w, img.h, &img.px, scopes::MAX_W, scopes::MAX_H, scopes::linear_to_pq));
+        let img = filmcraft_render::render_sequence(project, seq, t, opts, provider);
+        return Signal::from_rgba_f32_with(img.w, img.h, &img.px, scopes::MAX_W, scopes::MAX_H, scopes::linear_to_pq);
     }
     let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-    let img = filmcraft_render::render_sequence(&s.project, seq, t, opts, &provider);
-    Some(Signal::from_rgba8(img.w, img.h, &img.over_black_rgba8()))
+    let img = filmcraft_render::render_sequence(project, seq, t, opts, provider);
+    Signal::from_rgba8(img.w, img.h, &img.over_black_rgba8())
 }
 
 fn levels_json(w: &scopes::Waveform, columns: usize) -> Value {
