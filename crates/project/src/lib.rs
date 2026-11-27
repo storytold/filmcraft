@@ -25,21 +25,19 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod script;
 pub mod transcript;
 pub mod vtransition;
 
 use std::collections::BTreeMap;
 
-pub use filmcraft_geom::Vec2;
+use filmcraft_geom::Vec2;
 use filmcraft_media::{Generator, MediaInfo};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
-pub use effect::{
-    EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect, interchange_name, plugin_effect_defs, register_plugin_effect,
-    search_aliases, unregister_plugin_effect,
-};
+pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect, interchange_name, search_aliases};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
 pub use graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode, SourceGraphic, StyleRun};
@@ -48,6 +46,9 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
+pub use script::{
+    ScriptColor, ScriptDocument, ScriptLine, ScriptLineColor, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId,
+};
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
@@ -410,13 +411,14 @@ impl Project {
         if delta == Tick::ZERO {
             return;
         }
-        let mut users = vec![item];
+        // Resolve each subclip's complete (bounded) parent chain. A direct-parent test misses
+        // subclips of subclips and leaves their source references in the old media frame space.
+        let users: Vec<ItemId> = self.items.keys().copied().filter(|id| self.resolve_media(*id).is_some_and(|(root, _, _)| root == item)).collect();
         for it in self.items.values_mut() {
-            if let ItemKind::Subclip { parent, range, .. } = &mut it.kind
-                && *parent == item
+            if let ItemKind::Subclip { range, .. } = &mut it.kind
+                && users.contains(&it.id)
             {
                 range.start -= delta;
-                users.push(it.id);
             }
         }
         for it in self.items.values_mut() {
@@ -438,6 +440,9 @@ impl Project {
                     }
                 }
             }
+            if let ItemKind::Script(doc) = &mut it.kind {
+                std::sync::Arc::make_mut(doc).shift_source_time(&users, delta);
+            }
         }
         if let Some(m) = self.item_mut(item).and_then(|i| i.as_media_mut()) {
             m.mark_in = m.mark_in.map(|t| t - delta);
@@ -449,6 +454,9 @@ impl Project {
     /// Build a track item for `item` placed at `start` covering `source` range (media time).
     pub fn make_track_item(&mut self, item: ItemId, kind: TrackKind, start: Tick, source: TimeRange, seq_rate: FrameRate) -> Option<TrackItem> {
         let it = self.items.get(&item)?;
+        if matches!(it.kind, ItemKind::Script(_)) {
+            return None;
+        }
         let name = it.name.clone();
         let label = it.label;
         let mut effects = match kind {

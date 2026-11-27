@@ -21,7 +21,6 @@ neural-voices = ["filmcraft-engine/neural-voices"]
 craft-control-protocol = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-link = { workspace = true }
-filmcraft-plugins = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }

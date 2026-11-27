@@ -122,5 +122,4 @@ absolute path of its result movie.
 
 ## Design decisions
 
-[ADR 0002](adr/0002-craft-link-and-plugin-decisions.md) records why FilmCraft nests first, lifts effects, restores the
-document after a plug-in fault and shares openers as closures.
+[ADR 0002](adr/0002-craft-link-decisions.md) records why FilmCraft nests first and lifts effects.

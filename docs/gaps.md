@@ -26,7 +26,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G8 | UI fidelity: monitor handles, Effect Controls, docking | UI / UX | partly | 120–200 h |
 | G9 | Windows and Linux at run time | platforms | partly | 50–90 h |
 | G10 | Container and codec gaps on import | file format, codec | partly | 120–200 h |
-| G11 | No native plugin hosting | ecosystem | no | 200–400 h |
+| G11 | No plugin hosting | ecosystem | no | 200–400 h |
 | G12 | AI features | AI | no | 150–300 h |
 | G13 | Delivery formats | file format | no | 60–110 h |
 | G14 | Localization: 3 of the 12 key languages missing | localization | no | 150–230 h |
@@ -219,10 +219,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** AVI / OpenDML import (#598; Motion JPEG, H.264, HEVC, uncompressed video; PCM, MP3,
   MP2, AC-3 audio) and FLAC audio in MP4 / MOV (#603; the decoder gets its STREAMINFO from `dfLa`).
 
-## G11. No native plugin hosting
+## G11. No plugin hosting
 
-- **Have:** a WebAssembly plug-in host for suite plug-ins (`crates/plugins`, craft-abi 1): commands,
-  hooks, effects, panels and file formats, with user-granted permissions.
 - **Missing:** VST3 / Audio Units, OpenFX, Premiere / After Effects plug-in APIs, UXP panels
   (#325).
 - **Impact:** many professional editors depend on third-party effects and audio plug-ins.
@@ -313,7 +311,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   CDEF and loop restoration in parallel 64-row bands, bit-exact (#847; 1080p GOP 1.16–1.30×,
   low delay 1.28×, 2160p 1.14× at 16 threads). VP9 software decode loop-filters a frame as a
   wavefront over superblock rows on the decoder's pool instead of on one thread, bit-identical,
-  1.2–1.5× faster with 16 threads (#980).
+  1.2–1.5× faster with 16 threads (#980). A source that decodes slower than real time (4K50 HEVC at
+  26–28 ms a picture) no longer freezes the Program monitor: playback keeps a three-frame queue
+  while one decoder cannot make the frame rate and shows the newest picture the source has, so it
+  drops frames instead and a click on the timeline is not stuck behind queued jobs (#2696).
 - **Estimate:** 30–60 h. Doc: [performance.md](performance.md).
 
 ## G17. Audio device and playback reliability
@@ -369,3 +370,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
+| 2026-10-24 | minor | G16: Program playback on a source slower than real time drops frames instead of freezing (#2696) |

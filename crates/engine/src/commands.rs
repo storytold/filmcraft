@@ -4879,10 +4879,8 @@ fn list_effects(p: &Value) -> Value {
     let kind = str_p(p, "kind");
     let folder = str_p(p, "folder");
     let detail = p.get("detail").and_then(Value::as_bool).unwrap_or(false);
-    let plugins = filmcraft_project::plugin_effect_defs();
     let out = filmcraft_project::effect_defs()
         .iter()
-        .chain(plugins.iter().copied())
         .filter(|d| kind.is_none_or(|k| format!("{:?}", d.kind).eq_ignore_ascii_case(k)))
         .filter(|d| folder.is_none_or(|f| d.category.join("/").starts_with(f)))
         .map(|d| {
@@ -5445,7 +5443,9 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
-    s.media = std::sync::Arc::new(s.media.successor());
+    let proxies = s.media.use_proxies();
+    s.media = std::sync::Arc::new(crate::MediaPool::default());
+    s.media.set_use_proxies(proxies);
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.media.add_stored(&proj, path.as_deref());

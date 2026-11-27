@@ -170,13 +170,6 @@ pub enum EngineError {
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-#[cfg(not(target_arch = "wasm32"))]
-impl From<craft_plugin_host::invoke::CallError> for EngineError {
-    fn from(e: craft_plugin_host::invoke::CallError) -> Self {
-        EngineError::Other(format!("plug-in: {e}"))
-    }
-}
-
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
@@ -635,7 +628,7 @@ pub struct Session {
     pub call_seq: u64,
     /// Set by a merged edit, consumed by [`Session::bump`].
     pub pending_merged: bool,
-    /// `Arc` so the plug-in host (`filmcraft-plugins`) registers into the same table.
+    /// `Arc` so another host can register into the same table.
     pub registry: Arc<craft_command::Registry<Session, EngineError>>,
     pub hooks: craft_command::Hooks<Session>,
     /// Id of the outermost command [`Session::execute`] is running, stored with each undo step
