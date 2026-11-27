@@ -121,6 +121,7 @@ impl eframe::App for WebApp {
         }
         self.autosave.tick(&self.app.session, ctx);
         self.app.finish_ime_reset_logic(ctx);
+        filmcraft_ui_egui::framework::close_path(ctx, &mut self.app);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -181,6 +182,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
             canvas,
             web_options,
             Box::new(move |cc| {
+                filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
                 filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
                 set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();

@@ -5,78 +5,28 @@
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu (works without a
 //! window or an unlocked screen) and writes PNGs there for review.
 
-use std::sync::mpsc::{Sender, channel};
-
+use crate::support::{Drive, Launch, builder, demo_session, driver, reveal_in_panel, save_shot, shots_dir, with_shots};
 use egui::accesskit::Role;
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        Self::open(demo_session(), with_shots(builder()))
     }
     fn rect(&mut self, id: &str) -> [f64; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        [r[0], r[1], r[2], r[3]]
+        self.expect_rect(id)
+    }
+    /// Scrolls the panel that holds element `id` until the element sits in the panel's upper part,
+    /// where the user sees it: next's dock gives a panel a shorter body than the old dock did.
+    /// Stops when the element no longer moves (the panel is at the end of its content).
+    fn reveal(&mut self, id: &str) {
+        reveal_in_panel(self, id);
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        self.frames(8);
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+        save_shot(self, 8, &format!("{name}.png"));
     }
 }
 
@@ -397,7 +347,7 @@ fn stroke_colour_pickers_edit_only_the_type_tool_selection() {
     );
     // Wait for background rendering before the optional screenshot. The colour and undo
     // assertions above do not need a finished monitor frame when this runs headless in the suite.
-    if d.shots.is_some() {
+    if shots_dir().is_some() {
         let revision = d.harness.state().session.revision;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         while d.harness.state().program_picture().is_none_or(|k| k.revision != revision) && std::time::Instant::now() < deadline {
@@ -428,6 +378,7 @@ fn style_buttons_toggle_the_selected_characters() {
     for (id, key, on, off) in
         [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0)), ("small_caps", "caps", json!(2), json!(0))]
     {
+        d.reveal(&format!("graphics.prop.{id}"));
         d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
         d.frames(3);
         assert_eq!(styles(&mut d)[0][key], on, "first click styles the selection: {}", styles(&mut d));
@@ -459,10 +410,12 @@ fn style_button_on_a_mixed_selection_styles_all_of_it() {
     }
     d.frames(3);
     let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    d.reveal("graphics.prop.faux_bold");
     d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
     d.frames(3);
     let st = styles(&mut d);
     assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()), (json!(6), json!(8), json!(true)), "\"Dr\" is bold: {st}");
+    d.reveal("graphics.prop.all_caps");
     d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
     d.frames(3);
     let st = styles(&mut d);
@@ -480,11 +433,13 @@ fn style_button_on_a_mixed_selection_styles_all_of_it() {
         assert!(runs.windows(2).all(|w| w[0].1 == w[1].0), "{st}");
         runs
     };
+    d.reveal("graphics.prop.faux_bold");
     d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
     d.frames(3);
     let st = styles(&mut d);
     assert!(runs(&st, "fauxBold").iter().all(|r| r.2 == json!(true)), "the click bolds all of \"Drive\": {st}");
     // "Dr" is All Caps, "ive" is not: both caps buttons are off, so a click makes it all All Caps
+    d.reveal("graphics.prop.all_caps");
     d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
     d.frames(3);
     let st = styles(&mut d);
@@ -508,6 +463,7 @@ fn style_buttons_toggle_the_layer_without_a_selection() {
         // near the button's left edge: in the test window the panel's scrollbar covers the
         // middle of the last button of the row
         let click = |d: &mut Driver| {
+            d.reveal(&format!("graphics.prop.{id}"));
             let b = d.rect(&format!("graphics.prop.{id}"));
             d.ok("ui.click", json!({"x": b[0] + 4.0, "y": b[1] + b[3] / 2.0}));
             d.frames(3);

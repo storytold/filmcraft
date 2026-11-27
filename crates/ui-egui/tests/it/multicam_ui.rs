@@ -5,64 +5,19 @@
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write PNGs
 //! there (`multicam-*.png`).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use super::media_ui::{make_movie, tmp_dir};
+use crate::support::{Drive, Launch, builder, driver, save_snapshot, with_snapshots};
 use filmcraft_engine::Session;
-use filmcraft_engine::project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{DemoScene, Generator, MediaSource};
-use filmcraft_time::{FrameRate, Tick, TimeRange};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use filmcraft_engine::project::SequenceSettings;
+use filmcraft_media::DemoScene;
+use filmcraft_time::FrameRate;
+use serde_json::json;
 
 const W: u32 = 320;
 const H: u32 = 180;
-
-fn tmp_dir(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let d = std::env::temp_dir().join(format!("filmcraft-ui-{name}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-/// A 24 fps ProRes movie of a demo scene (our own encoder).
-fn make_movie(path: &Path, scene: DemoScene, frames: i64) {
-    let rate = FrameRate::FPS_24;
-    let dur = rate.tick_of(frames);
-    let src = GeneratorSource::new(Generator::Demo(scene), W, H, rate, dur);
-    let clip = MediaClip {
-        media: MediaRef::Generator(Generator::Demo(scene)),
-        info: src.info().clone(),
-        interpret: Default::default(),
-        mark_in: None,
-        mark_out: None,
-        markers: vec![],
-        offline: false,
-        proxy: None,
-        identity: None,
-    };
-    let mut p = Project::new("fixture");
-    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
-    let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: rate, ..Default::default() }, 1, 0, None);
-    let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
-    for e in &mut v.effects {
-        filmcraft_engine::project::resolve_auto_points(e, (W, H), (W, H));
-    }
-    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
-    let settings = filmcraft_engine::export::ExportSettings {
-        format: filmcraft_engine::export::Format::ProRes,
-        path: path.to_string_lossy().into_owned(),
-        include_audio: false,
-        ..Default::default()
-    };
-    let shared: filmcraft_media::SharedSource = Arc::new(src);
-    let provider = move |id| (id == item).then(|| shared.clone());
-    filmcraft_engine::export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
-}
 
 /// Four cameras imported into a session with an empty 320×180 sequence "Cut".
 fn session() -> (Session, Vec<u64>) {
@@ -70,7 +25,7 @@ fn session() -> (Session, Vec<u64>) {
     let scenes = [DemoScene::OceanSunset, DemoScene::CityNight, DemoScene::Aurora, DemoScene::Forest];
     let files: Vec<PathBuf> = (0..4).map(|i| dir.join(format!("Cam {}.mov", (b'A' + i as u8) as char))).collect();
     for (f, sc) in files.iter().zip(scenes) {
-        make_movie(f, sc, 96);
+        make_movie(f, sc, W, H, 96);
     }
     let mut s = Session::default();
     let r = s.execute("file.import", json!({"paths": files.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>()})).unwrap();
@@ -83,37 +38,15 @@ fn session() -> (Session, Vec<u64>) {
     (s, items)
 }
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<PathBuf>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
     fn new(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(session, with_snapshots(builder()))
     }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
     /// Run frames (with short sleeps so frame workers finish) until `done`, for at most two
     /// minutes of wall-clock time.
     fn until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
@@ -128,42 +61,6 @@ impl Driver {
         panic!("timed out waiting for {what}");
     }
 
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     /// Angles of the clips on V1 / A1 of the active sequence.
     fn angles(&mut self, audio: bool) -> Vec<u32> {
         let q = self.app().session.active_sequence().unwrap().clone();
@@ -172,19 +69,7 @@ impl Driver {
     }
 
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(3);
-        let img = match self.harness.render() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("snapshot {name} skipped: {e}");
-                return;
-            }
-        };
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        img.save(&path).unwrap();
-        eprintln!("snapshot: {}", path.display());
+        save_snapshot(self, 3, &format!("{name}.png"));
     }
 }
 

@@ -127,6 +127,28 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// The frame as [`render`](Self::render) followed by
+    /// [`over_black_rgba8`](filmcraft_render::Image::over_black_rgba8) would give it: opaque 8-bit
+    /// sRGB RGBA at the render size, `(width, height, pixels)`. The export asks for this instead
+    /// when it needs nothing else done to the picture (SDR, no alpha, no resampling or placement,
+    /// no overlay), so a renderer can hand over the final bytes without making the float frame.
+    /// `None` to let the CPU render this frame.
+    fn render_rgba8(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.render(project, seq, t, opts, sources).map(|img| {
+            let rgba = img.over_black_rgba8();
+            let (w, h) = (img.w, img.h);
+            filmcraft_frame::pool::recycle_f32(img.px);
+            (w, h, rgba)
+        })
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
@@ -228,6 +250,26 @@ pub fn register_format_probe(format: Format, probe: fn() -> bool) {
     let mut g = format_probes().write().unwrap_or_else(PoisonError::into_inner);
     if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
         g.push((format, probe));
+    }
+}
+
+fn background_thread_hook() -> &'static RwLock<Option<fn()>> {
+    static H: OnceLock<RwLock<Option<fn()>>> = OnceLock::new();
+    H.get_or_init(|| RwLock::new(None))
+}
+
+/// Say what to run on each thread of a background job's pool as it starts ([`crate::on_own_threads`]):
+/// the platform layer lowers the thread's scheduling priority, so the monitors and the UI come
+/// first while an export runs. A second registration replaces the first.
+pub fn register_background_thread_start(f: fn()) {
+    *background_thread_hook().write().unwrap_or_else(PoisonError::into_inner) = Some(f);
+}
+
+/// Run the registered background-thread hook, if any, on the calling thread.
+pub(crate) fn background_thread_start() {
+    let hook = *background_thread_hook().read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(f) = hook {
+        f();
     }
 }
 

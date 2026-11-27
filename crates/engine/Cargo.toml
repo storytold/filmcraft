@@ -54,5 +54,6 @@ filmcraft-testkit = { workspace = true }
 craft-command = { workspace = true, features = ["testing"] }
 tempfile = "3"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
+rayon = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }

@@ -54,6 +54,23 @@ fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::V
     }
 }
 
+// A captured dock press may swallow Escape without ending egui's drag.
+fn graph_drag_cancelled(ui: &egui::Ui, response: &egui::Response) -> bool {
+    let id = response.id.with("graph-drag-cancelled");
+    if response.drag_started() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+    let in_drag = response.dragged() || response.drag_stopped();
+    if in_drag && (crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx())) {
+        ui.data_mut(|d| d.insert_temp(id, true));
+    }
+    let cancelled = in_drag && ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+    cancelled
+}
+
 /// Whether `k` names a keyframe of the clip `it` (its effect, parameter and media time).
 fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
     let Some(e) = it.effects.get(k.effect) else { return false };
@@ -837,13 +854,14 @@ fn param_value_widget(
             fit_to_row(vui);
             // (narrower when the effect list is narrow, so it stays left of the divider)
             let w = vui.available_width().min(130.0);
-            let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
-                for (i, o) in opts.iter().enumerate() {
-                    if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
-                        set = Some(json!(i));
+            let combo =
+                crate::legacy_dropdown::Dropdown::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
+                    for (i, o) in opts.iter().enumerate() {
+                        if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
+                            set = Some(json!(i));
+                        }
                     }
-                }
-            });
+                });
             crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
@@ -906,7 +924,7 @@ fn param_value_widget(
             let w = 150.0_f32.min(vui.available_width()).max(40.0);
             let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
             let combo = if pd.id == "font" {
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
+                crate::legacy_dropdown::Dropdown::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
                     for (f, _) in &fams {
                         let r = ui.selectable_label(f == current, f);
                         app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
@@ -927,7 +945,7 @@ fn param_value_widget(
                         styles.push(extra);
                     }
                 }
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
+                crate::legacy_dropdown::Dropdown::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
                     for st in styles {
                         let r = ui.selectable_label(st == current, st);
                         app.auto.add(&format!("{prefix}.{st}"), r.rect, st);
@@ -1404,7 +1422,8 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
 
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
-/// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
+/// Keyframes drag vertically (value); Bezier influence handles drag horizontally. A double-click
+/// on the value graph adds a keyframe at the pointer. The velocity graph stays hover-only.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn graph_rows(
     app: &mut FilmcraftApp,
@@ -1420,6 +1439,12 @@ pub(crate) fn graph_rows(
     actions: &mut Vec<(String, Value)>,
 ) {
     let t = app.tokens;
+    let with_mask = |mut v: Value| -> Value {
+        if let Some(k) = mask {
+            v["mask"] = json!(k);
+        }
+        v
+    };
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
     row_line(ui, velr, lane, &t);
@@ -1458,6 +1483,60 @@ pub(crate) fn graph_rows(
     ui.data_mut(|d| d.insert_temp(range_id, (lo, hi, frame)));
     let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
+    let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
+    // The plot used to be hover-only, so a double-click never reached the lane (#1277).
+    let plot = ui.interact(area, egui::Id::unique(("kfg-plot", clip.0, idx, mask, pd.id)), Sense::click());
+    if plot.double_clicked()
+        && let Some(pos) = plot.interact_pointer_pos()
+    {
+        let f = ((pos.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
+        // On a frame, so the keyframe navigator (which moves the playhead, kept on frames) can
+        // reach the new keyframe; and inside the clip.
+        let rate = app.session.active_sequence().map(|q| q.settings.frame_rate).unwrap_or_default();
+        let mut timeline = rate.snap_nearest(Tick(it.start.0.saturating_add((f * dur) as i64)));
+        if timeline >= it.end() {
+            timeline = rate.snap((it.end() - Tick(1)).max(it.start));
+        }
+        // Sampled where the command stores the keyframe (a reversed clip runs backwards from its
+        // out point, which `to_media` doesn't model).
+        let sampled = graph_components(&param.value_at(it.effect_time_at(timeline)));
+        let value = if sampled.len() <= 1 {
+            Some(json!(v_of(pos.y)))
+        } else if sampled.iter().all(|v| v.is_finite()) {
+            // A point is one keyframe. The curve nearer the pointer takes the pointer's value;
+            // the other coordinate keeps the value sampled at that time.
+            let mut moved = sampled;
+            let nearest = moved
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| (y_of(**a) - pos.y).abs().partial_cmp(&(y_of(**b) - pos.y).abs()).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i);
+            if let Some(ci) = nearest
+                && let Some(slot) = moved.get_mut(ci)
+            {
+                *slot = v_of(pos.y);
+            }
+            Some(json!(moved))
+        } else {
+            // An automatic (NaN) coordinate has no JSON form: the keyframe takes the sampled point.
+            None
+        };
+        let body = json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline.0});
+        match value {
+            // Insert or update: a double-click on the plot never removes a keyframe (the diamond's
+            // click does), and the value goes through `setParam`'s hard-range check.
+            Some(v) => {
+                let mut body = body;
+                body["value"] = v;
+                body["keyframe"] = json!(true);
+                actions.push(("effects.setParam".into(), with_mask(body)));
+            }
+            None if !param.keyframes.iter().any(|k| k.time == it.effect_time_at(timeline)) => {
+                actions.push(("effects.addKeyframe".into(), with_mask(body)));
+            }
+            None => {}
+        }
+    }
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);
     for g in 1..4 {
@@ -1583,11 +1662,12 @@ fn draw_graph_keyframes(
                 p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
                 p.circle_filled(hp, 3.5, t.keyframe_handle);
                 let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
-                if hr.dragged_by(egui::PointerButton::Primary) {
+                let cancelled = graph_drag_cancelled(ui, &hr);
+                if hr.dragged_by(egui::PointerButton::Primary) && !cancelled {
                     let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                     ui.data_mut(|d| d.insert_temp(hid, nx));
                 }
-                if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if cancelled {
                     ui.data_mut(|d| d.remove::<f32>(hid));
                 } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
                     ui.data_mut(|d| d.remove::<f32>(hid));
@@ -1600,13 +1680,14 @@ fn draw_graph_keyframes(
                 }
             }
             p.circle_filled(c, 4.5, if resp.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.plot_handle });
-            if resp.dragged_by(egui::PointerButton::Primary) {
+            let cancelled = graph_drag_cancelled(ui, &resp);
+            if resp.dragged_by(egui::PointerButton::Primary) && !cancelled {
                 let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
                 ui.data_mut(|d| d.insert_temp(id, ny));
                 p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
             }
             // egui ends a drag on Escape: that stop abandons it (#580)
-            if resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if cancelled {
                 ui.data_mut(|d| d.remove::<f32>(id));
             } else if resp.drag_stopped_by(egui::PointerButton::Primary) {
                 ui.data_mut(|d| d.remove::<f32>(id));

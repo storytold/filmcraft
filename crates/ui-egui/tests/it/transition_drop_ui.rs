@@ -1,21 +1,15 @@
 //! Transition drag feedback: snaps to Start / Center / End at Cut, actual span and alignment, no
 //! edit until release, one undo step.
-use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
+use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::Harness;
-use filmcraft_engine::{Session, commands::preview_transition};
+use filmcraft_engine::commands::preview_transition;
 use filmcraft_project::TrackKind;
 use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
-fn step(h: &mut Harness<'static, FilmcraftApp>) {
-    let ctx = h.ctx.clone();
-    let mut raw = std::mem::take(h.input_mut());
-    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
-    *h.input_mut() = raw;
-    ctx.request_repaint();
-    h.step();
-}
+use super::timeline_transition_move_ui::{rect, step, zoomed};
+use crate::support::demo_session;
 
 fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
     h.input_mut().events.push(Event::PointerMoved(pos));
@@ -28,14 +22,8 @@ fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bo
     step(h);
 }
 
-fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
-    let [x, y, w, height] = h.state().auto.elements.iter().find(|e| e.id == id).unwrap_or_else(|| panic!("missing {id}")).rect;
-    Rect::from_min_size(pos2(x, y), vec2(w, height))
-}
-
 fn harness(effect: &str) -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let mut s = demo_session();
     s.execute("file.newSequence", json!({"name":"Transition drops","fps":24})).unwrap();
     let rate = s.sequence_rate();
     // Two 2 s clips: the cut between them has room on both sides for every alignment.
@@ -45,20 +33,7 @@ fn harness(effect: &str) -> Harness<'static, FilmcraftApp> {
     let mut app = FilmcraftApp::new(s);
     app.set_workspace("Effects");
     app.ui.effects_search = effect.to_string();
-    let mut builder = Harness::builder().with_size(vec2(1600.0, 980.0)).with_max_steps(10_000);
-    if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
-        builder = builder.wgpu();
-    }
-    let mut h = builder.build_eframe(move |_cc| app);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    // Opening the new sequence restores its own view; set the test zoom after that initial fit.
-    h.state_mut().ui.timeline.pps = 60.0;
-    h.state_mut().ui.timeline.target_pps = 60.0;
-    h.state_mut().ui.timeline.fit_pending = false;
-    step(&mut h);
-    h
+    zoomed(app)
 }
 
 #[test]

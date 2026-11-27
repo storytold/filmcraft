@@ -220,9 +220,13 @@ pub(crate) struct WheelInput {
 /// zoom and Shift + wheel into a sideways scroll before anyone asks, and the Timeline has its own
 /// meaning for both. The modifiers are those of the events (a script's wheel carries its own).
 pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
+    // Off macOS the runtime folds a smooth Ctrl+wheel into a zoom event; those zooms are read as the
+    // Ctrl+wheel they were (framework fallback, `framework::folded_ctrl_wheels`).
+    let zoomed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Zoom(_))).then(|| i.events.clone()));
+    let folded = zoomed.map(|events| crate::framework::folded_ctrl_wheels(ctx, &events)).unwrap_or_default();
     ctx.input(|i| {
         let mut w = WheelInput { delta: egui::Vec2::ZERO, pinch: 1.0, command: false, alt: false, shift: false };
-        for e in &i.events {
+        for e in i.events.iter().chain(&folded) {
             match e {
                 egui::Event::MouseWheel { unit, delta, modifiers, .. } => {
                     let points = match unit {
@@ -237,6 +241,7 @@ pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
                     w.alt |= modifiers.alt;
                     w.shift |= modifiers.shift;
                 }
+                egui::Event::Zoom(_) if !folded.is_empty() => {}
                 egui::Event::Zoom(z) if z.is_finite() && *z > 0.0 => w.pinch *= *z,
                 _ => {}
             }
@@ -642,7 +647,7 @@ fn track_select_drag_captions(app: &FilmcraftApp, copying: bool, inserting: bool
 /// Escape cancels an ongoing drag or press (#580): the release commits nothing.
 fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
     // Escape cancels an ongoing drag or press (#580): the release commits nothing
-    if (app.tl.drag.is_some() || app.tl.pressed.is_some()) && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if (app.tl.drag.is_some() || app.tl.pressed.is_some()) && crate::framework::escape_pressed(ctx) {
         if let Some(d) = app.tl.drag.take() {
             match d {
                 Drag::Scrub { initial } => {
@@ -910,7 +915,7 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     app.session.state.caption_selection = before_captions;
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
                     match resp.interact_pointer_pos() {
-                        Some(end) if !ctx.input(|i| i.key_pressed(egui::Key::Escape)) => {
+                        Some(end) if !crate::framework::escape_pressed(ctx) => {
                             let r = start.rect_to(layout, end);
                             let ids: Vec<u64> = marquee_clips(seq, layout, r).iter().map(|c| c.0).collect();
                             let caps: Vec<u64> = crate::panels::timeline_captions::marquee_captions(seq, layout, r).iter().map(|c| c.0).collect();
@@ -975,6 +980,23 @@ fn drop_preview_bands(
     bands
 }
 
+/// The pointer over this Timeline while something is dragged onto it: egui's in this window,
+/// else, in a panel's own OS window that a drag from the main window crosses, the desktop
+/// pointer the runtime reports in this window's coordinates. That window gets no pointer events
+/// from a drag that runs in another window.
+fn drop_pointer(ctx: &egui::Context) -> Option<egui::Pos2> {
+    let viewport = ctx.viewport_id();
+    ctx.pointer_hover_pos()
+        .or_else(|| (viewport != egui::ViewportId::ROOT).then(|| craft_ui::runtime::windows::WindowHost::of(ctx).pointer_in(viewport)).flatten())
+}
+
+/// Whether the drag over this Timeline ended this frame: released in this window, or, in a
+/// panel's own OS window, in the main window the drag runs in.
+fn drop_released(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.pointer.any_released())
+        || (ctx.viewport_id() != egui::ViewportId::ROOT && ctx.input_for(egui::ViewportId::ROOT, |i| i.pointer.any_released()))
+}
+
 /// Project items, graphics templates, effects and OS files dragged over the Timeline: the
 /// preview of where they would land while hovering, and the command that places them on
 /// release.
@@ -984,7 +1006,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     let mods = ctx.input(|i| i.modifiers);
     // ---- drops: project items and effects
     if let Some(item) = crate::panels::dragged_project_item(ui)
-        && let Some(p) = ctx.pointer_hover_pos()
+        && let Some(p) = drop_pointer(&ctx)
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {
@@ -1030,7 +1052,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             (None, Some((TrackKind::Audio, _))) => Some((seq.video_tracks.get(seq.audio_tracks.len()).map_or(json!("new"), |t| json!(t.id.0)), json!("new"))),
             (None, None) => None,
         };
-        if ctx.input(|i| i.pointer.any_released())
+        if drop_released(&ctx)
             && let Some((vt, at)) = target
         {
             // dragging one of several selected project items places them all, back to back, as one edit
@@ -1057,7 +1079,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     }
     // graphics templates from Essential Graphics ▸ Browse: placed on the video track under the pointer
     if let Some(template) = crate::panels::dragged_template(ui)
-        && let Some(p) = ctx.pointer_hover_pos()
+        && let Some(p) = drop_pointer(&ctx)
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {
@@ -1067,7 +1089,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             let r = Rect::from_min_max(pos2(layout.x_of(t), row.rect.min.y + 1.0), pos2(layout.x_of(t) + 60.0, row.rect.max.y - 1.0));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
         }
-        if ctx.input(|i| i.pointer.any_released()) {
+        if drop_released(&ctx) {
             let mut q = json!({"template": template, "time": t.0});
             if let Some(row) = row {
                 q["track"] = json!(row.index);
@@ -1126,7 +1148,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
 fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout) {
     let ctx = ui.ctx().clone();
     if let Some(effect) = crate::panels::dragged_effect(ui)
-        && let Some(p) = ctx.pointer_hover_pos()
+        && let Some(p) = drop_pointer(&ctx)
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
         && let Hit::Clip { clip, .. } = hit(seq, layout, p)
@@ -1178,7 +1200,7 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                 let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
                 ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
             }
-            if ctx.input(|i| i.pointer.any_released()) {
+            if drop_released(&ctx) {
                 let r = if let Some(name) = effect.strip_prefix("preset:") {
                     app.session.execute("presets.apply", json!({"preset": name, "clips": [clip.0]}))
                 } else if let Some(name) = effect.strip_prefix(crate::panels::LUMETRI_PRESET_PREFIX) {

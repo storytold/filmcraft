@@ -122,4 +122,4 @@ absolute path of its result movie.
 
 ## Design decisions
 
-[ADR 0002](adr/0002-craft-link-decisions.md) records why FilmCraft nests first and lifts effects.
+[ADR 0003](adr/0003-craft-link-decisions.md) records why FilmCraft nests first and lifts effects.

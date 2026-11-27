@@ -1,4 +1,4 @@
-# ADR 0002: Craft Link decisions
+# ADR 0003: Craft Link decisions
 
 - **Status:** proposed, with [PR #4351](https://github.com/storytold/filmcraft/pull/4351) (2026-11-09)
 - **Code:** `crates/link`, `crates/engine`

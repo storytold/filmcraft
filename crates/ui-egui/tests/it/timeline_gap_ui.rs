@@ -3,19 +3,15 @@
 //! (Ripple Delete) closes it, as in Premiere Pro. The real `FilmcraftApp` under `egui_kittest`,
 //! driven over the control channel.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
+use crate::support::{Drive, demo_session, driver, start};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_engine::project::ClipId;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     /// A sequence with two 48-frame clips on V1 (and their sounds on A1) at frames 0 and 96.
@@ -25,8 +21,7 @@ impl Driver {
 
     /// Two 48-frame clips with linked sound, with the second beginning at `second`.
     fn two_clips_at(second: i64) -> (Self, ClipId, ClipId) {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut s = demo_session();
         s.execute("file.newSequence", json!({"name": "Gaps", "video": 1, "audio": 1})).unwrap();
         let rate = s.sequence_rate();
         let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
@@ -42,9 +37,11 @@ impl Driver {
         if std::env::var_os("FILMCRAFT_UI_SHOTS").is_some() {
             builder = builder.wgpu();
         }
-        let harness = builder.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
+        let harness = builder.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
+        let d = start(Driver { harness, tx });
         (d, a, b)
     }
 
@@ -53,30 +50,6 @@ impl Driver {
         self.frames(3);
         std::fs::create_dir_all(&dir).unwrap();
         self.harness.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // the control channel's clicks and keys enter through the input hook
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
     }
 
     fn rect(&mut self, id: &str) -> Option<[f64; 4]> {

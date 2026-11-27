@@ -39,8 +39,7 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 pub enum DisabledWhy {
     /// `FILMCRAFT_CONTROL_TOKEN` is missing or is not 64 hex characters.
     Token,
-    /// The port could not be bound. Showing this in the app is left to #3318, which reworks
-    /// port-collision reporting; until then the reason is only logged.
+    /// The port could not be bound — usually another program is already listening on it (#3313).
     Bind { port: u16, error: String },
 }
 
@@ -159,7 +158,14 @@ fn start_tcp(port: u16, ctx: egui::Context, token: Option<String>, tx: Sender<Co
             None
         }
         Err(error) => {
-            let why = DisabledWhy::Bind { port, error: error.to_string() };
+            // A port another program already bound is named in plain words: that is the failure
+            // an agent or a desktop user can act on (#3313).
+            let detail = if error.kind() == std::io::ErrorKind::AddrInUse {
+                "the port is already in use (another program is bound to it; pick a free port)".to_string()
+            } else {
+                error.to_string()
+            };
+            let why = DisabledWhy::Bind { port, error: detail };
             log::warn!("control server disabled: {}", why.reason());
             Some(why)
         }

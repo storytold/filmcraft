@@ -2,23 +2,20 @@
 //! the entries whose command needs a `path` ask the host's save panel for it, and Media… opens the
 //! Export mode like ⌘M, instead of failing with a missing `path`.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
+use crate::support::{Drive, demo_session, driver, start};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::state::Mode;
 use serde_json::{Value, json};
 
 /// What the save panel was asked: filter label, extensions, suggested name.
 type Asked = Arc<Mutex<Vec<(String, Vec<String>, String)>>>;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     /// `save_to: None` is a cancelled save panel.
@@ -33,45 +30,17 @@ impl Driver {
         if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
             builder = builder.wgpu();
         }
-        let harness = builder.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
+        let harness = builder.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
+        start(Driver { harness, tx })
     }
 }
 
 /// The demo project (sequences, clips) with one clip selected in the Project panel.
 fn session() -> Session {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let mut s = demo_session();
     let clip = s.project.items.iter().find(|(_, it)| it.name.ends_with(".mp4")).map(|(id, _)| id.0).unwrap();
     s.execute("project.select", json!({"items": [clip]})).unwrap();
     s

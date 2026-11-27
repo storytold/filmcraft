@@ -4,116 +4,23 @@
 //!
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also write PNGs of the windows (`fx-editor-*.png`).
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, pointer_drag_by, save_snapshot, with_snapshots};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(demo_session(), with_snapshots(builder()))
     }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn element(&mut self, id: &str) -> Option<[f32; 4]> {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array()?.iter().find(|e| e["id"] == id).map(|e| {
-            let r = &e["rect"];
-            [r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32]
-        })
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
     /// Press on `id`, move by (dx, dy) over several frames, release.
     fn drag(&mut self, id: &str, dx: f32, dy: f32, steps: usize) {
         let r = self.element(id).unwrap_or_else(|| panic!("no element {id}"));
-        let mut p = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
-        let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
-        push(self, egui::Event::PointerMoved(p));
-        self.frames(1);
-        push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
-        self.frames(1);
-        for _ in 0..steps {
-            p.x += dx / steps as f32;
-            p.y += dy / steps as f32;
-            push(self, egui::Event::PointerMoved(p));
-            self.frames(1);
-        }
-        push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
-        self.frames(3);
+        pointer_drag_by(self, egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0), dx, dy, steps, 3);
     }
 
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(2);
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                img.save(dir.join(format!("{name}.png"))).unwrap();
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
+        save_snapshot(self, 2, &format!("{name}.png"));
     }
 
     fn undo_len(&mut self) -> usize {

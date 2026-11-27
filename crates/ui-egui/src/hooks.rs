@@ -102,6 +102,8 @@ pub struct HostHooks {
     pub on_exit: Option<Box<dyn FnMut()>>,
     /// Name of a dialog the embedding app draws itself (Craft Link's prompt), for `ui.inspect`'s `dialog`.
     pub dialog_label: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Plain text for native menu Paste; web/keyboard hosts can supply Event::Paste directly.
+    pub clipboard_text: Option<Box<dyn FnMut() -> Option<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
