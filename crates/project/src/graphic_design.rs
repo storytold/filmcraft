@@ -285,6 +285,12 @@ pub struct PinNode {
 /// New bounds of every layer after pinning (same order as `nodes`). Targets are resolved before
 /// the layers pinned to them; pins in a cycle, or to a missing layer, are ignored.
 pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
+    resolve_pins_counting(nodes, frame, &mut 0)
+}
+
+/// [`resolve_pins`], adding to `steps` once per layer visited while following pins, so a test
+/// can bound the work without timing it.
+fn resolve_pins_counting(nodes: &[PinNode], frame: [f64; 4], steps: &mut usize) -> Vec<[f64; 4]> {
     let mut out: Vec<Option<[f64; 4]>> = vec![None; nodes.len()];
     // first layer with each uid, as the linear search found it
     let mut by_uid = std::collections::HashMap::with_capacity(nodes.len());
@@ -310,6 +316,7 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
     for start in 0..nodes.len() {
         let mut i = start;
         let (mut b, cacheable) = loop {
+            *steps += 1;
             if let Some(b) = out[i] {
                 break (b, true);
             }
@@ -625,20 +632,32 @@ mod tests {
 
     #[test]
     fn a_long_pin_chain_resolves_without_deep_recursion() {
-        // layer k is pinned to layer k + 1: a 200k-long acyclic chain from a template
-        let n = 200_000u64;
-        let b = [0.0, 0.0, 10.0, 10.0];
-        let nodes: Vec<PinNode> = (1..=n)
-            .map(|uid| PinNode { uid, pin: (uid < n).then(|| Pin::new(PinTarget::Layer(uid + 1), [true; 4], b, b)), bounds: b, resizable: true })
-            .collect();
-        let t = std::time::Instant::now();
-        let out = std::thread::Builder::new().stack_size(256 << 10).spawn(move || resolve_pins(&nodes, [0.0; 4])).unwrap().join().unwrap();
-        assert_eq!(out.len(), n as usize);
-        // Coverage instrumentation can slow this allocation- and hash-map-heavy stress test
-        // substantially. Keep the normal performance budget strict, with a bounded allowance
-        // only for instrumented runs (the shared SonarCloud workflow sets LLVM_PROFILE_FILE).
-        let budget = if std::env::var_os("LLVM_PROFILE_FILE").is_some() { 30 } else { 10 };
-        assert!(t.elapsed().as_secs() < budget, "{:?} (budget: {budget}s)", t.elapsed());
+        // layer k is pinned to layer k + 1: an n-long acyclic chain from a template, resolved on a
+        // small stack, with the number of layers visited counted rather than the time taken
+        let resolve = |n: u64| {
+            let b = [0.0, 0.0, 10.0, 10.0];
+            let nodes: Vec<PinNode> = (1..=n)
+                .map(|uid| PinNode { uid, pin: (uid < n).then(|| Pin::new(PinTarget::Layer(uid + 1), [true; 4], b, b)), bounds: b, resizable: true })
+                .collect();
+            std::thread::Builder::new()
+                .stack_size(256 << 10)
+                .spawn(move || {
+                    let mut steps = 0;
+                    (resolve_pins_counting(&nodes, [0.0; 4], &mut steps), steps)
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        };
+        // Following the chain from every layer would take about n * n / 2 visits. The depth limit
+        // keeps each layer to about one chain's length, whatever the host's speed. The shorter
+        // chain comes first so that a quadratic walk fails here in seconds instead of stalling.
+        for n in [20_000u64, 200_000] {
+            let (out, steps) = resolve(n);
+            assert_eq!(out.len(), n as usize);
+            let per_layer = 2 * MAX_PIN_CHAIN;
+            assert!(steps <= per_layer * n as usize, "{steps} visits for {n} layers (at most {per_layer} each)");
+        }
     }
 
     #[test]
