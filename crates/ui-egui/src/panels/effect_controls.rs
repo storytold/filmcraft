@@ -226,6 +226,14 @@ fn reorder_by_drag(
     Some(if below { r.max.y } else { r.min.y })
 }
 
+/// Where a dragged effect will land: a line with an arrowhead at its start. The shape sets it apart
+/// from the line over the first added effect (#2328), which it can cover, and from the row lines.
+fn paint_insertion(painter: &egui::Painter, x: std::ops::RangeInclusive<f32>, y: f32, color: Color32) {
+    painter.hline(x.clone(), y, Stroke::new(3.0, color));
+    let x0 = *x.start() + 2.0;
+    painter.add(egui::Shape::convex_polygon(vec![pos2(x0, y - 6.0), pos2(x0 + 9.0, y), pos2(x0, y + 6.0)], color, Stroke::NONE));
+}
+
 /// The engine moved `clip`'s effects (`order[i]`: the new index of the effect that was at `i`;
 /// [`filmcraft_engine::Event::EffectsReordered`]). What the UI keeps by effect index moves with
 /// them: selected keyframes, expanded rows and graphs, an armed eyedropper, a mask being drawn, the
@@ -536,8 +544,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.auto.add(&format!("effectControls.addedEffects.{which}"), line, "Added effects");
                 }
                 if let Some(y) = insertion_y {
-                    bui.painter().hline(r.min.x..=r.max.x, y, Stroke::new(2.0, t.accent));
-                    app.auto.add("effectControls.insertion", Rect::from_min_max(pos2(r.min.x, y - 1.0), pos2(r.max.x, y + 1.0)), "insertion point");
+                    paint_insertion(bui.painter(), r.min.x..=r.max.x, y, t.accent);
+                    app.auto.add("effectControls.insertion", Rect::from_min_max(pos2(r.min.x, y - 2.0), pos2(r.max.x, y + 2.0)), "insertion point");
                 }
                 crate::dock::paint_widget_focus(bui.painter(), &resp, &t);
                 // only the arrow twirls the effect open or shut; the rest of the header selects it
