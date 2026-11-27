@@ -54,6 +54,7 @@ pub const PANELS: &[&str] = &[
     "Text",
     "Properties",
     "Color Grading",
+    "Script",
 ];
 
 pub const DEFAULT_PRESET: &str = "FilmCraft Default";

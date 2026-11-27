@@ -11,7 +11,7 @@
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
 
-use crate::{GpuCompositor, prepare};
+use crate::{GpuCompositor, prepare_with};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
@@ -127,7 +127,8 @@ impl ExportRenderer {
                 }
                 let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let desc = wgpu::DeviceDescriptor { required_features: crate::optional_features(&adapter), ..Default::default() };
+                let (device, queue) = pollster::block_on(adapter.request_device(&desc)).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -160,7 +161,8 @@ impl ExportRenderer {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
+                // 10-bit planes as their codes where the device takes 16-bit normalized textures
+                let prep = prepare_with(&plan, self.compositor.uploads_raw_16bit());
                 let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
@@ -192,7 +194,8 @@ impl ExportRenderer {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
+                // 10-bit planes as their codes where the device takes 16-bit normalized textures
+                let prep = prepare_with(&plan, self.compositor.uploads_raw_16bit());
                 let (w, h, px) = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
                 if device_failed() {
                     return None;
@@ -207,7 +210,7 @@ impl ExportRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{f16_to_f32, f32_to_f16};
+    use crate::{f16_to_f32, f32_to_f16, prepare};
     use filmcraft_export::FrameRenderer;
     use filmcraft_media::generators::GeneratorSource;
     use filmcraft_media::{Generator, MediaSource};
@@ -843,7 +846,7 @@ mod tests {
 
         // 3. Transformed scene parity on this backend and return bytes for cross-backend check.
         let plan = plan_frame(scene_p, scene_seq, scene_t, RenderOptions::default(), c.caps(), scene_m);
-        let prep = prepare(&plan);
+        let prep = prepare_with(&plan, c.uploads_raw_16bit());
         let (_, _, scene_rgba8) = c.render_export_rgba8_prepared(&plan, Some(&prep)).expect("scene rgba8");
         let (sw, sh, scene_f32) = c.render_export_prepared(&plan, Some(&prep)).expect("scene f32");
         assert_eq!(
