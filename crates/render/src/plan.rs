@@ -321,7 +321,6 @@ pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOpti
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick, scale: f32, caps: DeviceCaps) -> bool {
     crate::colorman::display_transform(&seq.settings.color).gpu_params().is_none() || !layered_at(project, seq, t, scale, caps)
 }
-}
 
 fn is_adjustment(project: &Project, it: &TrackItem) -> bool {
     project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }))
