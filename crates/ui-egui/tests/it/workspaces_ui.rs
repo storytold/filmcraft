@@ -7,66 +7,21 @@
 //! `workspaces-*.png`.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_snapshot, with_snapshots};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::dock::PanelKind;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The demo project with its preferences (and workspaces) in `data`.
     fn launch(data: &Path) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         session.prefs_path = Some(data.join("preferences.json"));
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
+        Self::open(session, with_snapshots(builder()))
     }
 
     fn menu(&mut self, id: &str, params: Value) -> Value {
@@ -79,26 +34,12 @@ impl Driver {
         v["error"].as_str().unwrap_or_default().to_string()
     }
 
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
     /// Replace the text of the field `id`.
     fn retype(&mut self, id: &str, text: &str) {
         self.click(id);
         self.ok("ui.key", json!({"key": "A", "command": true}));
         self.ok("ui.type", json!({"text": text}));
         self.frames(2);
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
     }
 
     fn workspace(&mut self) -> String {
@@ -122,15 +63,7 @@ impl Driver {
     }
 
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(2);
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                img.save(dir.join(format!("workspaces-{name}.png"))).unwrap();
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
+        save_snapshot(self, 2, &format!("workspaces-{name}.png"));
     }
 }
 
@@ -187,6 +120,7 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Editing",
             "Effects",
             "Learning",
+            "Lined Script",
             "Review",
             "Vertical",
             "Reset to Saved Layout",
@@ -238,6 +172,127 @@ fn save_switch_reset_rename_delete_and_restart() {
     assert_eq!(d.workspace(), "Editing");
     assert!(!d.workspaces_menu().iter().any(|(l, _)| l == "Fine Cut"));
     assert_eq!(saved_file(&data)["saved"], json!([]));
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// #2421: panel changes made without Save Changes to this Workspace come back after a restart
+/// (the layout in use when the app closed is remembered per workspace); Reset to Saved Layout
+/// still returns to the saved layout, and another workspace's remembered layout is not applied.
+#[test]
+fn the_layout_in_use_at_close_comes_back_without_saving() {
+    let data = data_dir("remember");
+    let mut d = Driver::launch(&data);
+    assert_eq!(d.workspace(), "Editing");
+    assert!(d.shows(PanelKind::Metadata));
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    // the exit path is what remembers it
+    eframe::App::on_exit(d.app());
+    assert_eq!(saved_file(&data)["last"]["name"], "Editing");
+    assert_eq!(saved_file(&data)["saved"], json!([]), "nothing was saved as a workspace");
+    drop(d);
+
+    let mut d = Driver::launch(&data);
+    assert_eq!(d.workspace(), "Editing");
+    assert!(!d.shows(PanelKind::Metadata), "the layout in use at close comes back");
+    d.menu("window.workspace.reset", json!({}));
+    assert!(d.shows(PanelKind::Metadata), "Reset to Saved Layout returns to the saved layout");
+
+    // closed in Color: Color comes back as it was, Editing opens its saved layout
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    assert!(d.shows(PanelKind::LumetriScopes));
+    d.ok("ui.panel.close", json!({"panel": "LumetriScopes"}));
+    d.app().remember_layout();
+    drop(d);
+    let mut d = Driver::launch(&data);
+    assert_eq!(d.workspace(), "Color");
+    assert!(!d.shows(PanelKind::LumetriScopes));
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    assert!(d.shows(PanelKind::Metadata), "another workspace's remembered layout does not apply");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// A window closed before its first frame has not brought the workspace back yet: what the last
+/// launch remembered stays, not the default workspace's layout.
+#[test]
+fn closing_before_the_first_frame_keeps_the_remembered_layout() {
+    let data = data_dir("remember-early");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.ok("ui.panel.close", json!({"panel": "LumetriScopes"}));
+    d.app().remember_layout();
+    drop(d);
+    let before = saved_file(&data);
+    assert_eq!(before["last"]["name"], "Color");
+
+    let mut session = Session::default();
+    session.prefs_path = Some(data.join("preferences.json"));
+    FilmcraftApp::new(session).remember_layout();
+    assert_eq!(saved_file(&data), before);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// A `workspaces.json` whose workspace in use names no workspace (edited or damaged): the launch
+/// keeps the default layout, and closing it does not replace the remembered one.
+#[test]
+fn a_current_workspace_that_names_none_keeps_the_remembered_layout() {
+    let data = data_dir("remember-unknown");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.ok("ui.panel.close", json!({"panel": "LumetriScopes"}));
+    d.app().remember_layout();
+    drop(d);
+    let mut file = saved_file(&data);
+    file["current"] = json!("Gone");
+    std::fs::write(data.join("workspaces.json"), serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+
+    let mut d = Driver::launch(&data);
+    eframe::App::on_exit(d.app());
+    drop(d);
+    assert_eq!(saved_file(&data), file, "the remembered layout stays");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// A layout saved on purpose is never beaten by an older remembered one: Save Changes to this
+/// Workspace, Reset to Saved Layout and deleting a built-in's changes drop the remembered layout
+/// (so a session that ends without `on_exit` still reopens the saved layout), and a rename keeps
+/// the remembered layout with its workspace.
+#[test]
+fn a_saved_layout_wins_over_an_older_remembered_one() {
+    let data = data_dir("remember-saved");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    d.app().remember_layout();
+    assert!(saved_file(&data)["last"].is_object());
+    drop(d);
+
+    // save a different layout, then end without remembering (a crash): the saved layout comes back
+    let mut d = Driver::launch(&data);
+    assert!(!d.shows(PanelKind::Metadata));
+    d.ok("ui.panel.close", json!({"panel": "Info"}));
+    d.ok("ui.panel.show", json!({"panel": "Metadata"}));
+    d.menu("window.workspace.saveChanges", json!({}));
+    assert!(saved_file(&data)["last"].is_null(), "Save Changes drops the remembered layout");
+    drop(d);
+    let mut d = Driver::launch(&data);
+    assert!(d.shows(PanelKind::Metadata) && !d.shows(PanelKind::Info), "the saved layout, not the remembered one");
+
+    // Reset to Saved Layout drops it too
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    d.app().remember_layout();
+    assert!(saved_file(&data)["last"].is_object());
+    d.menu("window.workspace.reset", json!({}));
+    assert!(d.shows(PanelKind::Metadata));
+    assert!(saved_file(&data)["last"].is_null(), "Reset to Saved Layout drops the remembered layout");
+
+    // a rename keeps the remembered layout with its workspace; deleting the workspace drops it
+    d.menu("window.workspace.saveAs", json!({"name": "Mine"}));
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    d.app().remember_layout();
+    assert_eq!(saved_file(&data)["last"]["name"], "Mine");
+    d.menu("window.workspace.rename", json!({"from": "Mine", "to": "Ours"}));
+    assert_eq!(saved_file(&data)["last"]["name"], "Ours");
+    d.menu("window.workspace.delete", json!({"name": "Ours"}));
+    assert!(saved_file(&data)["last"].is_null(), "deleting the workspace drops its remembered layout");
     let _ = std::fs::remove_dir_all(&data);
 }
 

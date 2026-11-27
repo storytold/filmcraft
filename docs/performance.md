@@ -160,7 +160,7 @@ from another thread and exports again created 6 and invalidated 12.
 ## Results (CPU compositor: layer rectangles, an opaque bottom layer and recycled images, before → after)
 
 The CPU compositor is what export runs. In a profile of a 9:29 export it took about a third of the
-busy CPU with the built-in H.264 encoder (the encoder took the other two thirds), and a faster
+busy CPU with the software H.264 encoder (the encoder took the other two thirds), and a faster
 encoder leaves it as the largest cost of an export. It works on premultiplied linear `f32` images,
 33 MB each at 1080p, and every layer was one of them: a banner that is transparent except for its
 bottom 100 rows still cost a full conversion and a full mix, and the bottom layer paid for a
@@ -253,6 +253,28 @@ of a batch (a render-preview segment, a proxy), which the next part reuses. A pr
 (Apple M1, `footprint`, 10 s after the last export) rested at **575 MB** with the pool holding
 332 MB idle and at **258 MB** with the trim. The memory does not come back at once: macOS returns
 freed pages over a few seconds (892 MB right after the export in both cases, 726 MB after 2 s).
+
+## Results (adjustment layers on the GPU compositor, main → after)
+
+An adjustment layer anywhere at a time sent the whole frame to the CPU renderer (`plan::layered_at`),
+so Export ▸ GPU Rendering did nothing for the frames under one. A full-frame adjustment layer at
+100 % opacity, Normal, unmasked and with only GPU effects is now a `PlanStep::Adjust`: its effects
+run in the GPU effect stage on the composite of the tracks below. Windows 11 Pro 26300, Xeon
+E5-2680 v4 (14 cores / 28 threads), RTX 5060 8 GB (driver 617.14), 2026-10-23, release builds of
+main 20f02b9a and of the change with `cargo build --release -p filmcraft -p filmcraft-cli`, two
+alternating rounds, `filmcraft-cli … run` of `file.exportMedia` (H.264, `gpuRendering` and
+`hardwareEncoding` Auto, NVENC), 300 frames of a 1920×1080 30 fps sequence, seconds:
+
+| scene | main | **after** |
+|---|---|---|
+| the CityNight demo footage under an adjustment layer (Color Grading: contrast, exposure, vignette; Gaussian Blur 4) | 35.5, 35.8 | **9.4, 8.6** |
+| a real edit: 1080p H.264 camera clips with dips to black, an adjustment layer with Color Grading over 89 % of it, about 150 titles and shapes above | 26.1, 24.4 | **5.2, 5.0** |
+
+4.0× and 5.0× faster (means of the two rounds). GPU 3D utilisation (`nvidia-smi dmon`) went from
+1–4 % to 18–31 %. The two builds' files decode to the same picture within encoder noise (ffmpeg `psnr`
+between them: average 61.4 / 54.0 dB, lowest frame 58.8 / 52.6 dB). The whole 82 s real edit (2,472
+frames) exports in 43.7 s; with the adjustment layer the render stage is still most of that (decoded
+pictures and the composite still go through the CPU, and titles are rasterised there).
 
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
@@ -350,7 +372,7 @@ and an outro.
 
 | encoder | wall time | frames/s | vs real time | file |
 |---|---|---|---|---|
-| built-in (`filmcraft-h264enc`) | 793 s | 17.9 | 1.4× slower | 1445 MB, 20.0 Mb/s |
+| FilmCraft software encoder (pre-cutover local implementation) | 793 s | 17.9 | 1.4× slower | 1445 MB, 20.0 Mb/s |
 | hardware (VideoToolbox) | **311 s** | **45.7** | 1.8× faster | 1417 MB, 19.6 Mb/s |
 
 2.5× faster. The first 134 s of the same timeline, where the overlays are densest (intro, a banner, a
@@ -358,7 +380,7 @@ subscribe bar and the outro in 134 s):
 
 | encoder | wall time | frames/s | vs real time | file |
 |---|---|---|---|---|
-| built-in (`filmcraft-h264enc`) | 395 s | 8.5 | 2.9× slower | 340 MB, 20.0 Mb/s |
+| FilmCraft software encoder (pre-cutover local implementation) | 395 s | 8.5 | 2.9× slower | 340 MB, 20.0 Mb/s |
 | hardware (VideoToolbox) | **84 s** | **39.9** | 1.6× faster | 312 MB, 18.3 Mb/s |
 
 4.7× faster there. The gain depends on what else an export spends its time on: with the encoder
@@ -646,9 +668,19 @@ software either way and show the run-to-run spread. The decoded pictures are ide
 
 What is left on the CPU per H.264 frame is the host side of stateless decoding (parsing, DPB,
 filling the VA buffers) and the read-back: `vaGetImage` into an NV12 image and the copy into
-planar Y'CbCr. One picture is decoded at a time and read back as soon as the DPB outputs it, so
+planar Y'CbCr (since then `vaDeriveImage`, below). One picture is decoded at a time and read back as soon as the DPB outputs it, so
 4K throughput (56 fps) is bound by that round trip, not by the video engine; overlapping decode
 and read-back, or zero-copy into wgpu, would raise it.
+
+### VA-API read-back through `vaDeriveImage`
+
+The read-back maps the decoded surface's own NV12 / P010 memory (`vaDeriveImage`) instead of
+copying it into a second image with `vaGetImage` first; a driver that cannot derive a surface
+switches the session back to `vaGetImage` (logged once). Sequential decode of a 4K50 HEVC Main 10
+file on an AMD Radeon RX 9070 XT (Mesa 26.2.5, radeonsi), before and after the change: 35 →
+66–68 fps, pictures bit-identical to the software decoder. *Measured during development; the load
+average was not recorded and it was not run through `cargo xtask bench`*, so treat it as an
+indication until the bench table is re-measured.
 
 ### HEVC through VA-API (HW5 follow-up)
 
@@ -704,7 +736,7 @@ one thread the code path is the old one.
 
 Linux, AMD Ryzen 7 7800X3D (8 cores / 16 threads), 2026-10-11, shared with other agents' builds;
 base = `2ff3f5e`, after = this change, 16 decoder threads, SVT-AV1 preset 8 fixtures from
-`crates/av1/tests/it/perf.rs` (`perf_1080p_lowdelay` and `perf_2160p_gop` are new there).
+craft-libs `crates/video/tests/av1_decode/perf.rs` (`perf_1080p_lowdelay` and `perf_2160p_gop` are new there).
 
 `av1dec` example (`AV1_LOOPS=2 AV1_THREADS=16`), 8 rounds alternating base / after per fixture,
 load average 11–27; speed-up = base wall time / after wall time of the adjacent pair:
@@ -910,6 +942,24 @@ is the ~9 % of decoder cycles above, plus a quarter / sixteenth of the texture u
 frame jobs wait for the decoder less (decode ms/job 212 → 67 at 1/2, 98 → 44 at 1/4 in the busy
 round). On an idle machine the 4K clip needs about two cores.
 
+### Video Scopes: UI pass time, 2160p PQ (`egui_kittest`)
+
+A 4K50 HEVC Main 10 PQ clip (ffmpeg `testsrc2`, `target/fixtures`) in a Rec. 2100 PQ sequence,
+the Video Scopes panel showing (HDR waveform): the playhead steps one frame at a time and each UI
+pass is timed (60 steps, release build, 1600×980 harness; hardware decoding is not registered in
+the harness, so the clip decodes in software). Ryzen 7 5800X3D, load average ~5. Measured once,
+before and after the scope worker on the same tree (the 11 PRs of the HDR / playback series
+merged); a temporary test, not committed.
+
+| | UI pass p50 | p95 | max |
+|---|---|---|---|
+| scopes closed | 3.4–3.6 ms | 8–11 ms | 13–29 ms |
+| scopes open, before (signal and scopes in the UI pass) | 24.1 ms | 780.5 ms | 968.5 ms |
+| scopes open, after (scope worker) | 3.3 ms | 10.5 ms | 19.4 ms |
+
+Before, each new frame rendered the working-space picture (decoding the source) inside the UI
+pass; after, the UI pass with the scopes open costs what it costs without them.
+
 ## What M4.9 changed
 
 1. **Deblocking** (25–30 % of 4K decode time before): the edge filter runs on all 16 luma / 8
@@ -926,7 +976,7 @@ round). On an idle machine the 4K clip needs about two cores.
    all threads (bit-exact each time). A separate deblocking thread was not added: a picture's rows
    are published about two rows after they are reconstructed, so a reference chain advances a few
    rows behind its predecessor and the pool already has more pictures in flight than cores
-   (crates/h264/README.md, "Threading model").
+   (craft-libs `crates/video/src/h264/decode/README.md`, "Threading model").
 5. **Draft decoding** (Settings ▸ Playback ▸ Draft decoding, off by default; `perf.stats`
    `playback.draftDecode`, `decode.draftFrames`, `decode.h264Threads`): while the Program monitor
    plays at 1/2 or 1/4, H.264 non-reference pictures skip deblocking (no other picture can change),
@@ -1100,6 +1150,14 @@ Fixed:
 
 A cold drag went from ~1.5 s of frozen playhead (two opens of 558 + 191 ms) to ~0.6 s (one open of
 558 ms). That last open is still on the UI thread; moving it off is the next step of #2633.
+
+Then (#3000): the scrub grain plays on its own output, `CpalScrubOut`, whose thread opens and owns
+the stream (`cpal::Stream` is `!Send`) and keeps it for 5 s after the last grain. The frame that
+moves the playhead only sends the grain's mixer over a channel, so a press or a drag does no
+blocking work at all; from a cold audio engine the first grain is silent for the ~0.6 s the stream
+takes to open on its thread. Playback gives the scrub device back (`ScrubOut::release`, waiting at
+most 250 ms) before it opens its own stream, so a device that takes one stream at a time is free.
+Playback's own start still opens on the UI thread.
 
 Test: `crates/ui-egui/tests/it/scrub_stop_ui.rs` — a press that only moves the playhead closes no
 stream, and a press while playing still stops the transport. `apps/filmcraft` (`audio::tests`) —

@@ -41,6 +41,11 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: camera raw Source Settings on media items (`Interpretation::raw`, #1078), defined in
+//!   storytold/craft-libs. This build does not have the settings yet. Builds from before the
+//!   craft-libs pin move also wrote Script items as v18; those files read as v18 here and upgrade.
+//! - **v19**: Script Project items with linked takes, marks, and independently positioned thumbnails
+//!   (#2726), defined in storytold/craft-libs.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -48,45 +53,16 @@ pub mod atomic;
 pub mod autosave;
 
 use filmcraft_project::{Project, ProjectView};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 
-pub use atomic::{atomic_write, atomic_write_new};
+pub use atomic::{atomic_write, atomic_write_new, atomic_write_no_follow};
 
-/// The `format` tag written in every envelope.
-pub const FORMAT_ID: &str = "filmcraft.project";
+pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
 
-/// A migration upgrades a whole document from schema `n` to `n + 1`.
-pub type Migration = fn(Value) -> Result<Value, String>;
-
-/// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
-/// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[
-    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
-    v15_to_v16, v16_to_v17,
-];
-
-/// The schema version this build writes (and the newest it reads).
-pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
-
-/// Oldest schema this build can still upgrade.
-pub const OLDEST_SCHEMA: u32 = 1;
-
-#[derive(Debug, thiserror::Error)]
-pub enum FormatError {
-    #[error("not a FilmCraft project: {0}")]
-    NotAProject(String),
-    #[error(
-        "this project was saved by a newer version of FilmCraft (project schema v{found}); this build reads up to v{supported}. Update FilmCraft to open it."
-    )]
-    TooNew { found: u32, supported: u32 },
-    #[error("project schema v{found} is too old for this build (oldest supported: v{oldest})")]
-    TooOld { found: u32, oldest: u32 },
-    #[error("upgrading project from schema v{from} to v{}: {msg}", from + 1)]
-    Migration { from: u32, msg: String },
-    #[error("project file is damaged: {0}")]
-    Corrupt(String),
-}
+/// Largest project file this build will read (256 MiB). Project JSON is read whole, so
+/// larger files would commit several times their size in memory before validation.
+pub const MAX_PROJECT_BYTES: u64 = 256 << 20;
 
 /// A project read from disk.
 #[derive(Debug)]
@@ -113,48 +89,9 @@ pub fn generator() -> String {
     format!("FilmCraft {}", env!("CARGO_PKG_VERSION"))
 }
 
-#[derive(Serialize)]
-struct EnvelopeOut<'a> {
-    format: &'static str,
-    schema_version: u32,
-    generator: String,
-    project: &'a Project,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    view: Option<&'a ProjectView>,
-}
-
-#[derive(Deserialize)]
-struct EnvelopeIn {
-    #[serde(default)]
-    generator: Option<String>,
-    project: Project,
-    /// Kept as JSON until the project itself has loaded: a view that cannot be read is dropped,
-    /// it never stops a project from opening.
-    #[serde(default)]
-    view: Option<Value>,
-}
-
-impl EnvelopeIn {
-    fn loaded(self, schema_version: u32) -> Loaded {
-        let view = self.view.and_then(|v| serde_json::from_value(v).ok());
-        Loaded { project: self.project, schema_version, generator: self.generator, view }
-    }
-}
-
-/// Just enough of a document to know which schema it is.
-#[derive(Deserialize)]
-struct Probe {
-    #[serde(default)]
-    format: Option<String>,
-    #[serde(default)]
-    schema_version: Option<u32>,
-    /// Bare (pre-envelope) project: its `version` field.
-    #[serde(default)]
-    version: Option<u32>,
-    #[serde(default)]
-    items: Option<serde::de::IgnoredAny>,
-    #[serde(default)]
-    root: Option<serde::de::IgnoredAny>,
+fn loaded(env: craft_fcproj_format::EnvelopeIn<Project>, schema_version: u32) -> Loaded {
+    let view = env.view.and_then(|v| serde_json::from_value(v).ok());
+    Loaded { project: env.project, schema_version, generator: env.generator, view }
 }
 
 /// Serialize a project in the current schema. `pretty` = indented (human-diffable; used for the
@@ -167,54 +104,16 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    let env = EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
-    let r = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
-    // Serializing plain data (string keys, finite numbers or null) cannot fail.
-    r.unwrap_or_default()
-}
-
-/// Detect the schema version of a parsed document.
-pub fn detect_version(doc: &Value) -> Result<u32, FormatError> {
-    let probe: Probe = serde_json::from_value(doc.clone()).map_err(|e| FormatError::NotAProject(e.to_string()))?;
-    probe_version(&probe)
-}
-
-fn probe_version(p: &Probe) -> Result<u32, FormatError> {
-    if let Some(v) = p.schema_version {
-        if let Some(f) = &p.format
-            && f != FORMAT_ID
-        {
-            return Err(FormatError::NotAProject(format!("format is `{f}`, expected `{FORMAT_ID}`")));
-        }
-        return Ok(v);
-    }
-    // Before the envelope (v1) a file was the bare Project object with `version`.
-    // Its `version` was 1, or 2 on builds that briefly bumped it when caption tracks were added
-    // (same shape; the new field loads with its default). Anything higher is from the future.
-    if p.items.is_some() && p.root.is_some() {
-        return Ok(match p.version.unwrap_or(1) {
-            0..=2 => 1,
-            v => v,
-        });
-    }
-    Err(FormatError::NotAProject("no `schema_version` and not a legacy project".into()))
+    craft_fcproj_format::encode(project, view, generator(), pretty)
 }
 
 /// Read a project file (any supported schema).
 pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
-    let probe: Probe = serde_json::from_slice(bytes)
-        .map_err(|e| if e.is_syntax() || e.is_eof() { FormatError::Corrupt(e.to_string()) } else { FormatError::NotAProject(e.to_string()) })?;
-    let found = probe_version(&probe)?;
-    check_supported(found)?;
-    if found == SCHEMA_VERSION {
-        // Fast path: deserialize straight into the model.
-        let env: EnvelopeIn = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
-        return validate_loaded(env.loaded(found));
+    if bytes.len() as u64 > MAX_PROJECT_BYTES {
+        return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let doc: Value = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
-    let doc = migrate_with(MIGRATIONS, doc, found)?;
-    let env: EnvelopeIn = serde_json::from_value(doc).map_err(|e| FormatError::Corrupt(format!("after upgrading from schema v{found}: {e}")))?;
-    validate_loaded(env.loaded(found))
+    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
+    validate_loaded(loaded(env, found))
 }
 
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
@@ -242,7 +141,9 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
         let name = item.name.clone();
         match &mut item.kind {
             filmcraft_project::ItemKind::Media(m) => {
-                if let Some(video) = &m.info.video {
+                if let Some(video) = &m.info.video
+                    && (video.width, video.height) != (0, 0)
+                {
                     filmcraft_project::validate_frame_size(video.width, video.height).map_err(|e| FormatError::Corrupt(format!("media `{name}`: {e}")))?;
                 }
                 if m.info.audio_streams.len() > max {
@@ -267,6 +168,37 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
         }
     }
+    for item in loaded.project.items.values() {
+        if let filmcraft_project::ItemKind::Script(doc) = &item.kind {
+            doc.validate().map_err(|e| FormatError::Corrupt(format!("script `{}`: {e}", item.name)))?;
+        }
+    }
+    // A missing linked clip must not make an otherwise sound project impossible to open.
+    let valid_take_sources: std::collections::HashSet<_> = loaded
+        .project
+        .items
+        .keys()
+        .copied()
+        .filter(|source| {
+            loaded.project.item(*source).is_some_and(|linked| match &linked.kind {
+                filmcraft_project::ItemKind::Media(_) => true,
+                filmcraft_project::ItemKind::Subclip { .. } => loaded.project.resolve_media(*source).is_some(),
+                filmcraft_project::ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                _ => false,
+            })
+        })
+        .collect();
+    for item in loaded.project.items.values_mut() {
+        let name = item.name.clone();
+        if let Some(doc) = item.as_script_mut() {
+            for take in doc.slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+                if take.source.is_some_and(|source| !valid_take_sources.contains(&source)) {
+                    log::warn!("script `{name}`: take {} lost its source, unlinked", take.id.0);
+                    take.source = None;
+                }
+            }
+        }
+    }
     // Every new id is `next_id`, read from the file as is. One that lags behind the ids in it (an
     // older build, a hand edit) would hand out an id in use, and the new item replace the old (#2809).
     let project = &mut loaded.project;
@@ -282,137 +214,13 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     Ok(loaded)
 }
 
-fn check_supported(found: u32) -> Result<(), FormatError> {
-    if found > SCHEMA_VERSION {
-        return Err(FormatError::TooNew { found, supported: SCHEMA_VERSION });
-    }
-    if found < OLDEST_SCHEMA {
-        return Err(FormatError::TooOld { found, oldest: OLDEST_SCHEMA });
-    }
-    Ok(())
-}
-
-/// Run `table` from schema `from` up to `table.len() + 1`, stamping `schema_version` after each step.
-pub fn migrate_with(table: &[Migration], mut doc: Value, from: u32) -> Result<Value, FormatError> {
-    let target = table.len() as u32 + 1;
-    if from > target {
-        return Err(FormatError::TooNew { found: from, supported: target });
-    }
-    if from == 0 {
-        return Err(FormatError::TooOld { found: 0, oldest: 1 });
-    }
-    for v in from..target {
-        let step = table[(v - 1) as usize];
-        doc = step(doc).map_err(|msg| FormatError::Migration { from: v, msg })?;
-        match doc.as_object_mut() {
-            Some(o) => {
-                o.insert("schema_version".into(), Value::from(v + 1));
-            }
-            None => return Err(FormatError::Migration { from: v, msg: "migration produced a non-object document".into() }),
-        }
-    }
-    Ok(doc)
-}
-
-/// v1 → v2: wrap the bare project in the envelope and drop the per-project `version` field.
-fn v1_to_v2(doc: Value) -> Result<Value, String> {
-    let Value::Object(mut project) = doc else { return Err("expected a JSON object".into()) };
-    project.remove("version");
-    Ok(serde_json::json!({
-        "format": FORMAT_ID,
-        "schema_version": 2,
-        "generator": "FilmCraft (schema v1)",
-        "project": Value::Object(project),
-    }))
-}
-
-/// v2 → v3: graphic clips added; existing data needs no change.
-fn v2_to_v3(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v3 → v4: Essential Sound fields added; existing data needs no change.
-fn v3_to_v4(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v4 → v5: colour-management fields added; existing data needs no change.
-fn v4_to_v5(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v5 → v6: media identity and ingest settings added; existing data needs no change.
-fn v5_to_v6(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v6 → v7: effect masks (Bézier mask paths as keyframable parameters); existing data needs no change.
-fn v6_to_v7(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v7 → v8: multi-camera source sequences / clips and merged clips added; existing data needs no
-/// change.
-fn v7_to_v8(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v8 → v9: per-media-item transcripts (`project.transcripts`) added; existing data needs no change.
-fn v8_to_v9(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v9 → v10: clip time interpolation, Hold Filters, Field Options and audio source channels; the
-/// Modify ▸ Audio Channels map; subclips' Restrict Trims flag. Existing data needs no change.
-fn v9_to_v10(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v10 → v11: search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas,
-/// capture format and scratch disks. Existing data needs no change.
-fn v10_to_v11(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v11 → v12: graphics templates, rolls / crawls, responsive design and per-character text styles
-/// on graphic clips, and source graphics. Existing data needs no change.
-fn v11_to_v12(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v12 → v13: container audio streams and per-clip stream selection. `MediaInfo` reads the old
-/// `audio` field as stream zero; `TrackItem::audio_stream` defaults to zero.
-fn v12_to_v13(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v13 → v14: narrations (Text to Speech). Existing data needs no change.
-fn v13_to_v14(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v14 → v15: project notes. Existing data needs no change.
-fn v14_to_v15(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v15 → v16: existing colors remain presets; authors and the named custom palette default empty.
-fn v15_to_v16(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
-/// v16 → v17: marker URLs default empty. Older builds must not silently drop saved URLs.
-fn v16_to_v17(doc: Value) -> Result<Value, String> {
-    Ok(doc)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 19);
     }
 
     #[test]
@@ -491,6 +299,64 @@ mod tests {
             assert!(!l.migrated());
             assert_eq!(l.generator.as_deref(), Some(generator().as_str()));
         }
+    }
+
+    #[test]
+    fn damaged_script_ids_are_rejected_and_missing_links_are_unbound_on_load() {
+        use filmcraft_project::{ItemId, ItemKind, Label, ScriptColor, ScriptDocument, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
+        use std::sync::Arc;
+        let mut p = Project::new("script validation");
+        let doc = ScriptDocument::from_text("one\ntwo").unwrap();
+        let first = doc.lines[0].id;
+        let second = doc.lines[1].id;
+        let script = p.add_item("dialogue", Label::Blue, ItemKind::Script(Arc::new(doc)), None);
+        assert!(decode(&encode(&p, false)).is_ok());
+        // Earlier Script builds saved these items in schema 17, and builds before the shared Script
+        // step in schema 18. Shared migrations must keep them.
+        for version in [17, 18] {
+            let mut older: Value = serde_json::from_slice(&encode(&p, false)).unwrap();
+            older["schema_version"] = Value::from(version);
+            let loaded = decode(&serde_json::to_vec(&older).unwrap()).unwrap();
+            assert!(loaded.migrated());
+            assert_eq!(loaded.project, p);
+        }
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.lines[1].id = first;
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.lines[1].id = second;
+        doc.next_id = second.0;
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.next_id = 5;
+        doc.slates.push(ScriptSlate {
+            id: ScriptSlateId(3),
+            name: "setup".into(),
+            thumbnail_line: None,
+            thumbnail_x: None,
+            takes: vec![ScriptTake {
+                id: ScriptTakeId(4),
+                source: Some(ItemId(999)),
+                source_name: "gone".into(),
+                start_line: first,
+                end_line: second,
+                thumbnail_time: None,
+                color: ScriptColor::Blue,
+                line_colors: vec![],
+                offscreen_lines: vec![],
+                marks: vec![],
+                source_identity: None,
+            }],
+        });
+        // Both load repairs must apply together: stale project IDs and missing Script sources.
+        p.next_id = script.0;
+        let repaired = decode(&encode(&p, false)).unwrap();
+        assert!(repaired.project.next_id > script.0);
+        let take = &repaired.project.item(script).unwrap().as_script().unwrap().slates[0].takes[0];
+        assert_eq!(take.source, None);
+        assert_eq!(take.source_name, "gone");
+        p.item_mut(script).unwrap().as_script_mut().unwrap().slates[0].takes[0].source = None;
+        assert!(decode(&encode(&p, false)).is_ok(), "unlinked take slots remain valid");
     }
 
     #[test]

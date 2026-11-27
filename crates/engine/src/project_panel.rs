@@ -218,7 +218,7 @@ pub const DEFAULT_COLUMNS: [&str; 12] = [
 ];
 
 /// Every built-in column (Metadata Display ▸ Project Metadata), in display order.
-pub const BUILTIN_COLUMNS: [&str; 36] = [
+pub const BUILTIN_COLUMNS: [&str; 37] = [
     "Name",
     "Label",
     "Media Type",
@@ -250,6 +250,7 @@ pub const BUILTIN_COLUMNS: [&str; 36] = [
     "Description",
     "Scene",
     "Shot",
+    "Take",
     "Log Note",
     "Comment",
     "Tape Name",
@@ -1211,8 +1212,28 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------------------------ registry
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
-    let c = |id, label, params, enabled, run| CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal: true };
-    let q = |id, label, params, run| CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false };
+    let c = |id, label, params, enabled, run| CommandSpec {
+        id,
+        label,
+        menu: &[],
+        shortcut: None,
+        params,
+        enabled,
+        run,
+        journal: true,
+        named: crate::commands::NamedKeys::NONE,
+    };
+    let q = |id, label, params, run| CommandSpec {
+        id,
+        label,
+        menu: &[],
+        shortcut: None,
+        params,
+        enabled: always,
+        run,
+        journal: false,
+        named: crate::commands::NamedKeys::NONE,
+    };
     vec![
         q("project.view.get", "Project Panel View", "{}", |s, _| Ok(view_json(s))),
         c(

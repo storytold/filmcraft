@@ -28,6 +28,7 @@ pub fn item_icon(k: &ItemKind) -> Icon {
         },
         ItemKind::Sequence(_) => Icon::Sequence,
         ItemKind::Subclip { .. } => Icon::Film,
+        ItemKind::Script(_) => Icon::Captions,
         ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => Icon::Adjust,
     }
 }
@@ -270,6 +271,8 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
             // like Premiere: double-clicking a Color Matte opens its color picker
             actions.push(("project.select".into(), json!({"items": [id.0]})));
             actions.push(("project.matteColor".into(), json!({})));
+        } else if matches!(kind, ItemKind::Script(_)) {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
         } else {
             let cmd = if matches!(kind, ItemKind::Sequence(_)) { "sequence.open" } else { "source.open" };
             actions.push((cmd.into(), json!({"item": id.0})));
@@ -283,16 +286,29 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
     }
 }
 
+fn script_and_source_menu(ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Open in Source Monitor")).clicked() {
+        actions.push(("source.open".into(), json!({"item": id.0})));
+        ui.close();
+    }
+    if matches!(kind, ItemKind::Script(_)) {
+        if ui.button(tl!("Open Script")).clicked() {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
+            ui.close();
+        }
+    } else if ui.button(tl!("Find in Script")).clicked() {
+        actions.push(("script.findInScript".into(), json!({"item": id.0})));
+        ui.close();
+    }
+}
+
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button(tl!("Open in Source Monitor")).clicked() {
-        actions.push(("source.open".into(), json!({"item": id.0})));
-        ui.close();
-    }
+    script_and_source_menu(ui, id, kind, actions);
     if matches!(kind, ItemKind::Sequence(_)) && ui.button(tl!("Open in Timeline")).clicked() {
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
@@ -307,7 +323,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
             ui.close();
         }
     }
-    if ui.button(tl!("New Sequence From Clip")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("New Sequence From Clip")).clicked() {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
@@ -316,19 +332,21 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("edit.duplicate".into(), json!({})));
         ui.close();
     }
-    if ui.button(tl!("Set Poster Frame")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Set Poster Frame")).clicked() {
         // the hover-scrubbed time when there is one
         let h = app.ui.project_panel.hover.filter(|h| h.item == id.0);
         actions.push(("project.select".into(), sel()));
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    let b = ui.button(tl!("Interpret Footage…"));
-    app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
-    if b.clicked() {
-        let items = menu_targets(&app.session.state.project_selection, id);
-        actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
-        ui.close();
+    if !matches!(kind, ItemKind::Script(_)) {
+        let b = ui.button(tl!("Interpret Footage…"));
+        app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
+        if b.clicked() {
+            let items = menu_targets(&app.session.state.project_selection, id);
+            actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
+            ui.close();
+        }
     }
     // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
     let subclip_items: Vec<(&str, &str, &str)> = match kind {
@@ -513,7 +531,7 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
     if let Some(rn) = app.ui.project_panel.rename.as_mut() {
         rn.text = text;
     }
-    let done = if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    let done = if crate::framework::escape_pressed(ui.ctx()) {
         app.ui.project_panel.rename = None;
         true
     } else if resp.lost_focus() {
@@ -699,6 +717,16 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bg: &egui::R
     bg.context_menu(|ui| background_menu(app, ui, v, bin, actions));
 }
 
+/// Reveal in Project: scroll the revealed item's Name cell (List) or card (`r`, drawn this frame
+/// inside the view's scroll area) into view, once. Only as far as needed: a row already on show
+/// stays put.
+fn scroll_to_revealed(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, id: ItemId, r: Rect) {
+    if v.inst == Inst::Main && app.ui.project_panel.reveal == Some(id.0) {
+        app.ui.project_panel.reveal = None;
+        ui.scroll_to_rect(r, None);
+    }
+}
+
 fn hits_id(v: &View) -> egui::Id {
     egui::Id::unique((&v.prefix, "marquee-hits"))
 }
@@ -729,7 +757,7 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
         ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, current.clone(), add)));
     }
     let Some((anchor, before, add)) = ui.data(|d| d.get_temp::<Drag>(key)) else { return };
-    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let cancel = crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx());
     if cancel || !(bg.dragged_by(primary) || bg.drag_stopped_by(primary)) {
         ui.data_mut(|d| d.remove::<Drag>(key));
         if cancel && before != current {
@@ -771,7 +799,8 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
             ui.close();
         }
     }
-    ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
+    let new_bin = (v.bin != app.session.project.root.id).then_some(v.bin.0);
+    ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, new_bin, actions));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -833,6 +862,10 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let Some(it) = app.session.project.item(id).cloned() else { continue };
         let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click_and_drag());
         note_hit(ui, v, id, r);
+        let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
+        // The Name cell, not the whole row: a row as wide as the view would leave the list scrolled
+        // sideways past the name.
+        scroll_to_revealed(app, ui, v, id, Rect::from_min_max(r.min, pos2(r.min.x + LEAD + name_w, r.max.y)));
         let selected = app.session.state.project_selection.contains(&id);
         if selected {
             ui.painter().rect_filled(r, 0.0, t.row_selected);
@@ -846,7 +879,6 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         ui.painter().rect_filled(chip, 2.5, label_color(app, it.label, it.custom_label_color));
         app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, &it.label_value());
         let mut x = r.min.x + LEAD;
-        let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
         let nx = x + depth as f32 * 14.0 + 14.0;
         let mut icon_x = nx;
         if lc.thumbs {
@@ -1054,9 +1086,13 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
         let cg = ui.painter().layout_no_wrap(tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
         let cw = cg.size().x;
         ui.painter().galley(pos2(th.max.x - cw, th.max.y + 11.0 - cg.size().y / 2.0), cg, t.text_dim);
-        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, nr.width() - cw - 6.0);
-        let elided = g.elided;
-        ui.painter().galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
+        // The name gets only what is left beside the count. At the smallest icon sizes that can be
+        // narrower than one letter and "…", which the layout still emits, so the name is also
+        // clipped to its slot and never runs into the count (#2632).
+        let slot = Rect::from_min_max(nr.min, pos2((nr.max.x - cw - 6.0).max(nr.min.x), nr.max.y));
+        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, slot.width());
+        let elided = g.elided || g.size().x > slot.width();
+        ui.painter().with_clip_rect(slot).galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
         if elided {
             resp = resp.on_hover_text(&b.name);
         }
@@ -1115,6 +1151,7 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 let was_selected = app.session.state.project_selection.contains(&id);
                 if let Some(resp) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag()) {
                     note_hit(ui, v, id, r);
+                    scroll_to_revealed(app, ui, v, id, r.expand(8.0));
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
                     item_interactions(
@@ -1205,6 +1242,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
             let Some(resp) = card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag()) else { continue };
             note_hit(ui, v, ItemId(c.item), r);
+            scroll_to_revealed(app, ui, v, ItemId(c.item), r.expand(8.0));
             if let Some(s) = c.stack
                 && s == c.item
                 && let Some(n) = stack_n.get(&s)
@@ -1222,7 +1260,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             );
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
-            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let escape = crate::framework::escape_pressed(ui.ctx());
             // only the primary button moves cards: a middle-button drag pans the canvas (#579)
             let (dragged, stopped) = (resp.dragged_by(egui::PointerButton::Primary), resp.drag_stopped_by(egui::PointerButton::Primary));
             if (dragged || stopped) && (escape || crate::panels::drag_cancelled(ui)) {

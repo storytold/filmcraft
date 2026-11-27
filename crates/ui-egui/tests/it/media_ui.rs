@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
 
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_snapshot, with_snapshots};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
@@ -17,10 +17,9 @@ use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{DemoScene, Generator, MediaSource};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-fn tmp_dir(name: &str) -> PathBuf {
+pub(super) fn tmp_dir(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let d = std::env::temp_dir().join(format!("filmcraft-ui-{name}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
@@ -28,7 +27,7 @@ fn tmp_dir(name: &str) -> PathBuf {
 }
 
 /// A 24 fps ProRes movie of a demo scene (our own encoder).
-fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
+pub(super) fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
     let rate = FrameRate::FPS_24;
     let dur = rate.tick_of(frames);
     let src = GeneratorSource::new(Generator::Demo(scene), w, h, rate, dur);
@@ -96,87 +95,17 @@ fn moved_project(root: &Path) -> String {
     path
 }
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<PathBuf>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
     fn new(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(session, with_snapshots(builder()))
     }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(3);
-        let img = match self.harness.render() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("snapshot {name} skipped: {e}");
-                return;
-            }
-        };
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        img.save(&path).unwrap();
-        eprintln!("snapshot: {}", path.display());
+        save_snapshot(self, 3, &format!("{name}.png"));
     }
 }
 
@@ -355,8 +284,7 @@ fn source_menu_steps_preserve_zero_tick_frame_duration_cursor() {
 #[test]
 fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
     for (width, height) in [(1600.0, 980.0), (1024.0, 768.0), (800.0, 600.0)] {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut s = demo_session();
         let mut p = (*s.project).clone();
         let template = p.items.values().find_map(|i| i.as_media()).unwrap().clone();
         for n in 0..100 {
@@ -374,7 +302,10 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
         if snapshots.is_some() {
             builder = builder.wgpu();
         }
-        let mut h = builder.build_eframe(move |_| app);
+        let mut h = builder.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         for _ in 0..8 {
             h.step();
         }
@@ -442,16 +373,23 @@ fn offline_badges_proxy_toggle_and_dialogs() {
     assert!(d.app().ui.create_proxies.is_some());
     d.snapshot("media-create-proxies");
     d.click("proxies.preset.prores_proxy_quarter");
+    let prior_jobs = d.app().session.jobs.len();
     d.click("proxies.ok");
-    for _ in 0..400 {
+    let proxy_jobs = d.app().session.jobs[prior_jobs..].to_vec();
+    assert!(!proxy_jobs.is_empty(), "creating proxies starts a media job");
+    // Media jobs share a queue with other UI tests; allow a queued transcode up to 60 seconds.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
         d.frames(1);
         let attached = d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count();
-        if attached == 2 {
+        let finished = proxy_jobs.iter().all(|job| job.result.lock().unwrap_or_else(|e| e.into_inner()).is_some());
+        if attached == 2 || finished {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert_eq!(d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count(), 2, "proxies attached");
+    let jobs = d.exec("jobs.list", json!({}));
+    assert_eq!(d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count(), 2, "proxies attached; jobs: {jobs}");
     d.click("program.transport.media.toggleProxies");
     assert!(d.app().session.prefs.media.enable_proxies);
     assert_eq!(d.ids("project.item.").into_iter().filter(|i| i.ends_with(".proxy")).count(), 2, "proxy badges");

@@ -124,7 +124,7 @@ impl AudioEffect for Compressor {
             }
             let level_db = if self.rms {
                 self.ms = self.rms_coef * self.ms + (1.0 - self.rms_coef) * sq;
-                if self.ms < 1e-30 {
+                if !(1e-30..=f32::MAX).contains(&self.ms) {
                     self.ms = 0.0;
                 }
                 10.0 * self.ms.max(1e-20).log10()
@@ -134,7 +134,7 @@ impl AudioEffect for Compressor {
             let target = self.curve(level_db) - level_db;
             let c = if target < self.env { self.att } else { self.rel };
             self.env = c * self.env + (1.0 - c) * target;
-            if self.env.abs() < 1e-9 {
+            if !(1e-9..=f32::MAX).contains(&self.env.abs()) {
                 self.env = 0.0;
             }
             let g = db_to_gain(self.env) * self.makeup.tick();
@@ -228,6 +228,9 @@ impl AudioEffect for Gate {
                 self.hold_left -= 1;
             } else {
                 self.env = self.rel * self.env + (1.0 - self.rel) * target;
+                if !self.env.is_finite() {
+                    self.env = 0.0;
+                }
             }
             let g = db_to_gain(self.env);
             for ch in channels.iter_mut() {

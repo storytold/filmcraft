@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 17,
+  "schema_version": 19,
   "generator": "FilmCraft 0.12.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
@@ -57,6 +57,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
+| 18 | Camera raw Source Settings | Defined in craft-libs for camera raw Source Settings on media items (#1078); this build does not have them yet. Builds from before the craft-libs pin move also wrote Script items as v18; those files upgrade normally; no-op step |
+| 19 | Script items | Preserves screenplay rows, linked takes, marks, and independent thumbnail positions. Existing projects need no data rewrite; no-op step |
 
 ### Migrations
 
@@ -117,6 +119,10 @@ to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't
 | `file.open {path}` | File ▸ Open Project… (⌘O) | returns `{schemaVersion, migrated}` |
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
+Open Project… shows one too. In the desktop app, when the current project has unsaved changes, it
+then asks *"Save changes to 'X' before closing?"* with **Cancel**, **Don't Save** and **Save**, and
+the chosen project opens after Save or Don't Save. File ▸ Open Recent and the Recent list on Home
+ask the same way.
 
 ## Auto Save
 
@@ -192,6 +198,16 @@ without asking; the changes stay available through File ▸ Recover Unsaved Chan
 Support/FilmCraft` on macOS, `%APPDATA%\FilmCraft` on Windows, and `$XDG_DATA_HOME/filmcraft` or
 `~/.local/share/filmcraft` elsewhere. A `portable.txt` file next to the executable (the Windows
 portable zip ships one) makes it `data` next to the executable instead.
+
+### Effect Presets
+
+User effect presets live in `<data dir>/presets.json`. In addition, FilmCraft creates and scans
+`<data dir>/Effect Presets` on startup (and whenever **Effects ▸ Presets ▸ Scan Presets Folder** or
+`presets.scan` runs) for `.prfpset` (Adobe Premiere Pro Effect Preset, plain XML or gzip-compressed)
+and `.json` preset packs. Dropping `.prfpset` files into `<data dir>/Effect Presets`, into the
+application window, or importing them via **File ▸ Import…** / **Effects ▸ Presets ▸ Import Presets…**
+loads their presets with their nested folder hierarchy, static parameters, animated keyframes,
+Bezier curves, and keyframe scaling/anchoring modes.
 
 ### Cost
 
@@ -304,10 +320,10 @@ have no identity, so relinking them skips the fingerprint check.
 | `media.findMissing` | `{missing: [{item, name, fileName, path, status: missing\|offline\|proxyMissing, duration, startTimecode}]}` |
 | `media.status {item?}` | per item: `online`, `missing`, `offline`, `unreadable` or `generated`, plus identity and proxy |
 | `media.linkMedia` | File ▸ Link Media… (rescans; the UI opens the dialog) |
-| `media.relink {item, path, force?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
+| `media.relink {item, path, force?, confirmScriptSameFootage?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
 | `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
 | `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
-| `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
+| `media.replaceFootage {item, path}` | force relink (Replace Footage); still checks Script marks |
 | `media.offlineAll` | close the dialog and leave the rest offline |
 
 `match` selects which properties must agree. Each defaults as shown:
@@ -319,7 +335,8 @@ have no identity, so relinking them skips the fingerprint check.
 - `mediaStart` (false): the start timecode;
 - `metadata` (true): frame size, frame rate and audio channels.
 
-`force: true` links regardless. **Relink others automatically** works out the folder remap from the
+`force: true` bypasses the media matching checks, but not the Script mark review described below.
+**Relink others automatically** works out the folder remap from the
 file just linked, by dropping the common trailing path components (`/Volumes/A/shoot/a.mov` →
 `/Users/me/shoot/a.mov` gives `/Volumes/A` → `/Users/me`). It applies the remap to the other missing
 files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
@@ -330,11 +347,19 @@ linked, because the list's source times are timecodes; relink it with Align Time
 same frames as importing the EDL next to its media. One relink, together with the files it pulls
 along, is one undo step.
 
+Script takes refer to the same Project media items as sequence clips. Relinking an offline item to
+its original file preserves Script marks and candles. If a relink candidate cannot be verified as
+the same file and a linked Script take has marks, the command stops before changing any media.
+The Link Media dialog asks for an explicit same-footage confirmation; command clients may pass
+`confirmScriptSameFootage: true` after review. This preserves the marks; to use different footage,
+replace the take in the Script window instead.
+
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
 `linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`, `linkMedia.exactName`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
-`linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
+`linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`,
+`linkMedia.scriptMarks.cancel`, `linkMedia.scriptMarks.confirm`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
 broken-link badge (`project.item.<id>.offline` in Icon and List view), and items with a proxy get
 a **P** badge (`project.item.<id>.proxy`). Hovering an Unreadable badge shows why the file cannot
