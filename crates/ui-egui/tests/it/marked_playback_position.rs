@@ -1,20 +1,22 @@
+use crate::support::demo_session;
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_time::Tick;
 use filmcraft_ui_egui::{FilmcraftApp, menus};
 use serde_json::json;
 
 #[test]
 fn program_range_playback_rests_on_inclusive_out_frame() {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut session = demo_session();
     let rate = session.sequence_rate();
     let out = rate.tick_of(24);
     let fd = rate.frame_duration();
     session.execute("markers.markIn", json!({"time": 0})).unwrap();
     session.execute("markers.markOut", json!({"time": out.0})).unwrap();
 
-    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| FilmcraftApp::new(session));
+    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(session)
+    });
     harness.step();
     let ctx = harness.ctx.clone();
 

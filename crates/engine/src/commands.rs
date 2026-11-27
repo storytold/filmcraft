@@ -752,6 +752,25 @@ pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit:
     Ok(())
 }
 
+/// `timeline.slip`'s edit: `clips` (a clip and its linked partners) slipped by one media delta,
+/// clamped together so picture and sound stay in sync (#529). The Slip Monitor runs this same
+/// function on a copy of the sequence ([`crate::slip::preview`]), so the drag shows what the
+/// release commits.
+pub(crate) fn slip_linked(q: &mut filmcraft_project::Sequence, ctx: &mut edit::EditCtx<'_>, clips: &[ClipId], delta: Tick) -> Result<()> {
+    let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, delta)).collect();
+    slip_together(q, ctx, &deltas)
+}
+
+/// The media delta of `timeline.slip` / `timeline.slipPreview`: `delta` ticks, else `deltaFrames`
+/// sequence frames, else none.
+fn slip_delta_p(s: &Session, p: &Value) -> Tick {
+    p.get("delta")
+        .and_then(Value::as_i64)
+        .map(Tick)
+        .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
+        .unwrap_or_default()
+}
+
 /// Clips an audio effect should land on: audio ids as given, plus the linked audio of any video
 /// clip in the list (so applying Parametric EQ to an A/V pair hits the sound).
 pub fn audio_effect_targets(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
@@ -1438,6 +1457,10 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
         ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
+        // A subclip shows its parent media's picture, so its anchor resolves
+        // against the parent's size: without this a clip placed from a subclip
+        // baked its anchor from the sequence frame instead (#4613 follow-up).
+        ItemKind::Subclip { .. } => s.project.source_size(item),
         _ => None,
     }
     .unwrap_or((1920, 1080));
@@ -3554,19 +3577,15 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("timeline.slip", "Slip", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slip", "need `clip`"))?;
-            let d = p
-                .get("delta")
-                .and_then(Value::as_i64)
-                .map(Tick)
-                .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
-                .unwrap_or_default();
+            let d = slip_delta_p(s, p);
             let clips = with_links(s, &[c]);
-            s.edit_sequence("Slip", |q, ctx, _| {
-                // clamp across all linked partners, then slip them by the common delta
-                let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, d)).collect();
-                slip_together(q, ctx, &deltas)
-            })?;
+            s.edit_sequence("Slip", |q, ctx, _| slip_linked(q, ctx, &clips, d))?;
             Ok(Value::Null)
+        }),
+        // What `timeline.slip` with the same params would do, without editing: the Slip Monitor
+        query!("timeline.slipPreview", "Slip Preview", r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, |s, p| {
+            let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slipPreview", "need `clip`"))?;
+            crate::slip::preview(s, c, slip_delta_p(s, p))
         }),
         cmd!("timeline.slide", "Slide", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slide", "need `clip`"))?;
@@ -5363,13 +5382,16 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.media.add_stored(&proj, path.as_deref());
+    // Projects saved before stills applied EXIF Orientation keep a portrait still's
+    // unturned size and the anchors baked from it (#4613).
+    crate::still_migration::migrate_legacy_still_sizes(&mut proj, &s.media, &*s.services);
     s.project = std::sync::Arc::new(proj);
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);

@@ -686,7 +686,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
     let pending_id = egui::Id::unique("eyedropper-pending");
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(&ctx) {
         app.ui.eyedropper = None;
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
         return;
@@ -1166,7 +1166,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     // roomy spacing when every button fits with it, tight spacing before any goes to the overflow menu
     let count = buttons.len() as f32;
     let gap = if count * TRANSPORT_BUTTON + (count - 1.0).max(0.0) * 6.0 <= available { 6.0 } else { 2.0 };
-    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
+    let Some(fit) = crate::widgets::toolbar_fit::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
         ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(row.min, pos2((row.right() - 30.0).max(row.left()), row.bottom()))), |ui| {
             egui::ScrollArea::horizontal().id_salt((prefix, "transport-scroll")).show(ui, |ui| {
                 ui.horizontal(|ui| {

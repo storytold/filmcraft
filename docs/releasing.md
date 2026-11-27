@@ -20,7 +20,22 @@ User-facing names say **FilmCraft**. Files, binaries and ids stay lowercase
 
    Commit the change (`Cargo.toml` + `Cargo.lock`) through the normal review flow, as a
    `Release: FilmCraft v0.3.0` commit whose message says what changed for users.
-2. **Merge `main` into `release`** (or fast-forward it) and push. The workflow starts by itself.
+2. **Review the release trust boundary, then merge `main` into `release`** (or fast-forward it)
+   and push. The stable workflow starts by itself. Compare the proposed tree with the
+   **previous trusted release**, not a manifest from main. Review and preserve:
+   - `.github/workflows/nightly-sign.yml`, `.github/nightly-signing-policy.json`, and
+     every transitive reusable workflow/action pin;
+   - `packaging/windows/sign.ps1`, its signing configuration, tool installers and imports;
+   - the macOS nightly signing scripts (`packaging/macos/nightly-sign.sh`, `nightly-verify.sh`,
+     `nightly-lib.sh`, `import-cert.sh`) and entitlements, and the Linux public key
+     `.github/nightly-linux-signing-key.asc`;
+   - **every other workflow that can reach the `release` environment**, including reusable
+     callees, dynamic environment selection and changed executable dependencies. A new
+     workflow outside the named nightly paths is not exempt.
+
+   Stop the sync if that closure is unreviewed. The intended signer-owned files are identical
+   on main and release after promotion; actual top-level repository/event/branch checks and
+   the existing environment restrictions provide authority, not permanent branch divergence.
 3. **Wait for the draft.** When every job is done (macOS notarization is the slow part), the
    Releases page has a draft `FilmCraft v0.3.0`, targeting the pushed commit, with every artifact
    and `SHA256SUMS.txt`. The notes are generated from the merged pull requests.
@@ -183,3 +198,21 @@ warning, never a failed build.
 | `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization (`APPLE_PASSWORD` is an app-specific password) |
 | `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` | Windows signing with a `.pfx` |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` | Windows signing with Azure Trusted Signing |
+
+## Release-ref nightly preparation
+
+The Windows, Linux and macOS source preparation is documented in
+[`nightly-release-preparation.md`](nightly-release-preparation.md). It is not a qualified
+signing or publication pipeline yet: `nightly.yml` and `nightly-sign.yml` are manual-dispatch only,
+restricted to the five release managers by the installed `.github/nightly-signing-policy.json`,
+with no schedule and no automatic signer; `nightly-dispatch.yml` only transports a completed
+producer run. Stable `release.yml`, its schedule, tags, concurrency, environment values and rules
+are unchanged.
+
+`nightly-build.yml` is the secret-free hosted check (Windows and Linux always, macOS only behind
+the `full-ci` label). The real Nightly is built by the shared producer and signed on `release` by
+the shared signer, which calls this app's `packaging/macos/nightly-sign.sh` and
+`packaging/windows/sign.ps1 -Required`.
+
+Activation (the policy, the `release` promotion, any signing or environment setup) is a separate
+reviewed change and needs the project owner's ok.

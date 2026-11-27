@@ -426,6 +426,12 @@ pub fn choose(start: &mut GraphicsStart, forced: bool, explicit_backend: bool, l
     choose_with(start, forced, log_file, &exe, &display_drivers(), |exe, mode| {
         let mut cmd = Command::new(exe);
         cmd.arg(CHILD_ARG).arg(mode.name());
+        // A Nightly start hands its private profile to the test child: the child refuses to run
+        // without one (it is the same program with the same protocol), and its graphics record
+        // must not land in stable's data folder.
+        if let Some(root) = crate::launch_profile::current().root() {
+            cmd.args(["--launch-profile", crate::launch_profile::VERSION, "--profile-root"]).arg(root).arg("--");
+        }
         run_test(cmd, TIMEOUT)
     })
 }
