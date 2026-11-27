@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 18,
+  "schema_version": 19,
   "generator": "FilmCraft 0.12.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
@@ -57,7 +57,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
-| 18 | Script items | Preserves screenplay rows, linked takes, marks, and independent thumbnail positions. Existing projects need no data rewrite. |
+| 18 | Camera raw Source Settings | Defined in craft-libs for camera raw Source Settings on media items (#1078); this build does not have them yet. Builds from before the craft-libs pin move also wrote Script items as v18; those files upgrade normally; no-op step |
+| 19 | Script items | Preserves screenplay rows, linked takes, marks, and independent thumbnail positions. Existing projects need no data rewrite; no-op step |
 
 ### Migrations
 
