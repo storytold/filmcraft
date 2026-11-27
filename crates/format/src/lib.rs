@@ -42,7 +42,7 @@
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
 //! - **v18**: camera raw Source Settings on media items (`Interpretation::raw`, #1078), defined in
-//!   storytold/craft-libs. The per-item settings survive a project save. Builds from before the
+//!   storytold/craft-libs. This build does not have the settings yet. Builds from before the
 //!   craft-libs pin move also wrote Script items as v18; those files read as v18 here and upgrade.
 //! - **v19**: Script Project items with linked takes, marks, and independently positioned thumbnails
 //!   (#2726), defined in storytold/craft-libs.

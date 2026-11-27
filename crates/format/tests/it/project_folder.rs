@@ -52,8 +52,8 @@ fn current() -> Value {
 }
 
 #[test]
-fn camera_raw_settings_survive_conversion_and_a_normal_project_save() {
-    use filmcraft_project::{ItemId, ItemKind, Label, ScriptDocument};
+fn camera_raw_settings_survive_pack_and_unpack() {
+    use filmcraft_project::{ItemKind, Label, ScriptDocument};
     use std::sync::Arc;
 
     let tmp = tempdir().unwrap();
@@ -86,14 +86,6 @@ fn camera_raw_settings_survive_conversion_and_a_normal_project_save() {
         assert_eq!(exported_document.pointer(raw_path), Some(&settings));
         let reopened = filmcraft_format::decode(&exported).unwrap();
         assert_eq!(reopened.schema_version, SCHEMA_VERSION);
-        let saved = filmcraft_format::encode_with_view(&reopened.project, reopened.view.as_ref(), false);
-        fs::write(&export, saved).unwrap();
-        let saved = fs::read(&export).unwrap();
-        let saved_document: Value = serde_json::from_slice(&saved).unwrap();
-        assert_eq!(saved_document.pointer(raw_path), Some(&settings), "RAW settings lost on save of v{version} input");
-        let reopened = filmcraft_format::decode(&saved).unwrap();
-        let media = reopened.project.item(ItemId(5)).unwrap().as_media().unwrap();
-        assert_eq!(media.interpret.raw.as_ref(), Some(&settings));
         assert_eq!(reopened.project.item(script_id).unwrap().as_script(), Some(&script));
         assert_eq!(fs::read(source).unwrap(), source_bytes);
     }

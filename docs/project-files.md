@@ -57,7 +57,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
-| 18 | Camera raw Source Settings | Per-item settings at `interpret.raw` survive opening and saving the project. Editing and rendering these settings are tracked in #1078. Builds from before the craft-libs pin move also wrote Script items as v18; those files upgrade normally; no-op step |
+| 18 | Camera raw Source Settings | Defined in craft-libs for camera raw Source Settings on media items (#1078); this build does not have them yet. Builds from before the craft-libs pin move also wrote Script items as v18; those files upgrade normally; no-op step |
 | 19 | Script items | Preserves screenplay rows, linked takes, marks, and independent thumbnail positions. Existing projects need no data rewrite; no-op step |
 
 ### Migrations
@@ -105,6 +105,8 @@ Each bin and project item (including each sequence) has its own JSON record. The
 `project.fcmod` manifest maps stable project IDs to filenames. Each filename is the
 lowercase SHA-256 digest of its contents. A separate record retains the project envelope,
 view, and item inventory. Bin order, unfiled items and extension fields survive conversion.
+The converter also carries camera RAW settings at `interpret.raw` through pack and unpack.
+Preserving those settings on a subsequent editor Save is tracked in #1078.
 Packing an older supported standard project applies the ordinary in-memory schema migrations.
 
 The converter rebases relative original-media and proxy paths against each destination
