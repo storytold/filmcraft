@@ -324,16 +324,23 @@ the readout is `export.preview.timecode`. Invalid seek arguments fail without ch
 Unit and headless UI regressions cover range boundaries, hostile values, keyboard routing,
 play/stop, stepping, pointer scrubbing, and preservation of project/export state.
 
-## Effect order
+## Effect order (#1731)
 
-Effect Controls headers drag nonintrinsic effects within the same clip. The
-insertion line previews the final position; only a primary-button drop dispatches
-`effects.reorder`. Intrinsic effects, cancelled drags, stale payloads, and drops
-outside a valid header leave the project unchanged. Headers and their controls
-have `effectControls.clip.<clip>.effect.<index>` automation ids, including duplicate
-effects. Existing effect-name ids remain available.
+A clip's standard effects run in the order Effect Controls lists them. Drag an effect by its name
+onto another effect's header: a line shows where it will go, and only releasing there moves it
+(`effects.reorder`, one undo step). Escape, a release elsewhere and an edit made during the drag
+leave the stack as it was. Without dragging, right-click a header for Move Up / Move Down, or
+select the effect and press Alt+Up / Alt+Down with the panel focused (`effects.moveUp`,
+`effects.moveDown`). Motion, Opacity, Time Remapping, the fixed audio effects and graphic layers
+keep their places; the effects that move pass over them.
 
-Row expansion follows reorder permutations. Index-based keyframe selection and
-its gesture clear when order changes, including undo/redo and control commands.
-The `keyframes_ui` tests exercise real pointer drags; use an isolated native app's
-control server and `ui.screenshot` to inspect the insertion marker and final order.
+Headers have `effectControls.clip.<clip>.effect.<index>` automation ids (with `.twirl`, `.enabled`,
+`.reset`, `.moveUp` and `.moveDown`), so duplicate effects are told apart; the effect-name ids
+remain. The insertion line is `effectControls.insertion` while a drag shows it. A header reports
+its position among the effects that move and its Move Up / Move Down keys to accessibility, and
+keeps keyboard focus when its effect moves.
+
+The engine reports each move, and Undo or Redo of one, as `Event::EffectsReordered`;
+`effect_controls::follow_reorder` moves what the UI keeps by effect index with it (selected
+keyframes, expanded rows and graphs, the eyedropper, a mask being drawn, Save Preset, Clip Fx
+Editors). Tests: `tests/it/effect_order_ui.rs`.

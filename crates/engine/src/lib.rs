@@ -18,6 +18,7 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+pub mod effect_order;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -517,6 +518,16 @@ pub enum Event {
     CueSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// A clip's effects were rearranged (`effects.reorder`, or Undo / Redo of it): `order[i]` is
+    /// the new index of the effect that was at index `i`. Frontends move what they keep by effect
+    /// index (selected keyframes, expanded rows, open editors) along with it. `exact` is false when
+    /// the order came from comparing two stacks with identical copies of an effect, so state on
+    /// those copies may now point at the other copy (see [`effect_order::order_between`]).
+    EffectsReordered {
+        clip: ClipId,
+        order: Vec<usize>,
+        exact: bool,
+    },
 }
 
 pub struct Session {
@@ -1191,9 +1202,7 @@ impl Session {
         let (label, prev, origin) = self.history.undo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
-        if label == "Reorder Effect" {
-            remap_reordered_effect_selection(&mut self.state, &cur, &self.project);
-        }
+        effect_order::follow_history(self, &cur);
         self.history.redo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
@@ -1204,9 +1213,7 @@ impl Session {
         let (label, next, origin) = self.history.redo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
-        if label == "Reorder Effect" {
-            remap_reordered_effect_selection(&mut self.state, &cur, &self.project);
-        }
+        effect_order::follow_history(self, &cur);
         self.history.undo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
@@ -1439,6 +1446,8 @@ mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
 #[cfg(test)]
+mod effect_order_tests;
+#[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]
 mod explicit_targets_tests;
@@ -1570,32 +1579,5 @@ mod private_temp_dir_tests {
         assert!(d.is_dir());
         assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(d, super::private_temp_dir().unwrap());
-    }
-}
-
-#[cfg(test)]
-mod effect_order_tests;
-
-// History stores project snapshots. Follow the same complete effect instance
-// when its duplicate-id occurrence changes on undo/redo. Indistinguishable
-// duplicates cannot be identified from snapshots, so clear ambiguous selection.
-fn remap_reordered_effect_selection(state: &mut EditorState, before: &Project, after: &Project) {
-    let Some(sequence) = state.active_sequence else { return };
-    let shifted = |clip, index| {
-        let previous = &before.sequence(sequence)?.find_item(clip)?.1.effects;
-        let current = &after.sequence(sequence)?.find_item(clip)?.1.effects;
-        let effect = previous.get(index)?;
-        let mut matching = current.iter().enumerate().filter(|(_, candidate)| *candidate == effect).map(|(i, _)| i);
-        matching.next().filter(|_| matching.next().is_none())
-    };
-    if let Some(mask) = state.selected_mask {
-        state.selected_mask = shifted(mask.clip, mask.effect).map(|effect| masks::MaskSel { effect, ..mask });
-    }
-    if let Some(selected) = state.selected_effect.clone() {
-        let index = before.sequence(sequence).and_then(|q| q.find_item(selected.clip)).and_then(|(_, item)| selected.index(&item.effects));
-        state.selected_effect = index.and_then(|i| shifted(selected.clip, i)).and_then(|i| {
-            let effects = &after.sequence(sequence)?.find_item(selected.clip)?.1.effects;
-            EffectSel::of(selected.clip, effects, i)
-        });
     }
 }

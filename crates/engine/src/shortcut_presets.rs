@@ -22,6 +22,10 @@ pub const FILMCRAFT_PANEL: &[Entry] = &[
     ("script.thumbnailForward", "Shift+Right", "Script"),
     ("edit.clear", "Backspace", "Script"),
     ("edit.clear", "Delete", "Script"),
+    // the selected effect one place up or down its clip's stack (#1731), as Alt+Up/Down nudges
+    // clips between tracks in the Timeline
+    ("effects.moveUp", "Alt+Up", "Effect Controls"),
+    ("effects.moveDown", "Alt+Down", "Effect Controls"),
 ];
 
 /// Premiere Pro's default keyboard (macOS) mapped onto FilmCraft commands. FilmCraft Default takes
