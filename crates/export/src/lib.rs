@@ -18,6 +18,7 @@ use std::io::Write;
 mod aac_out;
 mod audio_out;
 mod job;
+mod mix_store;
 mod mp3_out;
 mod mxf_out;
 mod pace;
@@ -67,14 +68,14 @@ pub use output::{OutputSink, path_is_file};
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
     AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, idle_renderer_count, register_audio_encoder, register_encoder, register_format_probe,
-    register_frame_renderer, register_hdr_probe, release_idle_renderers,
+    encoder_registered, frame_renderer_registered, hdr_available, idle_renderer_count, register_audio_encoder, register_background_thread_start,
+    register_encoder, register_format_probe, register_frame_renderer, register_hdr_probe, release_idle_renderers,
 };
 use registry::{audio_factories, video_factories};
 pub(crate) use registry::{keep_idle_renderers, take_frame_renderer};
 #[cfg(test)]
 use run::gif_delay_cs;
-pub use run::{export, export_range, frame_span, validate_range};
+pub use run::{export, export_range, frame_span, on_own_threads, validate_range};
 pub use stats::{
     GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
     note_hw_encode_declined_by, note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,

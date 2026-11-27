@@ -3621,6 +3621,7 @@
 	Open a sequence to search its graphics	Öppna en sekvens för att söka i dess grafik
 	No text graphics in this sequence. Add text with the Type tool.	Det finns ingen textgrafik i den här sekvensen. Lägg till text med textverktyget.
 	No matching text.	Ingen text matchar.
+	Set Playhead	Ställ in spelmarkören
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) kräver en hårdvarukodare (NVENC på NVIDIA-grafikkort, VideoToolbox på macOS). Ingen hittades på den här datorn, och FilmCraft har ännu ingen programvarukodare för H.265. Välj H.264 eller ProRes i stället.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 kräver en hårdvarukodare. Ingen hittades på den här datorn, och FilmCraft har ännu ingen programvarukodare för AV1.
 	Checking for updates…	Söker efter uppdateringar…

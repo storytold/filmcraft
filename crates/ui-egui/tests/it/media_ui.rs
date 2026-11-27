@@ -378,7 +378,8 @@ fn offline_badges_proxy_toggle_and_dialogs() {
     let proxy_jobs = d.app().session.jobs[prior_jobs..].to_vec();
     assert!(!proxy_jobs.is_empty(), "creating proxies starts a media job");
     // Media jobs share a queue with other UI tests; allow a queued transcode up to 60 seconds.
-    for _ in 0..1200 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
         d.frames(1);
         let attached = d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count();
         let finished = proxy_jobs.iter().all(|job| job.result.lock().unwrap_or_else(|e| e.into_inner()).is_some());

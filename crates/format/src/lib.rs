@@ -41,6 +41,7 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: Script Project items with linked takes, marks, and independently positioned thumbnails.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -53,7 +54,10 @@ use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new, atomic_write_no_follow};
 
-pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
+pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, detect_version, migrate_with};
+
+/// Script items require a build that can preserve their takes and thumbnail positions.
+pub const SCHEMA_VERSION: u32 = craft_fcproj_format::SCHEMA_VERSION + 1;
 
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
 /// larger files would commit several times their size in memory before validation.
@@ -99,7 +103,9 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    craft_fcproj_format::encode(project, view, generator(), pretty)
+    let envelope = craft_fcproj_format::EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
+    let encoded = if pretty { serde_json::to_vec_pretty(&envelope) } else { serde_json::to_vec(&envelope) };
+    encoded.unwrap_or_default()
 }
 
 /// Read a project file (any supported schema).
@@ -107,7 +113,15 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if bytes.len() as u64 > MAX_PROJECT_BYTES {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
+    let (env, found) = match craft_fcproj_format::decode::<Project>(bytes) {
+        // The Script schema adds optional data. The shared migrations cover every earlier schema.
+        Err(FormatError::TooNew { found, .. }) if found == SCHEMA_VERSION => {
+            let env: craft_fcproj_format::EnvelopeIn<Project> = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
+            (env, found)
+        }
+        Err(FormatError::TooNew { found, .. }) => return Err(FormatError::TooNew { found, supported: SCHEMA_VERSION }),
+        result => result?,
+    };
     validate_loaded(loaded(env, found))
 }
 
@@ -163,6 +177,37 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
         }
     }
+    for item in loaded.project.items.values() {
+        if let filmcraft_project::ItemKind::Script(doc) = &item.kind {
+            doc.validate().map_err(|e| FormatError::Corrupt(format!("script `{}`: {e}", item.name)))?;
+        }
+    }
+    // A missing linked clip must not make an otherwise sound project impossible to open.
+    let valid_take_sources: std::collections::HashSet<_> = loaded
+        .project
+        .items
+        .keys()
+        .copied()
+        .filter(|source| {
+            loaded.project.item(*source).is_some_and(|linked| match &linked.kind {
+                filmcraft_project::ItemKind::Media(_) => true,
+                filmcraft_project::ItemKind::Subclip { .. } => loaded.project.resolve_media(*source).is_some(),
+                filmcraft_project::ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                _ => false,
+            })
+        })
+        .collect();
+    for item in loaded.project.items.values_mut() {
+        let name = item.name.clone();
+        if let Some(doc) = item.as_script_mut() {
+            for take in doc.slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+                if take.source.is_some_and(|source| !valid_take_sources.contains(&source)) {
+                    log::warn!("script `{name}`: take {} lost its source, unlinked", take.id.0);
+                    take.source = None;
+                }
+            }
+        }
+    }
     // Every new id is `next_id`, read from the file as is. One that lags behind the ids in it (an
     // older build, a hand edit) would hand out an id in use, and the new item replace the old (#2809).
     let project = &mut loaded.project;
@@ -184,7 +229,7 @@ mod tests {
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 18);
     }
 
     #[test]
@@ -263,6 +308,60 @@ mod tests {
             assert!(!l.migrated());
             assert_eq!(l.generator.as_deref(), Some(generator().as_str()));
         }
+    }
+
+    #[test]
+    fn damaged_script_ids_are_rejected_and_missing_links_are_unbound_on_load() {
+        use filmcraft_project::{ItemId, ItemKind, Label, ScriptColor, ScriptDocument, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
+        use std::sync::Arc;
+        let mut p = Project::new("script validation");
+        let doc = ScriptDocument::from_text("one\ntwo").unwrap();
+        let first = doc.lines[0].id;
+        let second = doc.lines[1].id;
+        let script = p.add_item("dialogue", Label::Blue, ItemKind::Script(Arc::new(doc)), None);
+        assert!(decode(&encode(&p, false)).is_ok());
+        // Previous Script builds saved these items in schema 17. Shared migrations must keep them.
+        let older = craft_fcproj_format::encode(&p, None::<&filmcraft_project::ProjectView>, "FilmCraft test".into(), false);
+        let loaded = decode(&older).unwrap();
+        assert!(loaded.migrated());
+        assert_eq!(loaded.project, p);
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.lines[1].id = first;
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.lines[1].id = second;
+        doc.next_id = second.0;
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.next_id = 5;
+        doc.slates.push(ScriptSlate {
+            id: ScriptSlateId(3),
+            name: "setup".into(),
+            thumbnail_line: None,
+            thumbnail_x: None,
+            takes: vec![ScriptTake {
+                id: ScriptTakeId(4),
+                source: Some(ItemId(999)),
+                source_name: "gone".into(),
+                start_line: first,
+                end_line: second,
+                thumbnail_time: None,
+                color: ScriptColor::Blue,
+                line_colors: vec![],
+                offscreen_lines: vec![],
+                marks: vec![],
+                source_identity: None,
+            }],
+        });
+        // Both load repairs must apply together: stale project IDs and missing Script sources.
+        p.next_id = script.0;
+        let repaired = decode(&encode(&p, false)).unwrap();
+        assert!(repaired.project.next_id > script.0);
+        let take = &repaired.project.item(script).unwrap().as_script().unwrap().slates[0].takes[0];
+        assert_eq!(take.source, None);
+        assert_eq!(take.source_name, "gone");
+        p.item_mut(script).unwrap().as_script_mut().unwrap().slates[0].takes[0].source = None;
+        assert!(decode(&encode(&p, false)).is_ok(), "unlinked take slots remain valid");
     }
 
     #[test]

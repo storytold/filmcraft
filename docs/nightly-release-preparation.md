@@ -17,14 +17,34 @@ platform secret grant. Nothing has produced a qualified nightly, so the pipeline
 unproven end to end. The unsigned reusable caller's maximum OIDC/attestation
 permissions are for its isolated attester; its compiler narrows to contents and Actions read
 only, with no OIDC, attestation write, release environment or platform signing secrets.
-Shared tooling is pinned to `605d58766e8f536564da8fc81d3676ac86816dea`, the craft-common-actions
-main commit that merged [#339](https://github.com/storytold/craft-common-actions/pull/339) (bounded
-lineage compares and an issue reread at the end of candidate admission) on top of
-[#342](https://github.com/storytold/craft-common-actions/pull/342) (policy v3, the `platforms` input
-and the Linux and macOS legs). Both callers name it in `uses` and `tooling-revision`, and the
-installed policy names it as both tooling revisions; the earlier pin, `077d4657` (#330), is
-Windows-only. A pin is reviewed source availability, not provider, queue, native signing or crypto
-qualification.
+Shared tooling is pinned to `be00e5ccd18b68e950c8a08532f2230e7c3d0cba`, the craft-common-actions
+main commit that merged [#371](https://github.com/storytold/craft-common-actions/pull/371) (the
+candidate is admitted on the built commit's own Sonar analysis, not main's latest) after
+[#370](https://github.com/storytold/craft-common-actions/pull/370) (the Windows and macOS nightly
+registry rows for the 14 apps) and
+[#369](https://github.com/storytold/craft-common-actions/pull/369) (shared helper checkouts kept out
+of the app's clean-source check, and macOS on `macos-15`), following
+[#364](https://github.com/storytold/craft-common-actions/pull/364) (the signer may run on the
+policy's signer branch) and [#363](https://github.com/storytold/craft-common-actions/pull/363) (the
+multi-app pipeline, which makes the signer's `app-name` input required and admits any reviewed
+registry app), with #342 (`a4f6fd51`, policy v3 and the `platforms` input) and #339 (`605d5876`)
+earlier. Both callers name it in `uses` and `tooling-revision`, and the installed policy names it as
+both tooling revisions; the earlier pin, `077d4657` (#330), is Windows-only. A pin is reviewed
+source availability, not provider, queue, native signing or crypto qualification.
+**Signer branch.** The signer runs on `refs/heads/nightly-signer`, not on the stable `release`
+branch, so nightly signer files never need a stable release sync. The policy's `release_branch`
+names it, the signer's guard requires it and its caller passes `app-name`. The branch only
+fast-forwards to reviewed main commits, through the nightly-signer settings script's `advance` (no
+queued signer run, a trust-closure scan, then the full diff of `.github/` and `packaging/`), and the
+existing `release` environment trusts it alongside `release`. Its trust closure is all of `.github/`
+and `packaging/`, including `packaging/env.sh`, which `import-cert.sh` sources with the Apple keys.
+On that branch only the pinned `nightly-sign.yml` caller may reach an environment: no app workflow
+binds one, nothing else calls `nightly-release.yml`, and the only caller of the shared stable
+`release.yml` is `release.yml`, whose callee must carry the stable-only environment guard. The
+contract tests check the in-repo part on every main PR; the settings scan also resolves the callee.
+Stable releases still come only from `refs/heads/release`. History does not carry over a switch
+between `release` and `nightly-signer`, so the switch happens before the first publication.
+
 Existing stable workflows are unchanged.
 
 **Platform rows.** The producer caller lists
@@ -36,7 +56,7 @@ the signer caller has no platform input. The shared Linux leg runs the app's
 `packaging/linux/nightly.sh --arch x86_64` (GUI-only `filmcraft-<version>-linux-x86_64-nightly.tar.gz`)
 and signs with the stable OpenPGP key; the macOS leg runs `packaging/macos/nightly.sh --arch aarch64`
 unsigned on main, then `packaging/macos/nightly-sign.sh` (stable `import-cert.sh`, Developer ID,
-hardened runtime, notarization and stapling) and `nightly-verify.sh` from the protected release
+hardened runtime, notarization and stapling) and `nightly-verify.sh` from the protected `nightly-signer`
 checkout. Those scripts are owned by FilmCraft's Linux and macOS packaging authors, not by these
 callers. Neither leg has run on hosted runners: launch, profile isolation beside stable and the
 Launcher install still need Linux and macOS desktop QA.
@@ -49,15 +69,16 @@ This is not a hosted no-key test, a native signing result or a working nightly f
   passed or inherited.
 - `.github/workflows/nightly-dispatch.yml`: completion transport. It accepts
   only a successful same-repository/main first producer attempt, then sends only
-  `producer_run_id` and `producer_run_attempt` to the fixed `nightly-sign.yml` on `release`.
+  `producer_run_id` and `producer_run_attempt` to the fixed `nightly-sign.yml` on
+  `refs/heads/nightly-signer`.
   No checkout, artifact parsing, application code or release environment is used here.
   Its filters are not authorization: a writer can edit main transport.
 - `.github/nightly-linux-signing-key.asc`: the stable Linux release public key, byte for byte the
   `release-signing-key.asc` published with the newest stable FilmCraft release (one ed25519 primary key,
   `2B76741B414AAD6CD33E631213A005C0B9D7C3ED`, with one signing subkey). The shared Linux verifier
-  reads it from the protected release checkout, never from a release asset. Public material only.
-- `.github/workflows/nightly-sign.yml`: manual-dispatch signer on `release`, intended to be identical
-  on main/release after reviewed promotion. It rejects wrong repository/event/actual branch,
+  reads it from the protected `nightly-signer` checkout, never from a release asset. Public material only.
+- `.github/workflows/nightly-sign.yml`: manual-dispatch signer on `nightly-signer`, which only ever
+  fast-forwards to reviewed main commits. It rejects wrong repository/event/actual branch,
   including same-name tags. Its constant whole-run concurrency is distinct from stable,
   cancellation is off and `queue: max` must be hosted-qualified. No credentials can be reached
   by this preparation.
@@ -160,8 +181,9 @@ were audited by this source change; no secret values were read.
    release environment or platform secrets. Only the isolated unsigned attester receives
    its required Actions-read, attestation-write and OIDC, never platform keys. Re-run the
    no-cache static check over **all** trusted jobs/callees, including setup-action cache options.
-2. Register on main through normal review. Promote identical signer/policy/adapter contents
-   only during an already-intended stable sync, following [the release trust-closure review](releasing.md#cutting-a-release).
+2. Register on main through normal review. The signer no longer rides the stable sync: it runs on
+   `refs/heads/nightly-signer`, advanced only to reviewed main commits, following
+   [the release trust-closure review](releasing.md#cutting-a-release).
    A release push can build/update a stable draft or refuse an already-published version;
    this source change authorizes no push, skip-CI workaround or dummy version bump.
 3. Hosted **no-platform-key**, separately authorized tests must establish actual release
@@ -209,10 +231,15 @@ per-run human approval is introduced by candidate-v3; provider gaps remain block
 
 A Nightly build refuses to start without its private profile, and refuses the stable
 `FILMCRAFT_DATA_DIR` override, so every Linux format starts the GUI through the Launcher's literal
-protocol `--launch-profile nightly-v1 --profile-root <dir> -- <files>`. The profile is
+protocol `--launch-profile nightly-v1 --profile-root <dir> -- <files>`. The deb/rpm wrapper, the
+AppImage's `AppRun`, the Arch handoff and the Flatpak use
 `${XDG_DATA_HOME:-$HOME/.local/share}/filmcraft-nightly/profile` (outside stable's folders and
-outside the installed copy, which the app's own fence would reject). A first-argument `--version`
-or `-V`, and an already-named protocol, pass through untouched, so version queries still answer.
+outside the installed copy, which the app's own fence would reject). The plain tar is the exception:
+its `filmcraft` is craft-common-actions' shared launcher template, rendered for this app, whose
+default root is `${XDG_DATA_HOME:-$HOME/.local/share}/ai.storyteller.filmcraft.nightly`. A
+first-argument `--version` or `-V` still answers, and a first-argument `--launch-profile` pair is
+forwarded unchanged; the packaged launchers also pass `--profile-root`, `--help` and `-h` through
+untouched, which the plain tar's narrower template does not.
 
 | Format | Shape |
 |---|---|
@@ -246,6 +273,9 @@ schedule. It also rejects changed root serialization: the fixed FilmCraft nightl
 Mutation regressions reject invalid queue values, cancellation and request-dependent groups. Packaging lint runs this suite in its
 independent contents-read-only `nightly-source-contract` job, including config-only changes;
 it does not rely on the shared Bash packaging hook to run the guard.
+The suite also runs the `nightly-signer` trust-closure scan: no app workflow binds `environment:`,
+only `nightly-sign.yml` calls `nightly-release.yml` at a 40-hex SHA, and the only caller of the
+shared stable `release.yml` is `release.yml`.
 
 The existing `.github/actionlint.yaml` suppresses only actionlint 1.7.12's anchored exact
 unsupported-queue message for `.github/workflows/nightly-sign.yml`. This operator-requested
