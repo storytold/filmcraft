@@ -44,6 +44,7 @@ pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
+pub mod slip_monitor;
 pub mod text;
 pub mod timecode;
 pub mod timeline;
@@ -137,6 +138,7 @@ pub fn eta_suffix(job: &serde_json::Value) -> String {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
+        PanelKind::Program if slip_monitor::active(app) => slip_monitor::show(app, ui, rect),
         PanelKind::Program if !app.session.state.edit_points.is_empty() => trim_monitor::show(app, ui, rect),
         PanelKind::Program => monitor::show(app, ui, rect, monitor::Which::Program),
         PanelKind::Source => monitor::show(app, ui, rect, monitor::Which::Source),
@@ -233,11 +235,6 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
 
-/// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
-pub(crate) fn dragging(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
-}
-
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
     ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
 }
@@ -297,7 +294,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
     let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(ctx) {
         cancel_drag(ui);
         return;
     }

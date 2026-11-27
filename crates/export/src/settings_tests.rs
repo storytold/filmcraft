@@ -570,6 +570,29 @@ fn png_stills_keep_their_alpha_channel() {
     assert_eq!(frame[25], 6, "Export Frame PNG colour type");
 }
 
+/// The shared 8-bit writer must produce the same RGB/RGBA still bytes as the prior encoder.
+#[test]
+fn png_still_refactor_preserves_legacy_bytes_and_samples() {
+    let (w, h) = (127, 91);
+    let mut state = 1u32;
+    let rgba: Vec<u8> = (0..w * h * 4)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let rgb: Vec<_> = rgba.as_chunks::<4>().0.iter().flat_map(|pixel| pixel[..3].iter().copied()).collect();
+    for (alpha, samples, color) in [(false, &rgb, image::ExtendedColorType::Rgb8), (true, &rgba, image::ExtendedColorType::Rgba8)] {
+        let mut previous = Vec::new();
+        image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut previous), samples, w, h, color).unwrap();
+        let encoded = encode_still(Format::PngSequence, rgba.clone(), w, h, alpha).unwrap();
+        assert_eq!(encoded, previous, "byte parity for {color:?}");
+        let decoded = image::load_from_memory_with_format(&encoded, image::ImageFormat::Png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (w, h));
+        assert_eq!(decoded.as_bytes(), samples.as_slice());
+    }
+}
+
 #[test]
 fn wav_and_aiff_audio_only() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));

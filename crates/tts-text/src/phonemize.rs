@@ -238,7 +238,7 @@ pub enum Chunk {
 
 /// Script → chunks: normalize, then phonemize each sentence (one
 /// [`Chunk::Phonemes`] per sentence, split when over [`MAX_CHUNK_CHARS`]).
-/// Never crashes; hostile input degrades (AGENTS.md §0).
+/// Never crashes; hostile input degrades (AGENTS.md rule 13).
 pub fn phonemize(text: &str, lang: Lang, lex: &Lexicon, overrides: &Overrides) -> Result<Vec<Chunk>, NormalizeError> {
     let tokens = normalize::normalize(text, lang)?;
     let overrides = bounded_overrides(overrides);
