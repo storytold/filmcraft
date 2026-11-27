@@ -878,7 +878,7 @@ fn gpu_shows_an_hdr_cpu_frame_as_rendered() {
     b.transition(0, "wipe", ca, cz, 24, 12);
     let s = b.at(24);
     let t = RATE.tick_of(s.frame);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), filmcraft_render::plan::DeviceCaps::ALL, &s.sources);
     assert!(matches!(plan, filmcraft_render::plan::FramePlan::Image(_)), "a Wipe is rendered on the CPU");
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
     c.set_display_transform(display_for(&s, &plan));

@@ -53,7 +53,7 @@ impl FilmcraftApp {
         // (`colorman::display_transform`). A plain sequence's transform is the identity, and item
         // frames (Source monitor, thumbnails) are already in their item's space.
         let pipe = match key.target {
-            Target::Sequence(id) | Target::SequencePlan(id) => self.session.project.sequence(id).map(|q| q.settings.color),
+            Target::Sequence(id) | Target::SequencePlan(id, _) => self.session.project.sequence(id).map(|q| q.settings.color),
             _ => None,
         };
         let display = plan.display(pipe);
