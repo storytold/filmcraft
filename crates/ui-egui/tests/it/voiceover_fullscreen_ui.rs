@@ -172,6 +172,27 @@ fn leaving_and_re_entering_within_one_frame_belongs_to_the_user() {
 }
 
 #[test]
+fn a_bare_start_before_the_next_frame_does_not_inherit_the_earlier_takes_view() {
+    let (mut d, dir) = Driver::with_pref(true, "next-take");
+    d.harness.state_mut().ui.focused = PanelKind::Timeline;
+    d.start_take();
+    assert!(d.full());
+    // one take ends and the next is armed before any frame runs (one control-channel drain)
+    let session = &mut d.harness.state_mut().session;
+    session.execute("audio.voiceover.stop", json!({"seconds": 2.0})).unwrap();
+    session.execute("audio.voiceover.start", json!({"track": "A1"})).unwrap();
+    d.frames(3);
+    assert!(d.recording(), "the second take is recording");
+    assert!(!d.full(), "the first take's view ended with it; a bare start changes no layout");
+    assert_eq!(d.harness.state().ui.focused, PanelKind::Timeline);
+    // so the second take's end has nothing to give back, and leaves the user's own view alone
+    d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
+    d.discard_take();
+    assert!(d.full());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_discarded_take_gives_the_layout_back() {
     let (mut d, dir) = Driver::with_pref(true, "discard");
     d.start_take();
