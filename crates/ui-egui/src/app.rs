@@ -315,8 +315,8 @@ impl FilmcraftApp {
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.status(message),
-                filmcraft_engine::Event::EffectsReordered { clip, order, exact } => {
-                    crate::panels::effect_controls::follow_reorder(self, ctx, clip, &order, exact);
+                filmcraft_engine::Event::EffectsReordered { clip, order } => {
+                    crate::panels::effect_controls::follow_reorder(self, ctx, clip, &order);
                 }
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }

@@ -237,18 +237,12 @@ fn paint_insertion(painter: &egui::Painter, x: std::ops::RangeInclusive<f32>, y:
 /// The engine moved `clip`'s effects (`order[i]`: the new index of the effect that was at `i`;
 /// [`filmcraft_engine::Event::EffectsReordered`]). What the UI keeps by effect index moves with
 /// them: selected keyframes, expanded rows and graphs, an armed eyedropper, a mask being drawn, the
-/// Save Preset dialog, open Clip Fx Editors and keyboard focus on a header. With `exact` false
-/// identical copies of an effect may have swapped, so keyframes selected on a moved effect are let
-/// go rather than left on a copy. A keyframe or value drag in progress names its effect by index
-/// too, so it ends.
-pub(crate) fn follow_reorder(app: &mut FilmcraftApp, ctx: &egui::Context, clip: ClipId, order: &[usize], exact: bool) {
+/// Save Preset dialog, open Clip Fx Editors and keyboard focus on a header. A keyframe or value
+/// drag in progress names its effect by index too, so it ends.
+pub(crate) fn follow_reorder(app: &mut FilmcraftApp, ctx: &egui::Context, clip: ClipId, order: &[usize]) {
     let moved = |i: usize| order.get(i).copied().unwrap_or(i);
     let ui = &mut app.ui;
-    if exact {
-        ui.keyframe_selection.iter_mut().filter(|k| k.clip == clip.0).for_each(|k| k.effect = moved(k.effect));
-    } else {
-        ui.keyframe_selection.retain(|k| k.clip != clip.0 || moved(k.effect) == k.effect);
-    }
+    ui.keyframe_selection.iter_mut().filter(|k| k.clip == clip.0).for_each(|k| k.effect = moved(k.effect));
     remap_effect_row_keys(&mut ui.collapsed_fx, &format!("{}:", clip.0), order);
     remap_effect_row_keys(&mut ui.collapsed_fx, &format!("mask:{}:", clip.0), order);
     remap_effect_row_keys(&mut ui.expanded_fx, &format!("graph:{}:", clip.0), order);

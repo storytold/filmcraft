@@ -9,15 +9,19 @@
 //! put it. A move therefore permutes only the slots that hold movable effects, and the indices of
 //! everything else (`graphics.list` `effectIndex`, a fixed effect's index) stay valid.
 //!
-//! Some state names an effect by its index: the selected mask here, and the frontends' keyframe
-//! selection, expanded rows and open editors. A move, and Undo or Redo of one, reports how the
-//! indices changed in [`crate::Event::EffectsReordered`], and the selected effect and mask follow
-//! the effect they were on.
+//! Some state names an effect by its index: the selected mask and mask-tracking jobs here, and the
+//! frontends' keyframe selection, expanded rows and open editors. A move, and Undo or Redo of one,
+//! reports how the indices changed in [`crate::Event::EffectsReordered`], and the engine's own
+//! state follows the effect it was on. Each move is recorded with the project snapshots on either
+//! side of it ([`Moves`]), so Undo and Redo know exactly which effect went where, whatever is
+//! selected then and even between identical copies of an effect.
 
-use filmcraft_project::{ClipId, EffectInstance, Project};
+use std::sync::{Arc, Weak};
+
+use filmcraft_project::{ClipId, EffectInstance, ItemId, Project};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, bad, checked_u32_p, clip_p};
+use crate::commands::{CommandSpec, bad, checked_u32_p};
 use crate::{EditorState, EffectSel, Event, Result, Session};
 
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
@@ -51,7 +55,7 @@ pub fn move_order(effects: &[EffectInstance], from: usize, to: usize) -> Option<
 }
 
 /// Rearranges `effects` so the effect at `i` ends up at `order[i]`. `order` must be a permutation
-/// of the indices (from [`move_order`] or [`order_between`]); anything else leaves `effects` alone.
+/// of the indices (from [`move_order`]); anything else leaves `effects` alone.
 pub fn apply_order(effects: &mut Vec<EffectInstance>, order: &[usize]) {
     if !is_permutation(order, effects.len()) {
         return;
@@ -70,46 +74,73 @@ fn is_permutation(order: &[usize], len: usize) -> bool {
     order.len() == len && order.iter().all(|i| seen.get_mut(*i).is_some_and(|s| !std::mem::replace(s, true)))
 }
 
-/// How `after` rearranges `before`, when it is only a rearrangement (the same effects, each
-/// unchanged): entry `i` is the index in `after` of `before[i]`. `None` when the stacks are equal or
-/// differ in anything but order. Identical copies of an effect can't be told apart, so they keep
-/// their relative order; see [`has_copy`].
-pub fn order_between(before: &[EffectInstance], after: &[EffectInstance]) -> Option<Vec<usize>> {
-    if before.len() != after.len() || before == after {
-        return None;
+/// The order that undoes `order`: entry `j` is the index the effect now at `j` came from.
+fn inverse(order: &[usize]) -> Vec<usize> {
+    let mut back: Vec<usize> = (0..order.len()).collect();
+    for (from, to) in order.iter().enumerate() {
+        if let Some(b) = back.get_mut(*to) {
+            *b = from;
+        }
     }
-    let mut used = vec![false; after.len()];
-    before
-        .iter()
-        .map(|e| {
-            let i = after.iter().zip(&used).position(|(a, u)| !u && a == e)?;
-            *used.get_mut(i)? = true;
-            Some(i)
+    back
+}
+
+/// One effect move: the project before and after it (as the undo history holds them) and how the
+/// clip's effects moved. Weak, so a step the history drops doesn't keep its project alive.
+struct Move {
+    before: Weak<Project>,
+    after: Weak<Project>,
+    seq: ItemId,
+    clip: ClipId,
+    order: Vec<usize>,
+}
+
+/// The effect moves Undo and Redo can still reach ([`Session`]'s `effect_moves`).
+#[derive(Default)]
+pub struct Moves(Vec<Move>);
+
+impl Moves {
+    fn record(&mut self, before: &Arc<Project>, after: &Arc<Project>, seq: ItemId, clip: ClipId, order: Vec<usize>) {
+        // steps the history let go of (trimmed, cleared, or a replaced project) can't come back
+        self.0.retain(|m| m.before.strong_count() > 0 && m.after.strong_count() > 0);
+        self.0.push(Move { before: Arc::downgrade(before), after: Arc::downgrade(after), seq, clip, order });
+    }
+
+    /// The move from `from` to `to`, if one was recorded between these exact snapshots, in that
+    /// direction (a recorded move) or the other (its undo, with the order reversed).
+    fn between(&self, from: &Arc<Project>, to: &Arc<Project>) -> Option<(ItemId, ClipId, Vec<usize>)> {
+        let is = |w: &Weak<Project>, a: &Arc<Project>| std::ptr::eq(w.as_ptr(), Arc::as_ptr(a));
+        self.0.iter().rev().find_map(|m| {
+            if is(&m.before, from) && is(&m.after, to) {
+                Some((m.seq, m.clip, m.order.clone()))
+            } else if is(&m.after, from) && is(&m.before, to) {
+                Some((m.seq, m.clip, inverse(&m.order)))
+            } else {
+                None
+            }
         })
-        .collect()
+    }
 }
 
-/// Whether another effect of `effects` is identical to the one at `index` (same effect, same
-/// parameters, keyframes and masks), so a rearrangement found by [`order_between`] can't say which
-/// of the two went where.
-pub fn has_copy(effects: &[EffectInstance], index: usize) -> bool {
-    effects.get(index).is_some_and(|e| effects.iter().enumerate().any(|(i, other)| i != index && other == e))
-}
-
-/// Points the selected effect and the selected mask on `clip` at the effect they were on, after
-/// the clip's effects (`before`, now `after`) moved as `order` says. A selection on an effect with an
-/// identical copy is dropped when `exact` is false: the rearrangement came from comparing the two
-/// stacks, and the copy may be the one that moved.
-fn follow_selection(state: &mut EditorState, clip: ClipId, before: &[EffectInstance], after: &[EffectInstance], order: &[usize], exact: bool) {
-    let new_index = |i: usize| order.get(i).copied().filter(|_| exact || !has_copy(before, i));
+/// Points the engine's state that names one of `clip`'s effects by index (the selected effect and
+/// mask, mask-tracking jobs) at the effect it was on, after the effects (`before`, now `after`)
+/// moved as `order` says, and tells the frontends.
+fn follow_move(s: &mut Session, clip: ClipId, before: &[EffectInstance], after: &[EffectInstance], order: Vec<usize>) {
+    let moved = |i: usize| order.get(i).copied().unwrap_or(i);
+    let state: &mut EditorState = &mut s.state;
     if let Some(sel) = state.selected_effect.clone().filter(|e| e.clip == clip)
         && let Some(i) = sel.index(before)
     {
-        state.selected_effect = new_index(i).and_then(|to| EffectSel::of(clip, after, to));
+        state.selected_effect = EffectSel::of(clip, after, moved(i));
     }
-    if let Some(mask) = state.selected_mask.filter(|m| m.clip == clip) {
-        state.selected_mask = new_index(mask.effect).map(|effect| crate::masks::MaskSel { effect, ..mask });
+    if let Some(mask) = state.selected_mask.as_mut().filter(|m| m.clip == clip) {
+        mask.effect = moved(mask.effect);
     }
+    // a running track keeps writing Mask Path keyframes into the effect it started on
+    for job in s.mask_jobs.iter_mut().filter(|j| j.target.clip == clip) {
+        job.target.effect = moved(job.target.effect);
+    }
+    s.events.push(Event::EffectsReordered { clip, order });
 }
 
 /// `effects.reorder`: move the effect at `from` into the place of the effect at `to`.
@@ -127,7 +158,12 @@ fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
 /// `effects.moveUp` / `effects.moveDown`: move an effect (default: the selected one) one place
 /// earlier or later among the clip's movable effects.
 fn step(s: &mut Session, p: &Value, cmd: &str, later: bool) -> Result<Value> {
-    let (clip, from) = match (clip_p(p, "clip"), p.get("index").filter(|v| !v.is_null())) {
+    // a `clip` that isn't a clip id is an error, not "the selected effect"
+    let clip = match p.get("clip").filter(|v| !v.is_null()) {
+        Some(v) => Some(v.as_u64().map(ClipId).ok_or_else(|| bad(cmd, "`clip` must be an integer clip id"))?),
+        None => None,
+    };
+    let (clip, from) = match (clip, p.get("index").filter(|v| !v.is_null())) {
         (Some(clip), Some(_)) => {
             let i = checked_u32_p(p, "index", cmd)?.and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad(cmd, "`index` must be an effect index"))?;
             (clip, i)
@@ -176,36 +212,32 @@ fn move_effect(s: &mut Session, cmd: &str, clip: ClipId, from: usize, to: usize)
     if from == to {
         return Ok(answer);
     }
-    s.edit_sequence("Reorder Effect", |q, _, state| {
+    let mut stacks = None;
+    s.edit_sequence("Reorder Effect", |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let before = it.effects.clone();
         apply_order(&mut it.effects, &order);
-        follow_selection(state, clip, &before, &it.effects, &order, true);
+        stacks = Some((before, it.effects.clone()));
         Ok(())
     })?;
-    s.events.push(Event::EffectsReordered { clip, order, exact: true });
+    if let (Some((_, before_project, _)), Some(seq)) = (s.history.undo.last(), s.state.active_sequence) {
+        let (before_project, after_project) = (before_project.clone(), s.project.clone());
+        s.effect_moves.record(&before_project, &after_project, seq, clip, order.clone());
+    }
+    if let Some((before, after)) = stacks {
+        follow_move(s, clip, &before, &after, order);
+    }
     Ok(answer)
 }
 
-/// After Undo or Redo replaced `before` with the session's project: for each clip whose effects
-/// were only rearranged, move the selection with them and tell the frontends. Only the clips that
-/// state can point at are compared: the selected clips and those of the selected effect and mask.
-pub(crate) fn follow_history(s: &mut Session, before: &Project) {
-    let Some(seq_id) = s.state.active_sequence else { return };
-    let mut clips = s.state.selection.clone();
-    clips.extend(s.state.selected_effect.as_ref().map(|e| e.clip));
-    clips.extend(s.state.selected_mask.map(|m| m.clip));
-    clips.sort_unstable();
-    clips.dedup();
-    let project = s.project.clone();
-    for clip in clips {
-        let stack = |p: &Project| p.sequence(seq_id).and_then(|q| q.find_item(clip)).map(|(_, it)| it.effects.clone());
-        let (Some(old), Some(new)) = (stack(before), stack(&project)) else { continue };
-        let Some(order) = order_between(&old, &new) else { continue };
-        // identical copies keep their relative order in `order`, which may not be how they moved
-        let exact = !(0..old.len()).any(|i| order.get(i) != Some(&i) && has_copy(&old, i));
-        follow_selection(&mut s.state, clip, &old, &new, &order, exact);
-        s.events.push(Event::EffectsReordered { clip, order, exact });
+/// After Undo or Redo replaced the project `from` with the session's project: when that step was
+/// an effect move, the state that names effects by index follows it back (or forward again).
+pub(crate) fn follow_history(s: &mut Session, from: &Arc<Project>) {
+    let to = s.project.clone();
+    let Some((seq, clip, order)) = s.effect_moves.between(from, &to) else { return };
+    let stack = |p: &Project| p.sequence(seq).and_then(|q| q.find_item(clip)).map(|(_, it)| it.effects.clone());
+    if let (Some(before), Some(after)) = (stack(from), stack(&to)) {
+        follow_move(s, clip, &before, &after, order);
     }
 }
 

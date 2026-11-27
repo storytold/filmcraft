@@ -520,13 +520,10 @@ pub enum Event {
     RevealInProject(ItemId),
     /// A clip's effects were rearranged (`effects.reorder`, or Undo / Redo of it): `order[i]` is
     /// the new index of the effect that was at index `i`. Frontends move what they keep by effect
-    /// index (selected keyframes, expanded rows, open editors) along with it. `exact` is false when
-    /// the order came from comparing two stacks with identical copies of an effect, so state on
-    /// those copies may now point at the other copy (see [`effect_order::order_between`]).
+    /// index (selected keyframes, expanded rows, open editors) along with it.
     EffectsReordered {
         clip: ClipId,
         order: Vec<usize>,
-        exact: bool,
     },
 }
 
@@ -583,6 +580,8 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    /// Effect moves Undo and Redo can reach, so they move index-based state with the effects.
+    pub effect_moves: effect_order::Moves,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
@@ -693,6 +692,7 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            effect_moves: Default::default(),
             scene_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),

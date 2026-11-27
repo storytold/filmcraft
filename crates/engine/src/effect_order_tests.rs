@@ -23,11 +23,11 @@ fn index_of(s: &Session, c: ClipId, effect: &str) -> usize {
     stack(s, c).iter().position(|e| e.effect == effect).unwrap()
 }
 
-fn reorders(s: &mut Session) -> Vec<(ClipId, Vec<usize>, bool)> {
+fn reorders(s: &mut Session) -> Vec<(ClipId, Vec<usize>)> {
     s.drain_events()
         .into_iter()
         .filter_map(|e| match e {
-            Event::EffectsReordered { clip, order, exact } => Some((clip, order, exact)),
+            Event::EffectsReordered { clip, order } => Some((clip, order)),
             _ => None,
         })
         .collect()
@@ -75,7 +75,7 @@ fn reordered_crop_and_shadow_change_the_picture_and_undo_restores_it() {
     s.execute("effects.setParam", json!({"clip":c.0,"effect":shadow,"param":"color","value":"#ffffff"})).unwrap();
     s.execute("playhead.set", json!({"seconds":0.5})).unwrap();
     let before = s.render_program(1.0).unwrap();
-    assert!(before.px.chunks_exact(4).any(|p| p[0] > 0.1), "fixture must render inside the clip");
+    assert!(before.px.as_chunks::<4>().0.iter().any(|p| p[0] > 0.1), "fixture must render inside the clip");
     s.execute("effects.reorder", json!({"clip":c.0,"from":shadow,"to":crop})).unwrap();
     let after = s.render_program(1.0).unwrap();
     assert!(before.px.iter().zip(&after.px).any(|(a, b)| (a - b).abs() > 0.01), "the shadow now falls before the crop");
@@ -140,7 +140,7 @@ fn the_selected_effect_or_mask_follows_the_moved_effect_through_undo_and_redo() 
         assert_eq!(selected(&s), Some(first), "mask selected: {mask}");
         let moved = reorders(&mut s);
         assert_eq!(moved.len(), 1);
-        assert_eq!((moved[0].1[second], moved[0].2), (first, true), "the frontends hear where each effect went");
+        assert_eq!(moved[0].1[second], first, "the frontends hear where each effect went");
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(selected(&s), Some(second), "mask selected: {mask}");
         assert_eq!(reorders(&mut s).first().map(|r| r.1[first]), Some(second), "Undo reports the reverse move");
@@ -150,18 +150,39 @@ fn the_selected_effect_or_mask_follows_the_moved_effect_through_undo_and_redo() 
 }
 
 #[test]
-fn undo_drops_a_selection_on_an_identical_copy_instead_of_guessing() {
-    let (mut s, c) = setup(&["gaussian_blur", "rounded_crop", "gaussian_blur"]);
-    let first = index_of(&s, c, "gaussian_blur");
-    let second = first + 2;
-    s.execute("effects.select", json!({"clip":c.0,"effect":second})).unwrap();
-    s.execute("effects.reorder", json!({"clip":c.0,"from":second,"to":first})).unwrap();
-    assert_eq!(s.state.selected_effect.as_ref().unwrap().index(&stack(&s, c)), Some(first), "the command knows which copy moved");
+fn undo_and_redo_put_identical_copies_back_where_they_were() {
+    // identical blurs apart, and next to each other (where the stacks before and after the move
+    // are equal, so only the recorded move can say which copy went where)
+    for effects in [["gaussian_blur", "rounded_crop", "gaussian_blur"], ["rounded_crop", "gaussian_blur", "gaussian_blur"]] {
+        let (mut s, c) = setup(&effects);
+        let first = index_of(&s, c, "gaussian_blur");
+        let second = stack(&s, c).iter().rposition(|e| e.effect == "gaussian_blur").unwrap();
+        let selected = |s: &Session| s.state.selected_effect.as_ref().and_then(|e| e.index(&stack(s, c)));
+        s.execute("effects.select", json!({"clip":c.0,"effect":second})).unwrap();
+        s.execute("effects.reorder", json!({"clip":c.0,"from":second,"to":first})).unwrap();
+        assert_eq!(selected(&s), Some(first), "{effects:?}");
+        s.drain_events();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(selected(&s), Some(second), "{effects:?}: Undo takes the selection back to the copy that moved");
+        assert_eq!(reorders(&mut s).first().map(|r| r.1[first]), Some(second), "{effects:?}");
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(selected(&s), Some(first), "{effects:?}");
+    }
+}
+
+#[test]
+fn undo_reports_a_move_on_a_clip_that_is_no_longer_selected() {
+    let (mut s, c) = setup(&["rounded_crop", "drop_shadow"]);
+    let (crop, shadow) = (index_of(&s, c, "rounded_crop"), index_of(&s, c, "drop_shadow"));
+    s.execute("effects.reorder", json!({"clip":c.0,"from":shadow,"to":crop})).unwrap();
+    s.execute("timeline.select", json!({"clips":[]})).unwrap();
+    s.execute("effects.select", json!({"none":true})).unwrap();
+    assert!(s.state.selection.is_empty());
     s.drain_events();
     s.execute("edit.undo", json!({})).unwrap();
-    // the two blurs are identical, so comparing the stacks can't say which one went back
-    assert!(s.state.selected_effect.is_none());
-    assert_eq!(reorders(&mut s).first().map(|r| r.2), Some(false), "the frontends hear that the order is a guess");
+    let moved = reorders(&mut s);
+    assert_eq!(moved.len(), 1, "the frontends hear about the clip although nothing on it is selected");
+    assert_eq!((moved[0].0, moved[0].1[crop], moved[0].1[shadow]), (c, shadow, crop), "Undo swaps them back");
 }
 
 #[test]
@@ -210,6 +231,8 @@ fn hostile_parameters_are_errors_that_change_nothing() {
     let (mut s, c) = setup(&["rounded_crop", "drop_shadow"]);
     let crop = index_of(&s, c, "rounded_crop");
     let len = stack(&s, c).len();
+    // with an effect selected that could move up, a bad `clip` must not fall back to it
+    s.execute("effects.select", json!({"clip":c.0,"effect":"drop_shadow"})).unwrap();
     let before = stack(&s, c);
     let mark = s.history.undo.len();
     for (cmd, p) in [
@@ -228,6 +251,9 @@ fn hostile_parameters_are_errors_that_change_nothing() {
         ("effects.moveDown", json!({"clip":c.0,"index":u64::MAX})),
         ("effects.moveDown", json!({"clip":u64::MAX,"index":crop})),
         ("effects.moveUp", json!({"clip":c.0,"index":0})),
+        ("effects.moveUp", json!({"clip":"bogus"})),
+        ("effects.moveUp", json!({"clip":-1})),
+        ("effects.moveUp", json!({"clip":1.5})),
     ] {
         assert!(s.execute(cmd, p.clone()).is_err(), "{cmd} {p}");
         assert_eq!(stack(&s, c), before, "{cmd} {p}");
