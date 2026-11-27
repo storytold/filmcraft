@@ -42,6 +42,7 @@ pub mod prompter;
 pub mod reference;
 pub mod remix;
 pub mod scopes;
+pub mod script;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
@@ -167,6 +168,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Progress => events::progress(app, ui, rect),
         PanelKind::ReferenceMonitor => reference::show(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
+        PanelKind::Script => script::show(app, ui, rect),
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),
