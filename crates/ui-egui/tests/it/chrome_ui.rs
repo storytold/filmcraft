@@ -2,22 +2,23 @@
 //! `UiState::show_status_bar` default to on, and an app that embeds FilmCraft can turn them off
 //! to give the panels the whole window.
 
+use crate::support::demo_session;
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::state::UiState;
-use serde_json::json;
 
 const W: f32 = 1600.0;
 const H: f32 = 980.0;
 
 fn harness(show_header: bool, show_status_bar: bool) -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let s = demo_session();
     let mut app = FilmcraftApp::new(s);
     app.ui.show_header = show_header;
     app.ui.show_status_bar = show_status_bar;
-    let mut harness = Harness::builder().with_size(egui::vec2(W, H)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut harness = Harness::builder().with_size(egui::vec2(W, H)).with_max_steps(10_000).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     for _ in 0..4 {
         harness.step();
     }

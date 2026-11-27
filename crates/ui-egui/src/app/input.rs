@@ -1,4 +1,4 @@
-use super::{FilmcraftApp, PanelKind, dock_ui, json};
+use super::{FilmcraftApp, json};
 
 impl FilmcraftApp {
     /// Import dropped files, on the main window and on dock panels in their own OS windows.
@@ -18,17 +18,62 @@ impl FilmcraftApp {
             let pointer = self.drop_pointer(ctx, egui::ViewportId::ROOT, None);
             self.import_dropped(ctx, &dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
         }
-        for files in std::mem::take(&mut self.window_files) {
-            // Only the Timeline places files at the pointer; elsewhere they go to the bin.
-            let at_timeline = to_timeline && files.panel == PanelKind::Timeline;
-            let pointer = if at_timeline { self.drop_pointer(ctx, files.viewport, files.pos) } else { None };
-            if !files.hovered.is_empty() && self.file_drag_hover.is_none() && at_timeline {
-                ctx.request_repaint();
-                self.file_drag_hover = pointer.map(|p| (files.hovered.len(), p, files.viewport));
+        // Give each queued native point a paint pass of its own so it cannot overwrite
+        // a placement from an ordinary drop handled earlier in this pass.
+        if self.pending_timeline_drop.is_none()
+            && let Some(drop) = self.native_timeline_drops.pop_front()
+        {
+            self.import_paths(ctx, drop.paths, Some((drop.point, drop.viewport)));
+        }
+        if !self.native_timeline_drops.is_empty() {
+            ctx.request_repaint();
+        }
+        // The dock's window fallback reports drops not handled by the native Timeline's
+        // own target. It has no panel or pointer, so these imports go only to the bin.
+        let window_files: Vec<String> =
+            std::mem::take(&mut self.window_files).into_iter().filter_map(|file| file.path).map(|path| path.to_string_lossy().to_string()).collect();
+        if !window_files.is_empty() {
+            self.import_paths(ctx, window_files, None);
+        }
+    }
+
+    /// Take a drop over the Timeline while its own OS window is drawing. The dock's
+    /// window fallback receives only files no more-specific target took.
+    pub(crate) fn native_timeline_file_drop(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+        use craft_behavior::DropOperation;
+        use craft_ui::runtime::drag::{DropMark, DropTarget, DropZone, OsFiles, zone_target};
+        use craft_ui::runtime::windows::WindowHost;
+
+        if !self.session.prefs.timeline.drop_import_to_timeline || !ui.is_enabled() {
+            return;
+        }
+        struct TimelineFiles(egui::Rect);
+        impl DropTarget<OsFiles> for TimelineFiles {
+            type Drop = (Vec<String>, egui::Pos2);
+
+            fn accept(&self, files: &OsFiles, at: egui::Pos2, _: DropOperation) -> Option<Self::Drop> {
+                let paths: Vec<_> = files.files.iter().filter_map(|file| file.path.as_ref()).map(|path| path.to_string_lossy().into_owned()).collect();
+                // Some platforms report only a type while hovering. Keep the zone registered
+                // so that its eventual payload can supply the paths.
+                (!files.files.is_empty()).then_some((paths, at))
             }
-            if !files.dropped.is_empty() {
-                self.import_dropped(ctx, &files.dropped, pointer.map(|p| (p, files.viewport)));
+
+            fn mark(&self, (_, at): &Self::Drop) -> DropMark {
+                DropMark::line(*at, egui::pos2(at.x, (at.y + 12.0).min(self.0.bottom())))
             }
+        }
+
+        let ctx = ui.ctx();
+        let viewport = ctx.viewport_id();
+        let hovering = ui.input(|input| input.raw.hovered_files.len());
+        if hovering > 0 {
+            let pointer = WindowHost::of(ctx).pointer_in(viewport).or_else(|| ui.input(|i| i.pointer.latest_pos()));
+            self.file_drag_hover = pointer.filter(|pos| rect.contains(*pos)).map(|pos| (hovering, pos, viewport));
+        }
+        if let Some((paths, pos)) = zone_target(ui, ui.scope_id().with("native-timeline-files"), DropZone::new(ui.layer_id(), rect), &TimelineFiles(rect)) {
+            self.file_drag_hover = None;
+            self.native_timeline_drops.push_back(crate::NativeTimelineDrop { paths, point: pos, viewport });
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
     }
 
@@ -37,7 +82,13 @@ impl FilmcraftApp {
     /// timeline, queue the new items for the Timeline drawn in that viewport. A dropped project
     /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
     fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
-        let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
+        let paths: Vec<String> = dropped.iter().map(|f| f.path().to_string_lossy().to_string()).collect();
+        self.import_paths(ctx, paths, pointer);
+    }
+
+    /// [`Self::import_dropped`] for the files at `paths`.
+    fn import_paths(&mut self, ctx: &egui::Context, paths: Vec<String>, pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        let paths: Vec<String> = paths.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
         if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
             // one project is open at a time: the rest of the drop is not imported into either
             let _ = crate::menus::invoke(self, ctx, "file.open", json!({"path": project}));
@@ -93,16 +144,6 @@ impl FilmcraftApp {
         os_pointer.or(last).or_else(fallback)
     }
 
-    /// Whether keyboard focus is on any dock divider or floating-window resize grip, as drawn last pass.
-    pub(super) fn divider_focused(&self, ctx: &egui::Context) -> bool {
-        use craft_ui::docking::{DockArea, Hit};
-        let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
-        let area = dock_ui::area_id();
-        DockArea::<PanelKind>::hit_rects(ctx, area)
-            .iter()
-            .any(|(hit, _)| matches!(hit, Hit::Divider(_) | Hit::Resize(..)) && DockArea::hit_id(area, hit) == focused)
-    }
-
     /// Remember the undo history as a mouse press begins, before any panel acts on it (a color
     /// picker sets its color on the press itself), for [`Self::cancel_value_drag`].
     pub(super) fn begin_press(&mut self, ctx: &egui::Context) {
@@ -115,7 +156,7 @@ impl FilmcraftApp {
 
     /// Latch Escape during pass 0, where the key event is fresh.
     pub(super) fn latch_escape_cancel(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.pointer.any_down() && i.key_pressed(egui::Key::Escape)) {
+        if ctx.input(|i| i.pointer.any_down()) && (crate::framework::escape_pressed(ctx) || crate::framework::escape_arrived(ctx)) {
             self.escape_cancel = true;
         }
     }

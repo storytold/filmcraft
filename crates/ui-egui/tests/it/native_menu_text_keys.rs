@@ -5,24 +5,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::menus::{self, MenuItem};
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    menu: Sender<String>,
-    sent: Rc<RefCell<Vec<MenuItem>>>,
+driver! {
+    Driver {
+        menu: Sender<String>,
+        sent: Rc<RefCell<Vec<MenuItem>>>,
+    }
 }
 
 impl Driver {
     fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let s = demo_session();
         let (tx, rx) = channel();
         let (menu, inbox) = channel();
         let sent: Rc<RefCell<Vec<MenuItem>>> = Rc::default();
@@ -30,33 +27,8 @@ impl Driver {
         let mut app = FilmcraftApp::new(s).with_control(rx);
         app.command_inbox = Some(inbox);
         app.hooks.menu_changed = Some(Box::new(move |items: &[MenuItem]| *sink.borrow_mut() = items.to_vec()));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, menu, sent };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
+        let harness = build(builder(), app);
+        start(Driver { harness, tx, menu, sent })
     }
 
     /// A native menu choice, then the frames that deliver what it queued for the window.

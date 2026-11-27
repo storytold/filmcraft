@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# The one crate allowed to contain `unsafe` (OS media FFI; AGENTS.md §0.3, docs/adr/0001-platform-ffi.md).
+# The one crate allowed to contain `unsafe` (OS media FFI; AGENTS.md rule 13, `unsafe`, docs/adr/0001-platform-ffi.md).
 # The workspace lints, except that `unsafe_code` is `deny` instead of `forbid`: only the FFI modules
 # opt in with `#[allow(unsafe_code)]`, and every `unsafe` block carries a `// SAFETY:` comment.
 [lints.rust]

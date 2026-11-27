@@ -66,6 +66,49 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Replace `path` with `data` atomically without writing through an alias at the destination.
+///
+/// A link, directory or other special entry at `path` is refused (and left untouched) instead of
+/// being followed, so a raced or planted alias cannot redirect the bytes into another app's file.
+/// The staged file is owner-only (`0600`), since this is used for private application state.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn atomic_write_no_follow(path: &Path, data: &[u8]) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(io::Error::other("the destination must be a regular file, not an alias or directory")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let tmp = temp_path(path);
+    let r = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        {
+            let mut f = options.open(&tmp)?;
+            f.write_all(data)?;
+            f.sync_all()?;
+        }
+        // `rename` replaces whatever entry holds the name (a link itself, never its target).
+        fs::rename(&tmp, path)
+    })();
+    if let Err(e) = r {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    sync_dir(&parent_dir(path));
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn atomic_write_no_follow(_path: &Path, _data: &[u8]) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "native file replacement is unavailable in the browser"))
+}
+
 /// Publish a complete new file without replacing an occupied final path, including a symlink.
 /// Bytes are staged and synced in the destination directory before no-clobber publication.
 /// A write failure leaves no partial final file; temporary-file cleanup is best effort.
@@ -226,6 +269,38 @@ mod tests {
         assert_eq!(error.to_string(), "simulated full disk");
         assert!(!p.exists());
         assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_follow_refuses_aliases_and_never_touches_their_target() {
+        let d = tmpdir("no-follow");
+        let external = d.join("stable-state");
+        fs::write(&external, b"stable bytes").unwrap();
+        let link = d.join("nightly-session.json");
+        std::os::unix::fs::symlink(&external, &link).unwrap();
+        assert!(atomic_write_no_follow(&link, b"replacement").is_err());
+        assert_eq!(fs::read(&external).unwrap(), b"stable bytes");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        // A missing destination is written (a new file), never an error; a directory is refused.
+        fs::create_dir(d.join("sub")).unwrap();
+        assert!(atomic_write_no_follow(&d.join("sub"), b"x").is_err());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_follow_replaces_a_regular_file_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tmpdir("no-follow-replace");
+        let p = d.join("nightly-session.json");
+        fs::write(&p, b"old").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write_no_follow(&p, b"new").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"new");
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 1, "no staging file is left behind");
         fs::remove_dir_all(&d).unwrap();
     }
 

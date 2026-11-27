@@ -4,7 +4,7 @@ OS media integration for FilmCraft (layer L5): hardware video decoding through t
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
 encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
-[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
+[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) (rule 13, `unsafe` in `## This repository`).
 
 ```rust
 // at startup (the desktop app, filmcraft-cli, the bench)
@@ -105,8 +105,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   bit-exact. Each picture is sent as one picture-parameter buffer, the scaling matrices, and a slice
   parameter + slice data buffer per slice (the NAL unit as stored, emulation prevention included).
   HEVC pictures are sent the same way per slice segment (scaling lists only when enabled, converted
-  to raster order). Pictures the DPB outputs are read back right away (`vaGetImage` into an NV12 or
-  P010 image, then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
+  to raster order). Pictures the DPB outputs are read back right away (`vaDeriveImage`, which maps the
+  surface's own NV12 or P010 memory, or `vaGetImage` into an image where a driver cannot derive it;
+  then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
   - *frame_num gaps* (and every start at a non-IDR picture: an open-GOP seek) get "non-existing"
     frames like the software decoder's: copies of the latest decoded frame, mid-gray when there is
     none (`vaPutImage`). Pictures predicted from them (the leading pictures of an open GOP after a

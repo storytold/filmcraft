@@ -56,7 +56,7 @@ issues now document. That is new evidence, not drift: see [Calibration](#calibra
   effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3. `cargo xtask
   parity --area effects|transitions` measures the shipped catalogue against a reference list too
   (presence and folder placement, [G7](gaps.md#g7-no-measured-parity-tool-in-ci)).
-- **The installed app (file names and listings only, per [AGENTS.md](../AGENTS.md) §2; nothing
+- **The installed app (file names and listings only, per [clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md); nothing
   inside the bundle was opened or read).** `Contents/Resources/*.lproj`: de, en, es, fr, it, ja,
   ko, pt, ru, zh_CN (10 UI languages). `Contents/MediaIO/systempresets/` folder names are
   four-character exporter / codec codes: JPEG, QuickTime, MP3, PNG, Windows Media, AIFF, AVI,

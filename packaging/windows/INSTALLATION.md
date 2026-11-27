@@ -33,3 +33,20 @@ shortcut/menu behaviour, cancellation, rollback or uninstall. Those still requir
 payload in an authorised clean Windows test environment. Cross-architecture metadata is not
 execution evidence on those architectures. Existing open installer/association PRs must be
 reconciled before publication. Nothing here changes macOS/Linux native packaging conventions.
+
+## Nightly channel (no installer)
+
+The Nightly is not an MSI: it is a single GUI-only ZIP (`filmcraft-<version>-windows-x86_64-nightly.zip`)
+holding `filmcraft.exe` and the notices. It registers no shortcuts, file associations or uninstall
+entry, and it keeps its data in the ArtCraft Launcher's private profile, not in `%APPDATA%\FilmCraft`.
+
+```
+pwsh packaging/windows/package.ps1 -Arch x64 -Nightly -BuildOnly
+```
+
+requires `FILMCRAFT_BUILD_CHANNEL=nightly-v1`, `FILMCRAFT_VERSION`, `FILMCRAFT_BUILD_SHA` and
+`FILMCRAFT_BUILD_DATE` from the producer run, and writes `...-nightly.unsigned.zip`: the trusted
+signer produces the publishable archive in a separate job. `package.ps1` without `-Nightly` refuses
+an executable whose `ProductName` is `FilmCraft Nightly`, so a nightly build cannot be shipped as
+the stable MSI or portable ZIP. `sign.ps1 -CheckBuildEnvironment` fails if any signing variable
+reaches compilation.
