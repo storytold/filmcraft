@@ -10,13 +10,13 @@ use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, NamedKeys, always, bad};
+use crate::commands::{CommandSpec, always, bad};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run, journal: bool) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal, named: NamedKeys::NONE }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal, alt_shortcuts: &[] }
 }
 
 fn id(p: &Value, key: &str, cmd: &str) -> Result<u64> {
@@ -1083,7 +1083,7 @@ mod tests {
     fn source(s: &mut Session, name: &str, fingerprint: u64) -> ItemId {
         let generator = Generator::CountingLeader;
         let info = GeneratorSource::new(generator.clone(), 64, 36, FrameRate::FPS_24, FrameRate::FPS_24.tick_of(120)).info().clone();
-        Arc::make_mut(&mut s.project).add_item(
+        s.project_mut().add_item(
             name,
             Label::Blue,
             ItemKind::Media(Box::new(MediaClip {
@@ -1646,7 +1646,7 @@ mod tests {
         let unrelated = source(&mut s, "clip", 20);
         let replacement = source(&mut s, "moved", 10);
         for item in [original, unrelated] {
-            Arc::make_mut(&mut s.project).item_mut(item).unwrap().as_media_mut().unwrap().identity = None;
+            s.project_mut().item_mut(item).unwrap().as_media_mut().unwrap().identity = None;
         }
         let item = s.execute("script.importText", json!({"name":"Unknown identities","text":"Line"})).unwrap()["item"].as_u64().unwrap();
         let row = s.project.item(ItemId(item)).unwrap().as_script().unwrap().lines[0].id.0;
@@ -1670,7 +1670,7 @@ mod tests {
         let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
         let take = s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
         s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":100})).unwrap();
-        Arc::make_mut(&mut s.project).item_mut(media).unwrap().as_media_mut().unwrap().identity = Some(MediaIdentity { size: 10, fingerprint: 99 });
+        s.project_mut().item_mut(media).unwrap().as_media_mut().unwrap().identity = Some(MediaIdentity { size: 10, fingerprint: 99 });
         assert!(s.execute("script.rebindTake", json!({"item":script,"take":take,"source":media.0})).is_err());
         assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks.len(), 1);
         s.execute("script.rebindTake", json!({"item":script,"take":take,"source":media.0,"discardMarks":true})).unwrap();
@@ -1705,7 +1705,7 @@ mod tests {
         s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":4000})).unwrap();
         let before = Tick(4000);
         let shift = Tick(1000);
-        Arc::make_mut(&mut s.project).shift_media_time(media, shift);
+        s.project_mut().shift_media_time(media, shift);
         let after = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks[0].source_time;
         assert_eq!(after, before - shift);
         assert_eq!(after + shift, before);
@@ -1722,7 +1722,7 @@ mod tests {
         let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
         let take = s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
         let mark = s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":100})).unwrap()["mark"].as_u64().unwrap();
-        Arc::make_mut(&mut s.project).shift_media_time(media, Tick(200));
+        s.project_mut().shift_media_time(media, Tick(200));
         let stored = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks[0].source_time;
         assert_eq!(stored, Tick(-100));
         s.execute("source.open", json!({"item":other.0})).unwrap();
@@ -1738,7 +1738,7 @@ mod tests {
         let mut s = Session::default();
         let parent = source(&mut s, "parent", 10);
         let rate = FrameRate::FPS_24;
-        let subclip = Arc::make_mut(&mut s.project).add_item(
+        let subclip = s.project_mut().add_item(
             "subclip",
             Label::Blue,
             ItemKind::Subclip { parent, range: TimeRange::new(rate.tick_of(24), rate.tick_of(48)), restrict_trims: true },
@@ -1752,7 +1752,7 @@ mod tests {
             s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":rate.tick_of(30).0})).unwrap()["mark"].as_u64().unwrap();
         let cued = s.execute("script.cueMark", json!({"item":script,"take":take,"mark":mark})).unwrap();
         assert_eq!(cued["time"], rate.tick_of(30).0);
-        Arc::make_mut(&mut s.project).shift_media_time(parent, rate.tick_of(5));
+        s.project_mut().shift_media_time(parent, rate.tick_of(5));
         let shifted = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks[0].source_time;
         assert_eq!(shifted, rate.tick_of(25));
         assert_eq!(
@@ -1766,13 +1766,13 @@ mod tests {
         let mut s = Session::default();
         let parent = source(&mut s, "parent", 10);
         let rate = FrameRate::FPS_24;
-        let first = Arc::make_mut(&mut s.project).add_item(
+        let first = s.project_mut().add_item(
             "first",
             Label::Blue,
             ItemKind::Subclip { parent, range: TimeRange::new(rate.tick_of(24), rate.tick_of(48)), restrict_trims: true },
             None,
         );
-        let second = Arc::make_mut(&mut s.project).add_item(
+        let second = s.project_mut().add_item(
             "second",
             Label::Blue,
             ItemKind::Subclip { parent: first, range: TimeRange::new(rate.tick_of(30), rate.tick_of(24)), restrict_trims: true },
@@ -1782,7 +1782,7 @@ mod tests {
         let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
         let take = s.execute("script.addTake", json!({"item":script,"source":second.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
         s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":rate.tick_of(35).0})).unwrap();
-        Arc::make_mut(&mut s.project).shift_media_time(parent, rate.tick_of(5));
+        s.project_mut().shift_media_time(parent, rate.tick_of(5));
         let mark = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks[0].source_time;
         assert_eq!(mark, rate.tick_of(30));
         assert_eq!(

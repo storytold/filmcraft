@@ -375,7 +375,7 @@ mod preview_tests {
             let mut app = app();
             app.ui.mode = mode;
             let ctx = egui::Context::default();
-            let before = serde_json::to_value(&app.session.project).unwrap();
+            let before = serde_json::to_value(&*app.session.project).unwrap();
             let playhead = app.session.playhead();
             let revision = app.session.revision;
             let dirty = app.session.is_dirty();
@@ -391,7 +391,7 @@ mod preview_tests {
                 assert!(crate::menus::invoke(&mut app, &ctx, command, json!({"frame": 51})).is_err(), "{command} in {mode:?}");
                 assert!(!app.playback.playing);
                 assert_eq!(app.session.playhead(), playhead);
-                assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+                assert_eq!(serde_json::to_value(&*app.session.project).unwrap(), before);
                 assert_eq!(app.session.revision, revision);
                 assert_eq!(app.session.is_dirty(), dirty);
                 assert_eq!(app.session.undo_mark(), undo);
@@ -402,7 +402,7 @@ mod preview_tests {
     #[test]
     fn preview_navigation_is_bounded_and_does_not_edit_the_project() {
         let mut app = app();
-        let before = serde_json::to_value(&app.session.project).unwrap();
+        let before = serde_json::to_value(&*app.session.project).unwrap();
         let revision = app.session.revision;
         let dirty = app.session.is_dirty();
         let undo = app.session.undo_mark();
@@ -420,7 +420,7 @@ mod preview_tests {
         preview_command(&mut app, "export.preview.last", &json!({})).unwrap();
         preview_command(&mut app, "export.preview.stepForward", &json!({})).unwrap();
         assert_eq!(app.session.sequence_rate().frame_at(app.session.playhead()), last);
-        assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+        assert_eq!(serde_json::to_value(&*app.session.project).unwrap(), before);
         assert_eq!(app.session.revision, revision);
         assert_eq!(app.session.is_dirty(), dirty);
         assert_eq!(app.session.undo_mark(), undo);
@@ -488,7 +488,7 @@ mod preview_tests {
                 app.playback.preroll_ready = false;
                 app.playback.anchor_time = 1.0;
                 app.set_now_for_test(1.0);
-                let before = serde_json::to_value(&app.session.project).unwrap();
+                let before = serde_json::to_value(&*app.session.project).unwrap();
                 let revision = app.session.revision;
                 let undo = app.session.undo_mark();
                 let dirty = app.session.is_dirty();
@@ -507,7 +507,7 @@ mod preview_tests {
                 assert_eq!(rate.frame_at(app.session.playhead()), if speed > 0.0 { first } else { last });
                 assert!(app.playback.preroll.is_none());
                 assert!(app.playback.smooth_playhead.is_none());
-                assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+                assert_eq!(serde_json::to_value(&*app.session.project).unwrap(), before);
                 assert_eq!(app.session.revision, revision);
                 assert_eq!(app.session.undo_mark(), undo);
                 assert_eq!(app.session.is_dirty(), dirty);
@@ -539,7 +539,7 @@ mod preview_tests {
         let mut app = app();
         let id = app.session.state.active_sequence.unwrap();
         let rate = app.session.sequence_rate();
-        let q = std::sync::Arc::make_mut(&mut app.session.project).sequence_mut(id).unwrap();
+        let q = app.session.project_mut().sequence_mut(id).unwrap();
         q.mark_in = Some(rate.tick_of(10));
         q.mark_out = Some(rate.tick_of(20));
         q.work_area = Some(filmcraft_time::TimeRange::new(rate.tick_of(30), rate.tick_of(10)));

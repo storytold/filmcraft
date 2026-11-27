@@ -220,7 +220,7 @@ fn confirming_one_script_relink_does_not_confirm_automatically_found_sources() {
         })
         .collect();
     {
-        let project = std::sync::Arc::make_mut(&mut s.project);
+        let project = s.project_mut();
         let doc = project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap();
         for take in &takes {
             doc.take_mut(filmcraft_project::ScriptTakeId(*take)).unwrap().source_identity = None;
@@ -280,7 +280,7 @@ fn auto_relink_reports_script_review_without_blocking_other_sources() {
         let take = s.execute("script.addTake", json!({"item":script,"source":items[0].0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
         s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
         let take_id = filmcraft_project::ScriptTakeId(take);
-        let project = std::sync::Arc::make_mut(&mut s.project);
+        let project = s.project_mut();
         project.item_mut(items[0]).unwrap().as_media_mut().unwrap().identity = None;
         project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap().take_mut(take_id).unwrap().source_identity = None;
         s.execute("file.save", json!({"path":path})).unwrap();

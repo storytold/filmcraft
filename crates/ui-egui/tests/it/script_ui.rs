@@ -1308,7 +1308,7 @@ fn deleted_source_candle(driver: &mut Driver) -> (u64, u64, u64, u64, Vec<u64>) 
     let mut media = driver.harness.state().session.project.items.values().find_map(|item| item.as_media().cloned()).unwrap();
     media.identity = Some(MediaIdentity { size: 42, fingerprint: 10 });
     let (original, replacement) = {
-        let project = std::sync::Arc::make_mut(&mut driver.harness.state_mut().session.project);
+        let project = driver.harness.state_mut().session.project_mut();
         (
             project.add_item("Deleted clip", Label::Blue, ItemKind::Media(Box::new(media.clone())), None).0,
             project.add_item("Moved clip", Label::Blue, ItemKind::Media(Box::new(media)), None).0,

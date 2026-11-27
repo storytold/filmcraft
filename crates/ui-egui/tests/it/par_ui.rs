@@ -5,8 +5,6 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes `par-*.png`.
 
-use std::sync::Arc;
-
 use crate::support::{Drive, Launch, builder, driver, shots_dir, with_shots};
 use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemId, ItemKind};

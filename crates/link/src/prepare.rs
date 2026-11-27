@@ -119,7 +119,7 @@ fn needs_render(project: &Project, item: ItemId, depth: u8) -> bool {
         Some(ItemKind::Media(media)) => matches!(media.media, MediaRef::Generator(_)),
         Some(ItemKind::Sequence(_) | ItemKind::Graphic { .. }) => true,
         Some(ItemKind::Subclip { parent, .. }) => needs_render(project, *parent, depth + 1),
-        Some(ItemKind::AdjustmentLayer { .. }) | None => false,
+        Some(ItemKind::AdjustmentLayer { .. } | ItemKind::Script(_)) | None => false,
     }
 }
 
@@ -152,7 +152,7 @@ fn natural_size(project: &Project, item: ItemId, depth: u8) -> Option<(u32, u32)
         ItemKind::Sequence(sequence) => Some((sequence.settings.width, sequence.settings.height)),
         ItemKind::Graphic { width, height, .. } => Some((*width, *height)),
         ItemKind::Subclip { parent, .. } => natural_size(project, *parent, depth + 1),
-        ItemKind::AdjustmentLayer { .. } => None,
+        ItemKind::AdjustmentLayer { .. } | ItemKind::Script(_) => None,
     }
 }
 
@@ -194,7 +194,7 @@ fn gather(project: &Project, item: ItemId, seen: &mut HashSet<ItemId>, out: &mut
             }
         }
         ItemKind::Subclip { parent, .. } => gather(project, *parent, seen, out),
-        ItemKind::Media(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => {}
+        ItemKind::Media(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } | ItemKind::Script(_) => {}
     }
 }
 

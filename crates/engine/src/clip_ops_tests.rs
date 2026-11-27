@@ -254,7 +254,7 @@ fn script_take_sources_survive_remove_unused_and_duplicate_consolidation() {
 fn clearing_a_subclip_parent_unbinds_script_takes_that_use_the_subclip() {
     let mut s = demo();
     let parent = item_named(&s, "Bars and Tone");
-    let subclip = std::sync::Arc::make_mut(&mut s.project).add_item(
+    let subclip = s.project_mut().add_item(
         "Bars excerpt",
         Label::Blue,
         ItemKind::Subclip { parent, range: filmcraft_time::TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), restrict_trims: true },

@@ -501,7 +501,7 @@ fn export_preview_plays_steps_and_scrubs_without_changing_settings() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "custom");
     let settings = serde_json::to_value(&d.app().ui.export.settings).unwrap();
-    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let project = serde_json::to_value(&*d.app().session.project).unwrap();
     let dirty = d.app().session.is_dirty();
     d.click("export.preview.first");
     let rate = d.app().session.sequence_rate();
@@ -528,7 +528,7 @@ fn export_preview_plays_steps_and_scrubs_without_changing_settings() {
     d.click("export.preview.last");
     assert_eq!(rate.frame_at(d.app().session.playhead()), rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(4.0) - filmcraft_engine::time::Tick(1)));
     assert_eq!(serde_json::to_value(&d.app().ui.export.settings).unwrap(), settings);
-    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), project);
     assert_eq!(d.app().session.is_dirty(), dirty);
     d.snapshot("export-preview-controls");
     // Audio-only exports keep navigation and audition available without requesting picture.
@@ -548,7 +548,7 @@ fn export_preview_range_change_stops_at_the_new_start() {
     d.wait_until("initial preview picture", |d| d.app().texture_key("export-preview").is_some_and(|key| key.frame == 0));
     d.click("export.preview.toggle");
     assert!(d.app().playback.playing);
-    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let project = serde_json::to_value(&*d.app().session.project).unwrap();
     let undo = d.app().session.undo_mark();
     let dirty = d.app().session.is_dirty();
     d.ok("ui.set", json!({"export":{"customStart":8.0,"customEnd":10.0}}));
@@ -556,7 +556,7 @@ fn export_preview_range_change_stops_at_the_new_start() {
     assert!(!d.app().playback.playing);
     let rate = d.app().session.sequence_rate();
     assert_eq!(d.app().session.playhead(), rate.snap(filmcraft_engine::time::Tick::from_seconds_f64(8.0)));
-    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), project);
     assert_eq!(d.app().session.undo_mark(), undo);
     assert_eq!(d.app().session.is_dirty(), dirty);
     let first = rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(8.0));

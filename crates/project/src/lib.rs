@@ -31,7 +31,7 @@ pub mod vtransition;
 
 use std::collections::BTreeMap;
 
-use filmcraft_geom::Vec2;
+pub use filmcraft_geom::Vec2;
 use filmcraft_media::{Generator, MediaInfo};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
