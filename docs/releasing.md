@@ -23,8 +23,9 @@ User-facing names say **FilmCraft**. Files, binaries and ids stay lowercase
 2. **Review the release trust boundary, then merge `main` into `release`** (or fast-forward it)
    and push. The stable workflow starts by itself. Compare the proposed tree with the
    **previous trusted release**, not a manifest from main. Review and preserve:
-   - `.github/workflows/nightly-sign.yml`, `.github/nightly-signing-policy.json`, and
-     every transitive reusable workflow/action pin;
+   - every transitive reusable workflow/action pin. The nightly signer no longer rides this sync:
+     it runs on the dedicated `nightly-signer` branch (see below), but the `release` environment
+     trusts both branches, so this review still covers everything that can reach it;
    - `packaging/windows/sign.ps1`, its signing configuration, tool installers and imports;
    - the macOS nightly signing scripts (`packaging/macos/nightly-sign.sh`, `nightly-verify.sh`,
      `nightly-lib.sh`, `import-cert.sh`) and entitlements, and the Linux public key
@@ -33,9 +34,8 @@ User-facing names say **FilmCraft**. Files, binaries and ids stay lowercase
      callees, dynamic environment selection and changed executable dependencies. A new
      workflow outside the named nightly paths is not exempt.
 
-   Stop the sync if that closure is unreviewed. The intended signer-owned files are identical
-   on main and release after promotion; actual top-level repository/event/branch checks and
-   the existing environment restrictions provide authority, not permanent branch divergence.
+   Stop the sync if that closure is unreviewed. Actual top-level repository/event/branch checks
+   and the existing environment restrictions provide authority, not permanent branch divergence.
 3. **Wait for the draft.** When every job is done (macOS notarization is the slow part), the
    Releases page has a draft `FilmCraft v0.3.0`, targeting the pushed commit, with every artifact
    and `SHA256SUMS.txt`. The notes are generated from the merged pull requests.

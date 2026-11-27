@@ -103,14 +103,23 @@ fn initialize_nightly_process_identity() -> Result<(), process_identity::Identit
     process_identity::initialize(build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1, app_id)
 }
 
-/// Say why a nightly launch profile was refused: in the log, and on a desktop session also in a
-/// native dialog (a Dock or Start Menu start has no console to read).
+/// Whether a refusal may also open a native message box. Standard error always carries the reason;
+/// this only adds a box where one renders without the app's event loop. Never on macOS: rfd's alert
+/// there needs the AppKit run loop this start has not reached, so a refused nightly launch hung in
+/// an invisible modal instead of exiting (GridCraft Mac smoke, 2026-11-26).
+fn refusal_dialog(flavor: build_flavor::BuildFlavor, desktop_session: bool, macos: bool) -> bool {
+    build_flavor::needs_native_error(flavor, desktop_session) && !macos
+}
+
+/// Say why a nightly launch profile was refused: in the log, and on a Windows or X11/Wayland desktop
+/// also in a native dialog (a Dock or Start Menu start has no console to read). macOS keeps the log
+/// and standard error: a modal before its event loop never appears.
 fn report_launch_profile_error(error: &str) {
     eprintln!("{} launch profile: {error}", filmcraft_ui_egui::os_window::name());
     let desktop_session = cfg!(windows)
         || cfg!(target_os = "macos")
         || (cfg!(target_os = "linux") && ["DISPLAY", "WAYLAND_DISPLAY"].into_iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty())));
-    if build_flavor::needs_native_error(build_flavor::COMPILED, desktop_session) {
+    if refusal_dialog(build_flavor::COMPILED, desktop_session, cfg!(target_os = "macos")) {
         if let Err(error) = initialize_nightly_process_identity() {
             eprintln!("filmcraft launch profile: {error}");
             return;
@@ -639,6 +648,7 @@ fn app_creator(
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
+        app.hooks.clipboard_text = Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok()));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
@@ -672,12 +682,22 @@ fn app_creator(
             app.ui.show_menu_bar = false;
         }
         if let Some((rx, ready, disabled)) = control {
+            // A listener that never came up is reported where a user or agent will see it:
+            // the status bar and `ui.inspect` → `control` (#3313).
+            if let Some(port) = control_port {
+                app.control_status = Some(filmcraft_ui_egui::ControlStatus { port, error: disabled.as_ref().map(control_server::DisabledWhy::reason) });
+            }
             app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
-            // The token cause is shown in the app as a fully translated sentence (the English
-            // `reason()` stays for the log and the input-only error); a bind failure stays in the
-            // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+            // Each cause is shown in the app as a fully translated sentence (the English
+            // `reason()` stays for the log and the input-only error).
+            match &disabled {
+                Some(control_server::DisabledWhy::Token) => {
+                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+                }
+                Some(control_server::DisabledWhy::Bind { port, error }) => {
+                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Bind { port: *port, error: error.clone() });
+                }
+                None => {}
             }
             // From here the app drains the queue on its first pass: stop rejecting requests.
             ready.store(true, Ordering::Relaxed);
@@ -982,5 +1002,19 @@ mod tests {
         assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
         // #1644: the Open Project dialog's "All files" fallback is a single `*`.
         assert_eq!(super::file_filters::all_files(), ["*"]);
+    }
+}
+
+#[cfg(test)]
+mod refusal_dialog_tests {
+    use super::refusal_dialog;
+    use crate::build_flavor::BuildFlavor;
+
+    #[test]
+    fn a_refusal_never_blocks_on_a_modal_before_the_event_loop_on_macos() {
+        assert!(refusal_dialog(BuildFlavor::NightlyV1, true, false), "a desktop refusal still shows the box where one renders");
+        assert!(!refusal_dialog(BuildFlavor::NightlyV1, true, true), "macOS has no run loop yet: the modal would hang");
+        assert!(!refusal_dialog(BuildFlavor::NightlyV1, false, false), "a headless session has no box");
+        assert!(!refusal_dialog(BuildFlavor::Stable, true, false), "only a nightly refusal explains itself in a box");
     }
 }

@@ -3057,6 +3057,7 @@ dependencies = [
  "filmcraft-tts",
  "image",
  "log",
+ "rayon",
  "roxmltree",
  "serde",
  "serde_json",
@@ -3154,6 +3155,7 @@ dependencies = [
 name = "filmcraft-gpu"
 version = "0.20.1"
 dependencies = [
+ "bytemuck",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
@@ -3251,6 +3253,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
+ "libc",
  "libloading",
  "log",
  "objc2-core-foundation",

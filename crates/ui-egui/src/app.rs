@@ -33,6 +33,7 @@ impl FilmcraftApp {
             ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
             frames,
+            scope_worker: scope_worker::ScopeWorker::new(),
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
@@ -62,6 +63,7 @@ impl FilmcraftApp {
             thumb_used: HashMap::new(),
             control_rx: None,
             control_notice: None,
+            control_status: None,
             dock_live: Arc::new(dock::Workspace::new(dock::Layout::default())),
             dock_specs: craft_ui::contract::Tracked::new(dock_ui::FilmSpecs::default()),
             dock_windows: Vec::new(),
@@ -189,6 +191,8 @@ impl FilmcraftApp {
                 self.session.previews.clone(),
                 FrameServer::default_workers(),
             ));
+            // a new server starts with raw 16-bit planes off: keep what the live compositor takes
+            self.frames.set_raw_16bit(self.gpu.as_ref().is_some_and(|g| g.compositor.uploads_raw_16bit()));
             self.textures.clear();
             self.thumb_used.clear();
             self.tl.reset_media_caches();
@@ -295,13 +299,18 @@ impl FilmcraftApp {
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_behavior::dock::Action::activate(PanelKind::Timeline));
                 }
-                filmcraft_engine::Event::OpenSource(_) => {
+                filmcraft_engine::Event::OpenSource(_) | filmcraft_engine::Event::CueSource(_) => {
+                    let cue = matches!(ev, filmcraft_engine::Event::CueSource(_));
+                    let focused = self.ui.focused;
                     // a closed Source panel reopens, and another panel's maximize would hide it
-                    if self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
+                    if !cue && self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
                         self.ui.keys.maximized = None;
                     }
-                    // the clip just opened there is what Space and J/K/L act on next (#3669)
                     self.show_panel(PanelKind::Source);
+                    if cue {
+                        let _ = self.apply_dock(craft_behavior::dock::Action::activate(focused));
+                        self.ui.focused = focused;
+                    }
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.status(message),
@@ -377,8 +386,10 @@ impl FilmcraftApp {
             self.auto.begin_frame();
             self.apply_prefs(&ctx);
             self.sync_timeline_view();
+            self.ui.script.sync_project(&self.session.project_instance);
             panels::metadata::follow_selection(self);
             self.handle_drops(&ctx);
+            panels::script::finish_edit_on_click_away(self, &ctx);
             self.begin_press(&ctx);
             self.latch_escape_cancel(&ctx);
             self.handle_shortcuts(&ctx);
