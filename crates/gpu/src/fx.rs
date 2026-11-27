@@ -256,7 +256,6 @@ fn kernel_texture(device: &wgpu::Device, queue: &wgpu::Queue, kernel: &[(i32, i3
     t.create_view(&Default::default())
 }
 
-
 /// Resample parameters (`OP_RESAMPLE`, `OP_SYNTH_EDGES`): rect, inverse map, opacity, valid.
 fn resample_step(code: u32, r: &filmcraft_render::gpufx::Resample) -> Step {
     let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };

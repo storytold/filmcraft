@@ -320,6 +320,49 @@ fn minifies(m: &Affine, w: usize, h: usize) -> bool {
     !minify.is_finite() || minify >= 2.0 && w >= 4 && h >= 4
 }
 
+/// SDR Lumetri with an Input LUT, Look, Wheels, Curves, HSL Secondary or Sharpen: the passes of
+/// `effects::lumetri` in its order, each with its own GPU op. `basic` is the Basic/Creative pass.
+fn lumetri_passes(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize, basic_on: bool, sharpen: f32, basic: FxOp) -> FxOp {
+    let mut ops = Vec::with_capacity(5);
+    if let Some(l) = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None } {
+        ops.push(FxOp::Lut(l));
+    }
+    ops.push(basic);
+    if let Some(a) = crate::effects::lumetri_advanced_params(e, cx) {
+        ops.push(FxOp::LumetriAdvanced(Arc::new(a)));
+    }
+    if let Some(p) = crate::effects::hsl_secondary_params(e, cx) {
+        ops.push(FxOp::HslSecondary(Arc::new(p)));
+    }
+    if sharpen.abs() > 1e-3 {
+        let r = 1.2 * cx.px_scale.max(0.35);
+        let (rx, ry) = gaussian_boxes(w, h, r, r);
+        ops.push(FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 });
+    }
+    FxOp::Seq(ops)
+}
+
+/// Warp Stabilizer as GPU ops. The analysis needs the clip (`cx.env`); without it the CPU path runs as before.
+fn stabilizer_op(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> Option<FxOp> {
+    let s = crate::vfx::temporal::stabilizer_warp(w, h, e, cx)?;
+    let warp = |m: &Affine| {
+        if minifies(m, w, h) { Resample { inv: Some(*m), rect: [u32::MAX; 4], opacity: 1.0 } } else { resample(w, h, m, 1.0) }
+    };
+    Some(match s.framing {
+        3 => FxOp::SynthEdges(warp(&s.m)),
+        framing => {
+            let mut ops = Vec::with_capacity(2);
+            if !s.m.is_identity() {
+                ops.push(FxOp::Resample(warp(&s.m)));
+            }
+            if framing == 1 {
+                ops.push(FxOp::crop_rect(w, h, s.crop[0], s.crop[1], s.crop[0], s.crop[1], 0.0));
+            }
+            FxOp::Seq(ops)
+        }
+    })
+}
+
 impl FxOp {
     /// A Three-Way Color Corrector with neutral controls (and any other op: false): it leaves the
     /// image untouched, HDR values included.
@@ -699,46 +742,9 @@ impl FxOp {
                 if gpu_capable || is_hdr {
                     return Some(basic(gpu_capable));
                 }
-                // SDR with an Input LUT, Look, Wheels, Curves, HSL Secondary or Sharpen: the passes
-                // of `effects::lumetri` in its order, each with its own GPU op
-                let mut ops = Vec::with_capacity(5);
-                if let Some(l) = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None } {
-                    ops.push(FxOp::Lut(l));
-                }
-                ops.push(basic(true));
-                if let Some(a) = crate::effects::lumetri_advanced_params(e, cx) {
-                    ops.push(FxOp::LumetriAdvanced(Arc::new(a)));
-                }
-                if let Some(p) = crate::effects::hsl_secondary_params(e, cx) {
-                    ops.push(FxOp::HslSecondary(Arc::new(p)));
-                }
-                if sharpen.abs() > 1e-3 {
-                    let r = 1.2 * cx.px_scale.max(0.35);
-                    let (rx, ry) = gaussian_boxes(w, h, r, r);
-                    ops.push(FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 });
-                }
-                FxOp::Seq(ops)
+                lumetri_passes(e, cx, w, h, basic_on, sharpen, basic(true))
             }
-            "warp_stabilizer" => {
-                // the analysis needs the clip (`cx.env`); without it the CPU path runs as before
-                let s = crate::vfx::temporal::stabilizer_warp(w, h, e, cx)?;
-                let warp = |m: &Affine| {
-                    if minifies(m, w, h) { Resample { inv: Some(*m), rect: [u32::MAX; 4], opacity: 1.0 } } else { resample(w, h, m, 1.0) }
-                };
-                match s.framing {
-                    3 => FxOp::SynthEdges(warp(&s.m)),
-                    framing => {
-                        let mut ops = Vec::with_capacity(2);
-                        if !s.m.is_identity() {
-                            ops.push(FxOp::Resample(warp(&s.m)));
-                        }
-                        if framing == 1 {
-                            ops.push(FxOp::crop_rect(w, h, s.crop[0], s.crop[1], s.crop[0], s.crop[1], 0.0));
-                        }
-                        FxOp::Seq(ops)
-                    }
-                }
-            }
+            "warp_stabilizer" => stabilizer_op(e, cx, w, h)?,
             _ => return None,
         })
     }
