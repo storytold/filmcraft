@@ -46,6 +46,9 @@ pub mod nvdec;
 pub mod nvenc;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod qsv;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod thread_priority;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod vaapi;
 #[cfg(target_os = "macos")]
@@ -78,6 +81,12 @@ pub fn register() -> Availability {
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
         filmcraft_export::register_encoder(hardware_encode::videotoolbox_encoder_factory);
+        filmcraft_export::register_background_thread_start(|| {
+            // a thread the system refuses to lower runs at the default priority, as before ADR 0002
+            if let Err(e) = thread_priority::lower_current_thread() {
+                log::debug!("could not lower a background thread's priority: {e}");
+            }
+        });
         filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, hardware_encode::hevc_available);
         // the probe creates a hardware session (about 0.1 s): answer it now, off the UI thread,
         // before the first draw of the format list asks
