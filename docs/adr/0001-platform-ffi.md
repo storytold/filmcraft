@@ -257,7 +257,8 @@ owned descriptors, no raw pointers. Nothing imports it yet, so the readback stay
 the fallback guarantee is unchanged.
 ## Addendum (2026-11-17): AMD AMF hardware encoding on Windows
 
-H.264, H.265 (Main, Main 10) and AV1 encoding on AMD GPUs through AMF (`amf/`, #880). The rules
+H.264 and H.265 (Main, Main 10) encoding on AMD GPUs through AMF (`amf/`, #880; AV1 export is
+deferred to a follow-up PR). The rules
 above hold:
 
 - **Two allowance scopes**, both private modules: `amf::ffi` (the declarations and the run-time
