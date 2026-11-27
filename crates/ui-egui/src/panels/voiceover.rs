@@ -13,10 +13,10 @@
 //!
 //! With the preference `fullScreenProgram` on (`audio.voiceover.settings`), starting a take enters
 //! the full-screen Program view through `view.fullScreenProgram`, and the take's end leaves it the
-//! same way. `UiState::voiceover_cinema` says the view now showing is the take's to give back; it is
-//! set only when the take entered it, and [`tick`] (every frame, also in the full-screen view)
-//! clears it once the view is left by hand and gives the view back once the take is gone, however
-//! it went: stopped (also when saving the file failed and the take waits for a retry), played out
+//! same way. `UiState::voiceover_cinema` names the take the view now showing belongs to; it is
+//! set only when that take entered it and cleared when the view is left by hand. [`tick`] (every
+//! frame, also in the full-screen view) gives the view back once that take is gone, even if another
+//! is already recording, however it went: stopped (also when saving the file failed and the take waits for a retry), played out
 //! to the punch-out and post-roll, an input error, discarded. Only `voiceover.recordToggle` and the
 //! track header's microphone (this panel's `toggle`) enter it; a bare `audio.voiceover.start` over the
 //! control channel arms the engine and changes no layout, as it starts no playback either.
@@ -132,29 +132,28 @@ fn stop(app: &mut FilmcraftApp) -> Result<Value, String> {
 /// With the preference on, show the Program monitor full screen for the take that just started,
 /// unless it already is (then it stays, and is not the take's to give back).
 fn enter_full_screen(app: &mut FilmcraftApp, ctx: &egui::Context) {
-    app.ui.voiceover_cinema = false;
+    app.ui.voiceover_cinema = None;
     if !app.session.prefs.voice_over.full_screen_program || app.ui.fullscreen_program {
         return;
     }
     // the same path as the menu, the shortcut and the control channel
     if let Some(Ok(_)) = crate::panels::keyboard::route(app, ctx, "view.fullScreenProgram", &json!({})) {
-        app.ui.voiceover_cinema = true;
+        app.ui.voiceover_cinema = app.session.voiceover.take();
     }
 }
 
-/// Settle the full-screen view the take entered: forget it when the user has left the view by
-/// hand (the take goes on, and its end must not touch the layout), give it back once no take is
-/// recording or its capture has stopped awaiting a save.
+/// Settle the full-screen view a take entered: forget it when the user has left the view by hand
+/// (the take goes on, and its end must not touch the layout), give it back once that take is no
+/// longer recording or its capture has stopped awaiting a save.
 fn give_back_layout(app: &mut FilmcraftApp, ctx: &egui::Context) {
-    if !app.ui.voiceover_cinema {
-        return;
-    }
+    let Some(take) = app.ui.voiceover_cinema else { return };
     if !app.ui.fullscreen_program {
-        app.ui.voiceover_cinema = false;
-    } else if !app.session.voiceover.recording() || app.session.voiceover.awaiting_save() {
-        // no take, or a stopped one whose file could not be saved yet: the error and the retry
-        // controls must not stay hidden behind the full-screen view (the take stays for a retry)
-        app.ui.voiceover_cinema = false;
+        app.ui.voiceover_cinema = None;
+    } else if app.session.voiceover.take() != Some(take) || app.session.voiceover.awaiting_save() {
+        // the take is over (a later one may already be recording), or it has stopped and its file
+        // could not be saved yet: the error and the retry controls must not stay hidden behind the
+        // full-screen view (the take stays for a retry)
+        app.ui.voiceover_cinema = None;
         let _ = crate::panels::keyboard::route(app, ctx, "view.fullScreenProgram", &json!({}));
     }
 }

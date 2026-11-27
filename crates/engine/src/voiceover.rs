@@ -18,8 +18,10 @@
 //! exactly as many samples as the timeline asks for, so a recording lands sample-accurately.
 //!
 //! The preference `fullScreenProgram` (Voice-Over Record Settings ▸ Full-screen Program while
-//! recording, off by default) is stored here and read by the UI: with it on, a take enters the
-//! full-screen Program view and the layout comes back when the take ends, however it ends.
+//! recording, off by default) is stored here and read by the UI: with it on, a take started from
+//! the UI (`voiceover.recordToggle`, the track header's microphone) enters the full-screen Program
+//! view and the layout comes back when that take ends, however it ends. A bare
+//! `audio.voiceover.start` changes no layout.
 //!
 //! Files are named `<Name> <n>.wav` (Voice-over Record Settings ▸ Name, default `Voice-over`, `n`
 //! the first number not used by a project item or an existing file) and saved in Project Settings ▸
@@ -203,6 +205,8 @@ pub struct VoiceOver {
     captured: Vec<f32>,
     /// A stopped take awaiting a successful save; retries keep its original end point.
     pending_stop: Option<Tick>,
+    /// Takes started in this session: tells the take in `rec` from the ones before it.
+    takes: u64,
 }
 
 impl VoiceOver {
@@ -213,6 +217,10 @@ impl VoiceOver {
     /// for another `audio.voiceover.stop`).
     pub fn awaiting_save(&self) -> bool {
         self.rec.is_some() && self.pending_stop.is_some()
+    }
+    /// Identifies the take in progress; every started take gets a new one.
+    pub fn take(&self) -> Option<u64> {
+        self.rec.is_some().then_some(self.takes)
     }
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
@@ -396,6 +404,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let channel = vo.input_channel.min(format.channels.saturating_sub(1) as u32);
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
+    s.voiceover.takes = s.voiceover.takes.wrapping_add(1);
     s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;

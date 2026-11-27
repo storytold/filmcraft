@@ -341,20 +341,22 @@ Behaviour decisions:
 
 - With it on, a take that has started through `voiceover.recordToggle` (the engine accepted
   `audio.voiceover.start`) enters the full-screen Program view. A start that fails never changes the layout.
-- `UiState::voiceover_cinema` says "the full-screen view now showing is the take's to give back".
-  It is set only when the take entered the view, so a view that was already full screen stays full
+- `UiState::voiceover_cinema` names the take (`VoiceOver::take`, new for every started take) the
+  full-screen view now showing belongs to. It is set only when that take entered the view, so a view that was already full screen stays full
   screen. `panels::voiceover::tick` runs every frame, also in the full-screen view (which draws no
-  dialogs, so it is called from `app/frame.rs` there), and gives the view back once no take is
-  recording or its capture has stopped and waits for a save: stopped, played out to the punch-out plus post-roll, input error, discarded from the
+  dialogs, so it is called from `app/frame.rs` there), and gives the view back once that take is
+  no longer recording (even if another already is: a stop and a bare start handled before the next
+  frame) or its capture has stopped and waits for a save: stopped, played out to the punch-out plus post-roll, input error, discarded from the
   settings dialog or by `audio.voiceover.stop {discard}`, or the project replaced. When saving the
   file fails (the recordings folder cannot be written), the take is kept for another stop, and the
   view is given back at once so the error and the way to retry (the microphone, `voiceover.recordToggle`,
   Discard take in the settings dialog) are visible; the retry does not re-enter the view. Detecting the end
   from the engine's state rather than hooking each ending keeps it right for all of them.
-- Leaving by hand during the take (Esc or the command) does not stop the recording. The flag is
+- Leaving by hand during the take (Esc or the command) does not stop the recording. The ownership is
   dropped as soon as the view is seen to be off, so the take's end does not re-enter or touch the
   layout or the focus, and a view the user enters again by hand during the take is theirs.
-- The flag is settled at the start of the next take too, so it never leaks into it.
+- The ownership is also settled when the UI starts the next take, and it never passes to a later
+  take.
 - Cinema mode shows the Program monitor whatever the dock holds (hidden or in another workspace
   tab), so a take with no Program panel visible still works (read in `app/frame.rs`, not covered by a test). Other dialogs are not drawn in the full-screen
   view and come back with the layout; a dialog open when the take starts is not closed.
@@ -364,7 +366,8 @@ Behaviour decisions:
 
 Tests: `tests/it/voiceover_fullscreen_ui.rs` (off by default; on: enter, stop restores layout and
 focus, also when the file cannot be saved and the take stays for a retry; already full screen stays; Esc and the command mid-take leave the take running and its end
-changes nothing; a view re-entered by hand stays; discard, punch-out plus post-roll, an input error
+changes nothing; a view re-entered by hand stays; a bare start in the same frame as the stop does not
+inherit the view; discard, punch-out plus post-roll, an input error
 restore; a refused start leaves the layout; the dialog checkbox saves the preference) and, in the
 engine, `voiceover_tests::{full_screen_program_is_off_by_default_and_round_trips_through_the_settings,
 preferences_saved_before_the_full_screen_option_load_with_it_off}`.

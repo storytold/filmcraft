@@ -92,7 +92,7 @@ fn a_take_shows_the_program_full_screen_and_stopping_gives_the_layout_back() {
     d.frames(3);
     assert!(!d.full(), "the layout is back");
     assert_eq!(d.harness.state().ui.focused, PanelKind::Timeline, "with the focus it had");
-    assert!(!d.harness.state().ui.voiceover_cinema, "nothing is left over for the next take");
+    assert_eq!(d.harness.state().ui.voiceover_cinema, None, "nothing is left over for the next take");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -243,7 +243,7 @@ fn a_take_that_cannot_be_saved_gives_the_layout_back_and_stays_available_for_ret
     d.frames(3);
     assert!(d.recording(), "the stopped take is kept for another try");
     assert!(!d.full(), "the error and the recovery controls are not hidden behind the full-screen view");
-    assert!(!d.harness.state().ui.voiceover_cinema);
+    assert_eq!(d.harness.state().ui.voiceover_cinema, None);
     // fix the folder and retry with the same control: the take is saved, and the view stays as it is
     std::fs::remove_file(&dir).unwrap();
     d.ok("ui.menu.invoke", json!({"id": "voiceover.recordToggle", "params": {"track": "A1"}}));
@@ -278,7 +278,7 @@ fn an_input_error_ends_the_take_and_gives_the_layout_back() {
     d.frames(4);
     assert!(!d.recording());
     assert!(!d.full(), "the failed take does not keep the view");
-    assert!(!d.harness.state().ui.voiceover_cinema);
+    assert_eq!(d.harness.state().ui.voiceover_cinema, None);
     let _ = std::fs::remove_dir_all(dir);
 }
 
