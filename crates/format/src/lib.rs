@@ -41,7 +41,11 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
-//! - **v18**: Script Project items with linked takes, marks, and independently positioned thumbnails.
+//! - **v18**: camera raw Source Settings on media items (`Interpretation::raw`, #1078), defined in
+//!   storytold/craft-libs. This build does not have the settings yet. Builds from before the
+//!   craft-libs pin move also wrote Script items as v18; those files read as v18 here and upgrade.
+//! - **v19**: Script Project items with linked takes, marks, and independently positioned thumbnails
+//!   (#2726), defined in storytold/craft-libs.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -54,10 +58,7 @@ use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new, atomic_write_no_follow};
 
-pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, detect_version, migrate_with};
-
-/// Script items require a build that can preserve their takes and thumbnail positions.
-pub const SCHEMA_VERSION: u32 = craft_fcproj_format::SCHEMA_VERSION + 1;
+pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
 
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
 /// larger files would commit several times their size in memory before validation.
@@ -103,9 +104,7 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    let envelope = craft_fcproj_format::EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
-    let encoded = if pretty { serde_json::to_vec_pretty(&envelope) } else { serde_json::to_vec(&envelope) };
-    encoded.unwrap_or_default()
+    craft_fcproj_format::encode(project, view, generator(), pretty)
 }
 
 /// Read a project file (any supported schema).
@@ -113,15 +112,7 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if bytes.len() as u64 > MAX_PROJECT_BYTES {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let (env, found) = match craft_fcproj_format::decode::<Project>(bytes) {
-        // The Script schema adds optional data. The shared migrations cover every earlier schema.
-        Err(FormatError::TooNew { found, .. }) if found == SCHEMA_VERSION => {
-            let env: craft_fcproj_format::EnvelopeIn<Project> = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
-            (env, found)
-        }
-        Err(FormatError::TooNew { found, .. }) => return Err(FormatError::TooNew { found, supported: SCHEMA_VERSION }),
-        result => result?,
-    };
+    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
     validate_loaded(loaded(env, found))
 }
 
@@ -229,7 +220,7 @@ mod tests {
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 18);
+        assert_eq!(SCHEMA_VERSION, 19);
     }
 
     #[test]
@@ -320,11 +311,15 @@ mod tests {
         let second = doc.lines[1].id;
         let script = p.add_item("dialogue", Label::Blue, ItemKind::Script(Arc::new(doc)), None);
         assert!(decode(&encode(&p, false)).is_ok());
-        // Previous Script builds saved these items in schema 17. Shared migrations must keep them.
-        let older = craft_fcproj_format::encode(&p, None::<&filmcraft_project::ProjectView>, "FilmCraft test".into(), false);
-        let loaded = decode(&older).unwrap();
-        assert!(loaded.migrated());
-        assert_eq!(loaded.project, p);
+        // Earlier Script builds saved these items in schema 17, and builds before the shared Script
+        // step in schema 18. Shared migrations must keep them.
+        for version in [17, 18] {
+            let mut older: Value = serde_json::from_slice(&encode(&p, false)).unwrap();
+            older["schema_version"] = Value::from(version);
+            let loaded = decode(&serde_json::to_vec(&older).unwrap()).unwrap();
+            assert!(loaded.migrated());
+            assert_eq!(loaded.project, p);
+        }
         let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
         doc.lines[1].id = first;
         assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
