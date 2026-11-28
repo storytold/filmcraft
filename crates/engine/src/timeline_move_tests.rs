@@ -466,6 +466,64 @@ fn a_partner_whose_position_does_not_change_is_left_alone() {
     assert_eq!(state(&s, a.id).1 - a.start, later - v.start);
 }
 
+/// An insert opens its gap on every sync-locked track. With the sound left out of an insert move
+/// of its picture to the same time, that gap pushed the sound one clip length later, out of sync.
+/// The sound now goes back in at its own time, on its own track, with the picture.
+#[test]
+fn an_insert_move_to_the_same_time_keeps_the_partner_in_sync() {
+    let mut s = demo();
+    let (v_track, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let v2 = s.active_sequence().unwrap().video_tracks[1].id;
+    for to_track in [v2, v_track] {
+        let before = s.project.clone();
+        let undo = s.history.undo.len();
+        let r = s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": to_track.0, "time": v.start.0}], "insert": true})).unwrap();
+        assert_eq!(state(&s, v.id), (to_track, v.start));
+        assert_eq!(state(&s, a.id), (a_track, a.start), "the sound stays under its picture");
+        assert_eq!(r["moved"], json!([v.id.0, a.id.0]));
+        assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+        s.active_sequence().unwrap().check().unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, *before);
+    }
+    // an overwrite move still leaves the unchanged sound alone
+    let r = s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": v2.0, "time": v.start.0}]})).unwrap();
+    assert_eq!(r["moved"], json!([v.id.0]));
+    assert_eq!(state(&s, a.id), (a_track, a.start));
+}
+
+/// The sound that goes back to its own place in an insert move (above) kept none of its
+/// transitions and sized the gap with its picture: taking it out and back dropped the crossfade
+/// into it from the sound before, though the two still meet at the same cut, and a split edit's
+/// lead opened the gap early, cutting the shot before the picture on every sync-locked track.
+#[test]
+fn an_insert_move_to_the_same_time_keeps_the_partners_crossfade_and_the_pictures_gap() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (v1, a1, v3) = (q.video_tracks[0].id, q.audio_tracks[0].id, q.video_tracks[2].id);
+    let (first, v, a) = (q.video_tracks[0].items[0].clone(), q.video_tracks[0].items[1].clone(), q.audio_tracks[0].items[1].clone());
+    assert!(v.link.is_some() && v.link == a.link && a.start == v.start, "the demo's second shot and its sound");
+    let cross = q.audio_tracks[0].transitions.iter().find(|t| t.to == Some(a.id)).cloned().unwrap();
+    let insert = |s: &mut Session| s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": v3.0, "time": v.start.0}], "insert": true})).unwrap();
+    let r = insert(&mut s);
+    assert_eq!(r["moved"], json!([v.id.0, a.id.0]));
+    assert_eq!((state(&s, v.id), state(&s, a.id)), ((v3, v.start), (a1, a.start)));
+    let q = s.active_sequence().unwrap();
+    assert!(q.audio_tracks[0].transitions.contains(&cross), "the crossfade into the sound is still on its cut: {:?}", q.audio_tracks[0].transitions);
+    q.check().unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    // a J-cut: the sound starts 6 frames before its picture
+    let lead = s.sequence_rate().tick_of(6);
+    s.execute("timeline.move", json!({"moves": [{"clip": a.id.0, "track": a1.0, "time": (a.start - lead).0}], "linked": false})).unwrap();
+    let next = s.active_sequence().unwrap().video_tracks[0].items[2].clone();
+    insert(&mut s);
+    assert_eq!((state(&s, v.id), state(&s, a.id)), ((v3, v.start), (a1, a.start - lead)));
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].items[0], first, "the shot before the picture is not cut at the sound's start");
+    assert_eq!(state(&s, next.id), (v1, next.start + v.duration), "later shots move by the picture's length");
+    q.check().unwrap();
+}
+
 /// When a clip would start before the sequence start, every clip of the call lands later by the
 /// same amount: a split edit keeps its offset and several listed clips keep their spacing.
 #[test]
