@@ -33,6 +33,10 @@ const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Not
 const THAI_SAMPLE: &str = "ภาพถ่ายภาษาไทย";
 const THAI_PREFERRED: &[&str] = &["Noto Sans Thai", "Thonburi", "Leelawadee UI", "Leelawadee", "Tahoma", "Sarabun", "Noto Sans Thai UI"];
 
+// Lao: neither the UI fonts nor the CJK/Thai fallbacks have it.
+const LAO_PREFERRED: &[&str] =
+    &["Noto Sans Lao", "Noto Sans Lao UI", "Leelawadee UI", "Lao UI", "Lao Sangam MN", "Lao MN", "Saysettha OT", "Phetsarath OT", "DokChampa"];
+
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
     FONT.get_or_init(|| find_system_font(SAMPLE, PREFERRED)).clone()
@@ -63,6 +67,24 @@ fn thai_font() -> Option<Arc<FontData>> {
 #[cfg(test)]
 pub(crate) fn thai_available() -> bool {
     thai_craft_fonts().next().is_some() || thai_font().is_some()
+}
+
+/// The font-data name of the installed Lao face [`install`] appends to every family when
+/// `craft-fonts` has none.
+pub(crate) const LAO_FACE: &str = "system-lao";
+
+pub(crate) fn lao_craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fonts::CraftFont> {
+    filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| matches!(*s, "Laoo" | "Lao")))
+}
+
+fn lao_font() -> Option<Arc<FontData>> {
+    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    FONT.get_or_init(|| find_system_font(LAO_SAMPLE, LAO_PREFERRED)).clone()
+}
+
+/// Whether [`install`] has a Lao face to add: a craft-fonts one, or an installed system face.
+pub(crate) fn lao_font_available() -> bool {
+    lao_craft_fonts().next().is_some() || lao_font().is_some()
 }
 
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
@@ -104,6 +126,7 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
         }
     }
     install_thai(fonts);
+    install_lao(fonts);
 }
 
 /// Thai letters are in no other UI font, so the faces go last; craft-fonts first, else one
@@ -120,6 +143,30 @@ fn install_thai(fonts: &mut FontDefinitions) {
     {
         fonts.font_data.insert(THAI_FACE.into(), font);
         names.push(THAI_FACE.into());
+    }
+    for stack in fonts.families.values_mut() {
+        for name in &names {
+            if !stack.contains(name) {
+                stack.push(name.clone());
+            }
+        }
+    }
+}
+
+/// Lao letters are in no other UI font, so the faces go last; craft-fonts first, else one
+/// installed face.
+fn install_lao(fonts: &mut FontDefinitions) {
+    let mut names = Vec::new();
+    for f in lao_craft_fonts() {
+        let name = format!("craft:{} {}", f.family, f.style);
+        fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(f.bytes)));
+        names.push(name);
+    }
+    if names.is_empty()
+        && let Some(font) = lao_font()
+    {
+        fonts.font_data.insert(LAO_FACE.into(), font);
+        names.push(LAO_FACE.into());
     }
     for stack in fonts.families.values_mut() {
         for name in &names {
@@ -177,6 +224,22 @@ mod font_blob_tests {
         for (family, stack) in &fonts.families {
             let thai = stack.iter().filter(|n| n.starts_with("craft:Noto Sans Thai") || n.as_str() == THAI_FACE).count();
             assert_eq!(thai, 1, "{family:?}: {stack:?}");
+        }
+    }
+
+    /// Lao UI and clip names need a Lao face in every UI font family: craft-fonts' Noto
+    /// Sans Lao when built with it, else an installed one. Skipped on a machine with neither.
+    #[test]
+    fn install_adds_a_lao_face_to_every_family() {
+        if !lao_font_available() {
+            eprintln!("skipped: no craft-fonts Lao face and no installed Lao font");
+            return;
+        }
+        let mut fonts = FontDefinitions::default();
+        install(&mut fonts);
+        for (family, stack) in &fonts.families {
+            let lao = stack.iter().filter(|n| n.starts_with("craft:Noto Sans Lao") || n.as_str() == LAO_FACE).count();
+            assert_eq!(lao, 1, "{family:?}: {stack:?}");
         }
     }
 }
