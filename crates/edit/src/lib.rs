@@ -1179,17 +1179,21 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
     Ok(speed)
 }
 
-/// The length at `speed` of a clip that plays `src_len` of media, at most `room`, in whole frames,
-/// as the Speed/Duration dialog shows it: a clip that starts on a frame still ends on one, and a
-/// ripple moves the later clips by whole frames. The length is rounded down, except that the next
+/// The length at `speed` of a clip at `start` that plays `src_len` of media, at most `room`, in
+/// whole frames, as the Speed/Duration dialog shows it: a clip that starts on a frame still ends on
+/// one, and a ripple moves the later clips by whole frames. The frames are counted from the clip's
+/// start frame, since at a rate whose frames are not a whole number of ticks long (37 fps) n frames
+/// from a later frame can be a tick shorter or longer than the first n. A clip that starts between
+/// frames counts from zero. The length is rounded down, except that the next
 /// frame up is taken when its source span exceeds `src_len` by no more than float rounding (one
 /// tick, plus one per 2^50 ticks, about 74 minutes, of span). A Duration typed in the dialog
 /// arrives as a speed, so it still gives exactly the typed length, and the clip never reads more
 /// than that rounding past the media it played before.
-fn whole_frame_length(rate: FrameRate, src_len: Tick, speed: f64, room: Tick) -> Tick {
+fn whole_frame_length(rate: FrameRate, start: Tick, src_len: Tick, speed: f64, room: Tick) -> Tick {
     let exact = Tick((src_len.0 as f64 / speed).round() as i64).min(room);
-    let n = rate.frame_at(exact);
-    let (down, up) = (rate.tick_of(n), rate.tick_of(n.saturating_add(1)));
+    let origin = if rate.snap(start) == start { start } else { Tick::ZERO };
+    let n = rate.frame_at(origin + exact);
+    let (down, up) = (rate.tick_of(n) - origin, rate.tick_of(n.saturating_add(1)) - origin);
     let fits = Tick(src_len.0.saturating_add(1 + (src_len.0 >> 50)));
     if up <= room && src_of(up, speed) <= fits { up } else { down }
 }
@@ -1223,7 +1227,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         let src_len = it.source_out() - it.source_in;
         // a tiny speed saturates the cast: keep the clip's end representable
         let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
-        let mut new_dur = whole_frame_length(work.settings.frame_rate, src_len, speed, room).max(ctx.min_duration);
+        let mut new_dur = whole_frame_length(work.settings.frame_rate, it.start, src_len, speed, room).max(ctx.min_duration);
         let old_end = it.end();
         let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
         let (_, next_start) = neighbours(tr, *clip);

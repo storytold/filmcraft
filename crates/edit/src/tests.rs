@@ -1125,6 +1125,29 @@ fn speed_change_keeps_clip_edges_on_frames() {
 }
 
 #[test]
+fn speed_change_at_37_fps_keeps_clip_edges_on_frames() {
+    // At 37 fps a frame is 6_865_297_297.3 ticks, so n frames counted from frame 1 can be a tick
+    // shorter than the first n frames. V1: a plays frames 1 to 3, b starts at frame 3. At 45% a's
+    // 2 frames last 4.44 frames: a takes 4, and both a's end and b's new start are frame 5.
+    let r = FrameRate { num: 37, den: 1 };
+    let mut fx = Fx::new();
+    fx.seq.settings.frame_rate = r;
+    let v1 = fx.v(0);
+    let mut a = fx.item(0, 0, 0);
+    (a.start, a.duration) = (r.tick_of(1), r.tick_of(3) - r.tick_of(1));
+    let mut b = fx.item(0, 0, 0);
+    (b.start, b.duration) = (r.tick_of(3), r.tick_of(5) - r.tick_of(3));
+    let (a_id, b_id) = (a.id, b.id);
+    let mut n = fx.next;
+    overwrite(&mut fx.seq, vec![(v1, a), (v1, b)], &mut Fx::ctx(&mut n)).unwrap();
+    set_speed(&mut fx.seq, a_id, 0.45, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    let (_, a) = fx.seq.find_item(a_id).unwrap();
+    assert_eq!((a.start, a.end()), (r.tick_of(1), r.tick_of(5)));
+    let (_, b) = fx.seq.find_item(b_id).unwrap();
+    assert_eq!(b.start, r.tick_of(5));
+}
+
+#[test]
 fn a_duration_typed_in_the_speed_dialog_applies_exactly() {
     // The Speed/Duration dialog sends a typed Duration as the speed that gives it, length × speed
     // × 100 / typed length, and the command divides by 100. For each (clip length, earlier speed,
