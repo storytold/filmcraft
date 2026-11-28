@@ -23,6 +23,21 @@ fn set(s: &mut Session, key: &str, value: Value) {
 }
 
 #[test]
+fn ripple_delete_playhead_preference_persists_and_defaults_off_for_older_settings() {
+    let dir = tmp_dir("ripple-delete-playhead");
+    let path = dir.join("preferences.json");
+    std::fs::write(&path, r#"{"timeline":{"snapPlayhead":true}}"#).unwrap();
+    assert!(!Preferences::load(&path).timeline.move_playhead_after_ripple_delete);
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    for enabled in [true, false] {
+        set(&mut s, "timeline.movePlayheadAfterRippleDelete", json!(enabled));
+        assert_eq!(Preferences::load(&path).timeline.move_playhead_after_ripple_delete, enabled);
+    }
+    assert!(s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": "yes"})).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn interface_language_persists_and_rejects_hostile_values() {
     let dir = tmp_dir("interface-language");
     let path = dir.join("preferences.json");
