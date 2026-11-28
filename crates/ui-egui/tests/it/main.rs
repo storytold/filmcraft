@@ -59,6 +59,7 @@ mod perf_ui;
 mod playback_clock_ui;
 mod playhead_step_ui;
 mod project_panel_ui;
+mod properties_multi_volume_ui;
 mod properties_scroll_ui;
 mod remix_ui;
 mod script_ui;
