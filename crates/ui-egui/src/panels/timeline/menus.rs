@@ -70,7 +70,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
 
 /// The cut right-clicked on a track (#219): the clip ending there and the clip starting there,
 /// either missing at the ends of a gap. Its menu offers the edit point's trim types, Apply Default
-/// Transitions and Join Through Edits, like Premiere's edit point menu.
+/// Transitions and Delete Cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct EditPointTarget {
     pub(super) left: Option<ClipId>,
@@ -136,7 +136,7 @@ pub(super) fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &
     }
     // only this cut (and its linked partners), and only when it is a through edit
     let through = filmcraft_edit::through::through_edits(seq).iter().any(|e| Some(e.left) == target.left && Some(e.right) == target.right);
-    let label = tl!("Join Through Edits");
+    let label = tl!("Delete Cut");
     let r = ui.add_enabled(through, egui::Button::new(label));
     app.auto.add("timeline.editPointMenu.joinThroughEdits", r.rect, label);
     if r.clicked()
