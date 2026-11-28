@@ -282,6 +282,27 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   PQ / HLG, limited), and for PQ `mdcv` and `clli`; 8-bit SDR HEVC is unchanged and has no `colr`
   (the VUI carries its description, as in the software H.264 path).
 
+## Hardware H.264 / H.265 / AV1 encoding (Windows, Intel Quick Sync)
+
+`qsv/` implements Intel Quick Sync Video hardware encoding on Windows through Intel hardware
+Media Foundation transforms (`MFTEnumEx` filtered to `MFT_ENUM_HARDWARE_VENDOR_ID_Attribute`
+`0x8086` on a Direct3D 11 device opened on the Intel DXGI adapter):
+
+- **Codecs and profiles:** H.264 8-bit SDR (Baseline / Main / High), HEVC Main (8-bit SDR) and Main
+  10 (10-bit Rec. 2100 PQ / HLG), and AV1 Main (8-bit SDR) and Main 10 (10-bit Rec. 2100 PQ / HLG).
+- **Priority and opt-in:** `register()` registers `qsv::export::factory` before `nvenc::export::factory`
+  so NVENC is tried first on hybrid Intel + NVIDIA systems (`register_encoder` prepends). H.264 is
+  used only when `ExportSettings::hardware_encoding` is `Auto`; unsupported modes (MXF, CRF,
+  two-pass, all-intra H.264, `High10`, non-square pixels, interlaced output, odd or `> 8192` sizes,
+  unwritable colour signals) decline cleanly.
+- **FFI containment:** `unsafe` is confined to private modules `qsv::device` and `qsv::session`
+  (no Rust callbacks into COM; async MFTs are driven via `MF_TRANSFORM_ASYNC_UNLOCK` and
+  `IMFMediaEventGenerator`). Non-Windows targets report probes unavailable.
+- **Tests:** `cargo test -p filmcraft-platform --test qsv_export` plus unit tests in
+  `qsv/{mod,session,export}.rs` verify safe probing, declined settings, sequence-header / `avcC` /
+  `hvcC` / `av1C` sample-entry construction, and overlong LEB128 OBU safety on any host; live
+  hardware MFT encode requires an Intel GPU host with Media Foundation QSV encoder drivers.
+
 ## Background job threads (macOS)
 
 `register()` installs a call to `thread_priority::lower_current_thread` (a refusal is logged) as
