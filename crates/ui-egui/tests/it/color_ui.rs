@@ -445,6 +445,46 @@ fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
     assert_eq!(curve(&mut d), edited, "one Cmd+Z undoes the second drag only");
 }
 
+/// #4915: the curve's end points sat exactly on the editor's corners, where the dock
+/// divider's hit zone covers the white point, so it could never be grabbed. The points
+/// are drawn inset from the edges now: a drag that starts where an end point is drawn
+/// moves that point instead of adding a new one next to it.
+#[test]
+fn the_curve_end_points_can_be_dragged_clear_of_the_panel_edge() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "curve_luma", "value": [[0.0, 0.0], [1.0, 1.0]]}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(2);
+    let curve = |d: &mut Driver| {
+        let q = d.app().session.active_sequence().unwrap().clone();
+        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+        e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default()
+    };
+    assert_eq!(curve(&mut d), vec![[0.0, 0.0], [1.0, 1.0]], "the identity curve");
+    let r = d.element("lumetri.curve.curve_luma").expect("the luma curve has an automation element");
+    // the white point is drawn 10 pt in from the top-right corner; drag it down and left
+    // (many small steps, so the drag start lands on the point, not past its grab radius)
+    let (x, y) = (r[0] + r[2] - 10.0, r[1] + 10.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x - 50.0, "y": y + 50.0}, "steps": 40}));
+    d.frames(3);
+    let pts = curve(&mut d);
+    assert_eq!(pts.len(), 2, "the drag moved the white point instead of adding one: {pts:?}");
+    assert!(pts.iter().all(|q| q != &[1.0, 1.0]), "the white point moved: {pts:?}");
+    // and the black point, drawn 10 pt in from the bottom-left corner
+    let (x, y) = (r[0] + 10.0, r[1] + r[3] - 10.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 50.0, "y": y - 50.0}, "steps": 40}));
+    d.frames(3);
+    let pts = curve(&mut d);
+    assert_eq!(pts.len(), 2, "the drag moved the black point instead of adding one: {pts:?}");
+    assert!(pts.iter().all(|q| q != &[0.0, 0.0]), "the black point moved: {pts:?}");
+}
+
 /// #3431: a plain click on the Color Grading luma curve places a point where it landed; a click away
 /// from the curve adds nothing.
 #[test]
