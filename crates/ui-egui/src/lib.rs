@@ -52,6 +52,8 @@ pub mod exit_hook;
 mod legacy_dropdown;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
+/// How long the project must stay unchanged before sequence thumbnails render again (s).
+const THUMB_SETTLE_S: f64 = 0.5;
 
 pub mod frames;
 pub mod framework;
