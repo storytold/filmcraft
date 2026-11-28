@@ -244,6 +244,14 @@ fn export_preview_command<'a>(app: &FilmcraftApp, id: &'a str, params: &Value) -
     }
 }
 
+/// Shows a routed command's error in the status bar and returns the result unchanged.
+fn status_on_error(app: &mut FilmcraftApp, r: Result<Value, String>) -> Result<Value, String> {
+    if let Err(e) = &r {
+        app.ui.status = e.clone();
+    }
+    r
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     app.ui.script.sync_project(&app.session.project_instance);
@@ -451,10 +459,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     if let Some(r) = crate::panels::multicam::route(app, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
         return r;
@@ -466,46 +471,28 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::misc::route_work_area_delete(app, ctx, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::settings::route(app, id) {
         return r;
     }
     if let Some(r) = crate::panels::graphics_templates::route(app, ctx, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     // The dialogs answer only the menu (#1540): from `engine.execute` the command goes on to the
     // engine with the parameters given, and answers an error when it needs some. The UI commands
     // the menu-dialog route also carries (dynamic waveforms, reveal, …) answer either way.
     if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, menu) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if menu && let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::monitor_view::route(app, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     match id {
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
