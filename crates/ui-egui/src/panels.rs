@@ -372,8 +372,12 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // its elements are registered in the window that draws them
     let outer = std::mem::replace(&mut app.auto.viewport, viewport);
     let mut close = false;
-    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+    // justified, as egui's own menus: each item, and its hover, spans the menu's width
+    let layout = egui::Layout::top_down_justified(egui::Align::Min);
+    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).layout(layout).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
+            // a menu, not a stack of framed buttons: the same item style as the menu bar's menus (#5025)
+            crate::theme::menu_style(ui.style_mut());
             let scroll =
                 egui::ScrollArea::vertical().id_salt("panel-menu-scroll").max_height((ui.ctx().content_rect().height() - 16.0).max(0.0)).show(ui, |ui| {
                     // a small window (a floated panel can be narrower than the menu) takes the menu at its width
