@@ -393,6 +393,46 @@ fn every_interchange_document_the_importer_reads_is_listed() {
     assert_eq!(names(&l), ["Selects", "cut.aaf"]);
 }
 
+/// Import makes the reel a MOV's timecode track names (ffmpeg's `reel_name`) the clip's Tape
+/// Name, the field the EDL and ALE exports write as the reel. A MOV without one keeps it empty.
+#[test]
+fn import_takes_the_tape_name_from_the_timecode_track() {
+    let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("reel import") else { return };
+    let dir = crate::media_test_util::tmp_dir("reel-import");
+    if !filmcraft_testkit::oracle::ffmpeg_has_encoder(&ff, "prores_ks") {
+        filmcraft_testkit::oracle::skip("reel import", "ffmpeg has no prores_ks");
+        return;
+    }
+    let make = |name: &str, reel: &[&str]| {
+        let path = dir.join(name);
+        let status = std::process::Command::new(&ff)
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25:duration=0.2"])
+            .args(["-c:v", "prores_ks", "-timecode", "14:30:42:00"])
+            .args(reel)
+            .arg(&path)
+            .status();
+        assert!(status.as_ref().is_ok_and(|s| s.success()), "ffmpeg could not make {name}: {status:?}");
+        path
+    };
+    let (a, b) = (make("a.mov", &["-metadata:s:v:0", "reel_name=A001"]), make("b.mov", &[]));
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [a.to_string_lossy(), b.to_string_lossy()]})).unwrap();
+    let tape = |s: &Session, k: usize| {
+        let item = filmcraft_project::ItemId(r["items"][k].as_u64().unwrap());
+        s.project.item(item).unwrap().metadata.get("Tape Name").cloned()
+    };
+    assert_eq!(tape(&s, 0).as_deref(), Some("A001"), "{r}");
+    assert_eq!(tape(&s, 1), None);
+    // each import is one undo step, the Tape Name with it
+    let a = filmcraft_project::ItemId(r["items"][0].as_u64().unwrap());
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.item(a).is_none(), "undone");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(tape(&s, 0).as_deref(), Some("A001"), "redone with its Tape Name");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Files dropped together with a folder that holds no media import, and the folder is reported
 /// rather than silently skipped (#2632).
 #[test]
