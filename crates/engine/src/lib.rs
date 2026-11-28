@@ -18,6 +18,7 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+pub mod effect_order;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -517,6 +518,13 @@ pub enum Event {
     CueSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// A clip's effects were rearranged (`effects.reorder`, or Undo / Redo of it): `order[i]` is
+    /// the new index of the effect that was at index `i`. Frontends move what they keep by effect
+    /// index (selected keyframes, expanded rows, open editors) along with it.
+    EffectsReordered {
+        clip: ClipId,
+        order: Vec<usize>,
+    },
 }
 
 pub struct Session {
@@ -572,6 +580,8 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    /// Effect moves Undo and Redo can reach, so they move index-based state with the effects.
+    pub effect_moves: effect_order::Moves,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
@@ -682,6 +692,7 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            effect_moves: Default::default(),
             scene_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
@@ -1191,6 +1202,7 @@ impl Session {
         let (label, prev, origin) = self.history.undo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
+        effect_order::follow_history(self, &cur);
         self.history.redo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
@@ -1201,6 +1213,7 @@ impl Session {
         let (label, next, origin) = self.history.redo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
+        effect_order::follow_history(self, &cur);
         self.history.undo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
@@ -1432,6 +1445,8 @@ mod clip_mismatch_tests;
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod effect_order_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]

@@ -286,8 +286,9 @@ impl FilmcraftApp {
         self.tick_media_refresh(ctx, now);
     }
 
-    /// Apply engine events that change the active sequence/view, IME target, toast or project.
-    fn logic_session_events(&mut self) {
+    /// Apply engine events that change the active sequence/view, IME target, toast or project, or
+    /// move effects that UI state names by index.
+    fn logic_session_events(&mut self, ctx: &egui::Context) {
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
@@ -314,6 +315,9 @@ impl FilmcraftApp {
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.status(message),
+                filmcraft_engine::Event::EffectsReordered { clip, order } => {
+                    crate::panels::effect_controls::follow_reorder(self, ctx, clip, &order);
+                }
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
@@ -332,7 +336,7 @@ impl FilmcraftApp {
         let now = self.logic_clock(ctx);
         self.logic_control(ctx);
         self.logic_background(ctx, now);
-        self.logic_session_events();
+        self.logic_session_events(ctx);
         self.logic_command_inbox(ctx);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);

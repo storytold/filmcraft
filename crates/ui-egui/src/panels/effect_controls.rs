@@ -34,6 +34,13 @@ const Y_CURVE: Color32 = Color32::from_rgb(0x60, 0xc0, 0x80);
 const PROPS_NAV_X: f32 = 26.0;
 /// Properties panel: where a row's value fields end, left of the navigator.
 const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
+/// An effect header's layout, from its left edge: the twirl's centre, the fx switch's centre and
+/// where the name starts; from its right edge: the reset button's centre and the room it takes.
+const HEADER_TWIRL_X: f32 = 10.0;
+const HEADER_FX_X: f32 = 28.0;
+const HEADER_LABEL_X: f32 = 42.0;
+const HEADER_RESET_X: f32 = 14.0;
+const HEADER_RESET_W: f32 = 26.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
@@ -158,6 +165,206 @@ pub(crate) fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, Trac
     out
 }
 
+/// An effect header being dragged to a new place in its clip's stack (#1731). The project it was
+/// picked up from: an edit during the drag (another panel, the control channel, Undo) can move the
+/// effects, so the drop only applies to the stack the drag started on.
+#[derive(Clone)]
+struct EffectDrag {
+    clip: ClipId,
+    from: usize,
+    project: std::sync::Arc<filmcraft_project::Project>,
+}
+
+/// An effect header's widget id. It names the slot, so keyboard focus can follow an effect that
+/// moved to another slot ([`follow_reorder`]).
+fn header_id(clip: ClipId, idx: usize) -> egui::Id {
+    egui::Id::unique(("fx-header", clip.0, idx))
+}
+
+/// Where the effect at `from` goes when its header is dropped on the upper (`below` false) or lower
+/// half of the header of the effect at `over`: the index of the movable effect whose place it
+/// takes. `slots` are the indices of the clip's movable effects, in order.
+fn drop_target(slots: &[usize], from: usize, over: usize, below: bool) -> Option<usize> {
+    let a = slots.iter().position(|s| *s == from)?;
+    let b = slots.iter().position(|s| *s == over)?;
+    // between `over` and its neighbour; the dragged effect leaves a gap on its own side
+    let place = if below { b + usize::from(a > b) } else { b - usize::from(a < b) };
+    slots.get(place).copied()
+}
+
+/// Drag a standard effect's header onto another's to move it there (#1731): picks the drag up,
+/// and while it hovers this header answers where the insertion line goes; releasing there queues
+/// `effects.reorder`. A drag only starts on the name, not on the twirl, the fx switch or the reset
+/// button.
+fn reorder_by_drag(
+    app: &FilmcraftApp,
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    clip: ClipId,
+    idx: usize,
+    slots: &[usize],
+    actions: &mut Vec<(String, Value)>,
+) -> Option<f32> {
+    let r = resp.rect;
+    let on_name = |p: Pos2| p.x >= r.min.x + HEADER_LABEL_X && p.x < r.max.x - HEADER_RESET_W;
+    if resp.drag_started_by(egui::PointerButton::Primary) && ui.input(|i| i.pointer.press_origin()).is_some_and(on_name) {
+        egui::DragAndDrop::set_payload(ui.ctx(), EffectDrag { clip, from: idx, project: app.session.project.clone() });
+        actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
+    }
+    if resp.dragged() || resp.hover_pos().is_some_and(on_name) {
+        ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+    }
+    let drag = resp.dnd_hover_payload::<EffectDrag>()?;
+    if drag.clip != clip || !std::sync::Arc::ptr_eq(&drag.project, &app.session.project) {
+        return None;
+    }
+    let below = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.y >= r.center().y);
+    let to = drop_target(slots, drag.from, idx, below).filter(|to| *to != drag.from)?;
+    if ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary)) && resp.dnd_release_payload::<EffectDrag>().is_some() {
+        actions.push(("effects.reorder".into(), json!({"clip": clip.0, "from": drag.from, "to": to})));
+    }
+    Some(if below { r.max.y } else { r.min.y })
+}
+
+/// Where a dragged effect will land: a line with an arrowhead at its start. The shape sets it apart
+/// from the line over the first added effect (#2328), which it can cover, and from the row lines.
+fn paint_insertion(painter: &egui::Painter, x: std::ops::RangeInclusive<f32>, y: f32, color: Color32) {
+    painter.hline(x.clone(), y, Stroke::new(3.0, color));
+    let x0 = *x.start() + 2.0;
+    painter.add(egui::Shape::convex_polygon(vec![pos2(x0, y - 6.0), pos2(x0 + 9.0, y), pos2(x0, y + 6.0)], color, Stroke::NONE));
+}
+
+/// The engine moved `clip`'s effects (`order[i]`: the new index of the effect that was at `i`;
+/// [`filmcraft_engine::Event::EffectsReordered`]). What the UI keeps by effect index moves with
+/// them: selected keyframes, expanded rows and graphs, an armed eyedropper, a mask being drawn, the
+/// Save Preset dialog, open Clip Fx Editors and keyboard focus on a header. A keyframe or value
+/// drag in progress names its effect by index too, so it ends.
+pub(crate) fn follow_reorder(app: &mut FilmcraftApp, ctx: &egui::Context, clip: ClipId, order: &[usize]) {
+    let moved = |i: usize| order.get(i).copied().unwrap_or(i);
+    let ui = &mut app.ui;
+    ui.keyframe_selection.iter_mut().filter(|k| k.clip == clip.0).for_each(|k| k.effect = moved(k.effect));
+    remap_effect_row_keys(&mut ui.collapsed_fx, &format!("{}:", clip.0), order);
+    remap_effect_row_keys(&mut ui.collapsed_fx, &format!("mask:{}:", clip.0), order);
+    remap_effect_row_keys(&mut ui.expanded_fx, &format!("graph:{}:", clip.0), order);
+    if let Some(e) = ui.eyedropper.as_mut().filter(|e| e.clip == clip.0) {
+        e.effect = moved(e.effect);
+    }
+    if let Some(pen) = ui.mask_pen.as_mut().filter(|p| p.clip == clip.0) {
+        pen.effect = moved(pen.effect);
+    }
+    if let Some(draft) = ui.save_preset.as_mut().filter(|d| d.clip == clip.0) {
+        draft.effects.iter_mut().for_each(|i| *i = moved(*i));
+    }
+    for target in &mut ui.audio_fx_editors {
+        if let crate::panels::audio_fx_editor::FxTarget::Clip { clip: c, index } = target
+            && *c == clip.0
+        {
+            *index = moved(*index);
+        }
+    }
+    selection::cancel_for_reorder(ctx);
+    ctx.stop_dragging();
+    if let Some(from) = (0..order.len()).find(|i| ctx.memory(|m| m.has_focus(header_id(clip, *i)))) {
+        ctx.memory_mut(|m| m.request_focus(header_id(clip, moved(from))));
+    }
+}
+
+/// Rewrites the keys in `keys` that name an effect of a clip (`{prefix}{index}` or
+/// `{prefix}{index}:{rest}`) for the effects' new indices (`order[i]`: the new index of `i`).
+fn remap_effect_row_keys(keys: &mut [String], prefix: &str, order: &[usize]) {
+    for key in keys {
+        let Some(rest) = key.strip_prefix(prefix) else { continue };
+        let (index, suffix) = rest.split_once(':').map_or((rest, None), |(i, s)| (i, Some(s)));
+        let Some(to) = index.parse::<usize>().ok().and_then(|i| order.get(i)) else { continue };
+        *key = match suffix {
+            Some(s) => format!("{prefix}{to}:{s}"),
+            None => format!("{prefix}{to}"),
+        };
+    }
+}
+
+/// An effect header's place: its clip and index, and its position among the clip's `count` effects
+/// that move (`None` for a fixed effect or a graphic layer).
+#[derive(Clone, Copy)]
+struct HeaderPlace {
+    clip: ClipId,
+    idx: usize,
+    rank: Option<usize>,
+    count: usize,
+}
+
+/// Move Up / Move Down's current keys for the effect headers, in FilmCraft's notation (`Alt+Up`):
+/// the Effect Controls binding, else an application-wide one.
+struct MoveKeys([(&'static str, Option<String>); 2]);
+
+impl MoveKeys {
+    fn of(app: &FilmcraftApp) -> Self {
+        let title = crate::dock::PanelKind::EffectControls.title();
+        let keys = |command: &'static str| {
+            let bindings = app.session.shortcuts.for_command(command);
+            let b = bindings.iter().find(|b| b.panel.as_deref() == Some(title)).or_else(|| bindings.iter().find(|b| b.panel.is_none()));
+            (command, b.map(|b| b.keys.clone()))
+        };
+        Self([keys("effects.moveUp"), keys("effects.moveDown")])
+    }
+
+    /// The keys of command `i` (0: Move Up, 1: Move Down) as this OS writes them.
+    fn shown(&self, i: usize) -> Option<String> {
+        self.0.get(i).and_then(|(_, k)| k.as_deref()).map(crate::menus::shortcut_text)
+    }
+}
+
+/// An effect header's accessibility and keys: a list item named by the effect and, for an effect
+/// that moves, its position (so a screen reader hears where it went), with its selected state and
+/// Move Up / Move Down keys. Selection follows keyboard focus, as in a list, so Tab and then
+/// Alt+Up/Down move an effect (Space and Enter are transport keys and can't select it). A focused
+/// widget keeps the keys from the app's shortcuts (`framework::keyboard_taken`), so the focused
+/// header takes its Move Up / Move Down keys itself.
+fn header_access(ui: &mut egui::Ui, resp: &egui::Response, name: &str, at: HeaderPlace, selected: bool, moves: &MoveKeys, actions: &mut Vec<(String, Value)>) {
+    let label = match at.rank {
+        Some(n) => tlf!("{name}, {position} of {count}", name = name, position = n + 1, count = at.count),
+        None => name.to_string(),
+    };
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListItem, true, selected, &label));
+    let keys = Some([moves.shown(0), moves.shown(1)].into_iter().flatten().collect::<Vec<_>>().join(" ")).filter(|k| !k.is_empty() && at.rank.is_some());
+    // egui's widget info doesn't carry the selected state to the node
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_role(egui::accesskit::Role::ListItem);
+        node.set_selected(selected);
+        if let Some(keys) = keys {
+            node.set_keyboard_shortcut(keys);
+        }
+    });
+    if resp.gained_focus() && !selected {
+        actions.push(("effects.select".into(), json!({"clip": at.clip.0, "effect": at.idx})));
+    }
+    if !resp.has_focus() || at.rank.is_none() {
+        return;
+    }
+    for (cmd, keys) in &moves.0 {
+        if let Some((m, k)) = keys.as_deref().and_then(crate::menus::parse_shortcut)
+            && ui.input_mut(|i| i.consume_key(m, k))
+        {
+            actions.push(((*cmd).into(), json!({"clip": at.clip.0, "index": at.idx})));
+        }
+    }
+}
+
+/// Move Up / Move Down in an effect header's context menu: the way to move it without dragging.
+fn move_menu_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, at: HeaderPlace, moves: &MoveKeys, actions: &mut Vec<(String, Value)>) {
+    let Some(n) = at.rank else { return };
+    let items = [("moveUp", tl!("Move Up"), n > 0), ("moveDown", tl!("Move Down"), n + 1 < at.count)];
+    for (i, ((auto, label, can), (cmd, _))) in items.into_iter().zip(&moves.0).enumerate() {
+        let button = moves.shown(i).into_iter().fold(egui::Button::new(label), |b, k| b.shortcut_text(k));
+        let item = ui.add_enabled(can, button);
+        app.auto.add(&format!("effectControls.clip.{}.effect.{}.{auto}", at.clip.0, at.idx), item.rect, label);
+        if item.clicked() {
+            actions.push(((*cmd).into(), json!({"clip": at.clip.0, "index": at.idx})));
+            ui.close();
+        }
+    }
+}
+
 /// An effect (or preset) dragged from the Effects panel and released over this panel is applied to
 /// the clip shown here, so it need not be aimed at the clip in the Timeline (#2326). Transitions
 /// need an edge, so they stay Timeline drops.
@@ -256,6 +463,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut actions: Vec<(String, Value)> = Vec::new();
     let selection_area = Rect::from_min_max(pos2(lane.min.x, bar.max.y), lane.max).intersect(ui.clip_rect());
     let mut keys = Interaction::begin(app, ui, selection_area, clip.0);
+    let moves = MoveKeys::of(app);
+    if egui::DragAndDrop::has_payload_of_type::<EffectDrag>(ui.ctx())
+        && (crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx()))
+    {
+        // Escape puts the dragged effect back: nothing is dropped
+        egui::DragAndDrop::clear_payload(ui.ctx());
+    }
     // the rows span the list and the keyframe area: the wheel scrolls anywhere over them and the
     // scrollbar sits at the panel's right edge (#643)
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
@@ -284,6 +498,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.auto.add("effectControls.graphicTimeHint", ir, hint);
             }
             let mt_now = effect_time_now(it, ph);
+            let slots: Vec<usize> = it.effects.iter().enumerate().filter(|(_, e)| filmcraft_engine::effect_order::movable(e)).map(|(i, _)| i).collect();
             // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
@@ -302,8 +517,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
                 let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
-                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
-                if selected {
+                // standard effects move: dragged by the header, or Move Up / Move Down (#1731)
+                let at = HeaderPlace { clip, idx, rank: slots.iter().position(|s| *s == idx), count: slots.len() };
+                let (r, _) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+                let resp = bui.interact(r, header_id(clip, idx), if at.rank.is_some() { Sense::click_and_drag() } else { Sense::click() });
+                let name = crate::i18n::t(def.name);
+                header_access(bui, &resp, name, at, selected, &moves, &mut actions);
+                let insertion_y = if at.rank.is_some() { reorder_by_drag(app, bui, &resp, clip, idx, &slots, &mut actions) } else { None };
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}", clip.0), r, def.name);
+                if selected || resp.dragged() {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.hover);
@@ -315,14 +537,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let which = if *kind == TrackKind::Video { "video" } else { "audio" };
                     app.auto.add(&format!("effectControls.addedEffects.{which}"), line, "Added effects");
                 }
+                if let Some(y) = insertion_y {
+                    paint_insertion(bui.painter(), r.min.x..=r.max.x, y, t.accent);
+                    app.auto.add("effectControls.insertion", Rect::from_min_max(pos2(r.min.x, y - 2.0), pos2(r.max.x, y + 2.0)), "insertion point");
+                }
+                crate::dock::paint_widget_focus(bui.painter(), &resp, &t);
                 // only the arrow twirls the effect open or shut; the rest of the header selects it
-                let tw = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0));
+                let tw = Rect::from_center_size(pos2(r.min.x + HEADER_TWIRL_X, r.center().y), vec2(10.0, 10.0));
                 icons::paint(bui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
                 let twresp = bui.interact(tw.expand(3.0), egui::Id::unique(("fx-twirl", clip.0, idx)), Sense::click());
                 app.auto.add(&format!("effectControls.effect.{}.twirl", e.effect), tw, "twirl");
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.twirl", clip.0), tw, "twirl");
                 // fx enable toggle
-                let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
+                let fxr = Rect::from_center_size(pos2(r.min.x + HEADER_FX_X, r.center().y), vec2(18.0, 14.0));
                 let fxresp = bui.interact(fxr, egui::Id::unique(("fxen", clip.0, idx)), Sense::click());
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.enabled", clip.0), fxr, "Enable Effect");
                 bui.painter().text(fxr.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(10.5), if e.enabled { t.text } else { t.text_faint });
                 if !e.enabled {
                     bui.painter().line_segment([fxr.left_bottom(), fxr.right_top()], Stroke::new(1.0, t.text_faint));
@@ -331,10 +560,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
                 }
                 // (the reset button sits at the row's right end)
-                row_label(bui, pos2(r.min.x + 42.0, r.center().y), crate::i18n::t(def.name), r.max.x - 26.0 - (r.min.x + 42.0), Tokens::ui(12.0), t.text);
+                row_label(bui, pos2(r.min.x + HEADER_LABEL_X, r.center().y), name, r.width() - HEADER_RESET_W - HEADER_LABEL_X, Tokens::ui(12.0), t.text);
                 // reset button
-                let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
+                let rr = Rect::from_center_size(pos2(r.max.x - HEADER_RESET_X, r.center().y), vec2(16.0, 16.0));
                 let rresp = bui.interact(rr, egui::Id::unique(("fxreset", clip.0, idx)), Sense::click()).on_hover_text(tl!("Reset Effect"));
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.reset", clip.0), rr, "Reset Effect");
                 icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
                 if rresp.clicked() {
                     actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
@@ -362,6 +592,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
                         ui.close();
                     }
+                    move_menu_items(app, ui, at, &moves, &mut actions);
                 });
                 if save_preset {
                     crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);

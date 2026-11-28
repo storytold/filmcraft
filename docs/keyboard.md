@@ -36,6 +36,7 @@ Premiere has these as keys only (most are not in a menu). Modules: `filmcraft_en
 | Panels | Maximize or Restore Active Frame / Frame Under Cursor, Select Next/Previous Panel, Toggle Source/Program Monitor Focus, Workspaces 7–9 | Shift+`, `, Ctrl+Shift+. / ,, Alt+Shift+7/8/9 |
 | Audio | Increase/Decrease Clip Volume (1 dB) and …Many (Settings ▸ Audio ▸ Large Volume Adjustment), Nudge Volume ±1/±3 dB, Toggle Audio During Scrubbing | ] / [, Shift+] / Shift+[, Shift+S |
 | Graphics | Increase/Decrease Font Size and Leading by One/Five Units, Left/Center/Right align text, Begin Text Editing, Nudge Selected Object by one/five (graphic layers, else Motion position) | Cmd+Alt+(Shift+)Left/Right, Alt+(Shift+)Up/Down, Cmd+Shift+L/C/R, Cmd+Alt+', Cmd+(Shift+)arrows (Program, Properties) |
+| Effect Controls | Move Effect Up / Down: the selected effect one place up or down its clip's stack, past the fixed effects and graphic layers, which keep their places (`effects.moveUp` / `effects.moveDown`, #1731) | Alt+Up/Down (Effect Controls) |
 | History panel | Delete (Delete Redoable Actions, which asks for OK first) | Backspace |
 | Project panel | List/Icon/Toggle View, Hover Scrub, Thumbnail Size Next/Previous (and = / -), Move/Extend Selection, Mark In / Out of the hover-scrubbed clip | Cmd+PageUp/PageDown, Shift+\, Shift+H, Shift+] / Shift+[, arrows, Home/End, PageUp/PageDown, I / O |
 | Text panel | Navigate/Select to Previous/Next Word and Line, Start/End of Segment, Delete (lift), Ripple Delete (extract), Show Program Transcript, Merge/Split Segments | arrows, Shift+arrows, Home/End, Shift+Home, Cmd+Shift+Down, Alt+Backspace, Backspace, Shift+X, Alt+M / Alt+S |
@@ -62,7 +63,7 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Change Draw Mode (⌥⌘L) | Premiere's shape draw modes for the Pen/shape tools; FilmCraft's shape tools have no draw modes. |
 | Production panel: New Project, New Folder, Close Project, Make a Copy, Move Selection Home/End/Page Up/Page Down, Move To Trash, Open Project, Zoom In/Out (12 keys) | Productions (shared multi-project folders) are not implemented; there is no Production panel. |
 | Search panel: Open in Source Monitor (⇧O) | No separate Search panel; Open Search (⇧⌘F) focuses the Project panel search. |
-| Effect Controls: Remove Selected Effect (Delete), Loop During Audio-Only Playback (⌘L) | Effect Controls has no effect selection state and no audio-only playback mode; effects are removed from their context menu or `effects.remove`. |
+| Effect Controls: Loop During Audio-Only Playback (⌘L) | FilmCraft has no audio-only playback mode. (Remove Selected Effect is not skipped: with Effect Controls focused, Delete and Backspace remove the selected effect, #1400.) |
 | Effects panel: New Custom Bin (⌘/), Delete Custom Item (Delete) | The Effects panel has no custom bins (effect presets live in the Presets bin). |
 | Media Browser: Select Directory List / Select Media List (⇧← / ⇧→) | The directory tree and media list take no separate keyboard focus. |
 | Project panel: Delete Selection with Options (⌘Delete) | Needs the "delete instances in sequences" dialog; plain Clear (Backspace) deletes. |
