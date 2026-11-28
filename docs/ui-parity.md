@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-28 · **Change:** minor (RFC-0052 Headless section, all unknown; earlier major: new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 How FilmCraft looks, feels and responds compared with Premiere: tools, on-screen handles, snapping,
 nudging, modifier keys, shortcuts, drag behaviour, numeric entry, panels, context menus. Keyboard
@@ -14,25 +14,32 @@ open interaction reports (about 40 of the 188 open issues).
 
 ## Areas
 
-| Area | Premiere | Ours | % | Open issues | Est. |
-|---|---|---|---|---|---|
-| Menus | 366 in-scope menu items | ~338 present (label diff, 92%) | 92% | spelling, Render and Replace, 5 workspaces | 10–20 h |
-| Keyboard | Premiere default keyboard + editor | Premiere-compatible preset (143 keyboard-only commands; 39 cloud / absent-panel keys skipped with reasons), FilmCraft / FCP / Avid presets, editor | 90% | Ctrl chords (#256 fixed), modifier hints on Windows (#270 fixed) | 5–10 h |
-| Timeline editing tools | Selection, Track Select, Ripple / Rolling / Rate Stretch, Razor, Slip / Slide, Pen, Hand, Zoom, Type | all present, trim modes, Trim Monitor, four-up Slip Monitor while slipping, dynamic trimming | 80% | deselect in empty space (#683), gap delete (#648, #668), clip stretch (#653), new tracks by dropping (#483), Escape cancels drag (#580 fixed), delete in timeline (#680, #404) | 30–50 h |
-| Program monitor on-screen controls | Motion / Transform handles, mask handles, safe margins, guides, transparency grid | guides, rulers, safe margins, transparency grid, snapping, mask drawing; **no transform handles** (#639); Button Editor (+) does nothing (#431) | 55% | #639, #431 | 15–25 h |
-| Effect Controls | property rows, keyframe area with zoom, divider, graphs, eyedroppers | rows, keyframes, value / velocity graphs, eyedropper (#518); missing keyframe zoom (#641, #645), draggable divider (#643), row lines (#640), Position curves (#448) | 60% | #412, #640–#645, #448 | 15–25 h |
-| Panels and docking | 17 workspaces, dock / undock / float, drop zones | 11 workspaces, docking; rearranging windows reported missing (#493); multi-monitor floating windows (#466) | 60% | #493, #466 | 20–35 h |
-| Project panel | List / Icon / Freeform, hover scrub, marquee | all three views, hover scrub, view presets, New Item and File > New land in the open bin (#4093); no marquee (#578), Freeform bins (#579), bins can't be left on Windows (#587), duplicate imports allowed (#356) | 75% | #578, #579, #587, #456 | 10–20 h |
-| Timeline display | filmstrip thumbnails, waveforms, track heights, renaming, duplicate frame markers | clip thumbnails, waveforms, heights, duplicate frame markers; no continuous filmstrip (#614), no track rename (#654), wheel scroll in audio area (#400) | 70% | #614, #654, #400 | 8–15 h |
-| Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577), drag the cut to move it with the transition; no A/B previews with Start / End sliders | 70% | #577 | 5–10 h |
-| Numeric entry and scrubbing | scrubbable hot text, typed values | scrubbable values, timecode scrub-edit (#576), Up/Down step a number while typing it (Shift x10, Cmd x0.1; #4094); audio clip mixer values cannot be typed (#481) | 80% | #481 | 3–6 h |
-| Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into the timeline (#517); no clipboard paste of images / files (#611) | 70% | #519, #611 | 5–10 h |
-| Theme and appearance | dark / light, brightness | dark / light / system (#505, #555) | 85% | macOS window controls (#637), Wayland title bar (#433), X11 scale (#457) | 5–10 h |
-| Context menus | per panel and per item | most panels; check against Premiere not done | 70% | — | 5–10 h |
-| Accessibility | screen reader partial, keyboard navigation | keyboard navigation; every widget has an automation id; no screen-reader support | 30% | — | 15–30 h |
+| Area | Premiere | Ours | % | Open issues | Est. | Headless |
+|---|---|---|---|---|---| --- |
+| Menus | 366 in-scope menu items | ~338 present (label diff, 92%) | 92% | spelling, Render and Replace, 5 workspaces | 10–20 h | unknown |
+| Keyboard | Premiere default keyboard + editor | Premiere-compatible preset (143 keyboard-only commands; 39 cloud / absent-panel keys skipped with reasons), FilmCraft / FCP / Avid presets, editor | 90% | Ctrl chords (#256 fixed), modifier hints on Windows (#270 fixed) | 5–10 h | unknown |
+| Timeline editing tools | Selection, Track Select, Ripple / Rolling / Rate Stretch, Razor, Slip / Slide, Pen, Hand, Zoom, Type | all present, trim modes, Trim Monitor, four-up Slip Monitor while slipping, dynamic trimming | 80% | deselect in empty space (#683), gap delete (#648, #668), clip stretch (#653), new tracks by dropping (#483), Escape cancels drag (#580 fixed), delete in timeline (#680, #404) | 30–50 h | unknown |
+| Program monitor on-screen controls | Motion / Transform handles, mask handles, safe margins, guides, transparency grid | guides, rulers, safe margins, transparency grid, snapping, mask drawing; **no transform handles** (#639); Button Editor (+) does nothing (#431) | 55% | #639, #431 | 15–25 h | unknown |
+| Effect Controls | property rows, keyframe area with zoom, divider, graphs, eyedroppers | rows, keyframes, value / velocity graphs, eyedropper (#518); missing keyframe zoom (#641, #645), draggable divider (#643), row lines (#640), Position curves (#448) | 60% | #412, #640–#645, #448 | 15–25 h | unknown |
+| Panels and docking | 17 workspaces, dock / undock / float, drop zones | 11 workspaces, docking; rearranging windows reported missing (#493); multi-monitor floating windows (#466) | 60% | #493, #466 | 20–35 h | unknown |
+| Project panel | List / Icon / Freeform, hover scrub, marquee | all three views, hover scrub, view presets, New Item and File > New land in the open bin (#4093); no marquee (#578), Freeform bins (#579), bins can't be left on Windows (#587), duplicate imports allowed (#356) | 75% | #578, #579, #587, #456 | 10–20 h | unknown |
+| Timeline display | filmstrip thumbnails, waveforms, track heights, renaming, duplicate frame markers | clip thumbnails, waveforms, heights, duplicate frame markers; no continuous filmstrip (#614), no track rename (#654), wheel scroll in audio area (#400) | 70% | #614, #654, #400 | 8–15 h | unknown |
+| Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577), drag the cut to move it with the transition; no A/B previews with Start / End sliders | 70% | #577 | 5–10 h | unknown |
+| Numeric entry and scrubbing | scrubbable hot text, typed values | scrubbable values, timecode scrub-edit (#576), Up/Down step a number while typing it (Shift x10, Cmd x0.1; #4094); audio clip mixer values cannot be typed (#481) | 80% | #481 | 3–6 h | unknown |
+| Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into the timeline (#517); no clipboard paste of images / files (#611) | 70% | #519, #611 | 5–10 h | unknown |
+| Theme and appearance | dark / light, brightness | dark / light / system (#505, #555) | 85% | macOS window controls (#637), Wayland title bar (#433), X11 scale (#457) | 5–10 h | unknown |
+| Context menus | per panel and per item | most panels; check against Premiere not done | 70% | — | 5–10 h | unknown |
+| Accessibility | screen reader partial, keyboard navigation | keyboard navigation; every widget has an automation id; no screen-reader support | 30% | — | 15–30 h | unknown |
+
+## Headless (RFC-0052)
+
+**Headless ([RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md)): 0 yes, 0 no (window 0, os 0, engine-gap 0), 0 partial, 14 unknown.**
+
+The Areas table has a Headless column. Every area is `unknown` until it is checked. A checked area may be marked `no (<reach>)` or `partial (<reach>)` by hand, where the reach is `window` (needs the desktop window, a dialog or the pointer), `os` (needs an OS or online service the engine doesn't wrap) or `engine-gap` (could be a command, isn't one yet). A `partial` row's notes say which part a headless client can do. `yes` only when the area cites a command id from the engine registry that `filmcraft-cli` and the MCP server load (LightCraft's `cmd:<id>` check is the model). Desktop-only command ids do not count. `cargo xtask parity` matches menu labels against a maintainer-local reference and writes to `target/parity/`, so it cannot yet fill the column automatically. Update the counts in this line when you mark rows.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-28 | minor | Headless (RFC-0052) column on the Areas table: 14 unknown, with marking rules |
 | 2026-10-10 | major | Created: UI areas against Premiere 26.5.2, menu label diff, keyboard parity from keyboard.md, open UI issues itemized |
