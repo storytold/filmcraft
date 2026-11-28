@@ -15,4 +15,6 @@ filmcraft-color = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-text = { workspace = true }
 craft-captions = { workspace = true }
+# UAX #29 grapheme clusters for the spoken-word highlight (MIT OR Apache-2.0), as in filmcraft-text.
+unicode-segmentation = "1.13"
 

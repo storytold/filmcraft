@@ -753,6 +753,23 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));
         }
+        // animated captions: the word being spoken lights up in its own colour
+        let mut animate = st.highlight.is_some();
+        let resp = ui.checkbox(&mut animate, tl!("Word by word")).on_hover_text(tl!("Animated captions: the word being spoken is shown in another colour"));
+        app.auto.add("text.captions.style.highlight", resp.rect, "Word by word");
+        if resp.changed() {
+            let v = if animate { json!("#ffc800") } else { json!("none") };
+            actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "highlight": v})));
+        }
+        if let Some(h) = st.highlight {
+            let mut col = Color32::from_rgba_unmultiplied(h[0], h[1], h[2], h[3]);
+            let resp = egui::color_picker::color_edit_button_srgba(ui, &mut col, egui::color_picker::Alpha::Opaque);
+            app.auto.add("text.captions.style.highlightColor", resp.rect, "Highlight colour");
+            if resp.changed() {
+                let c = col.to_srgba_unmultiplied();
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "highlight": format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])})));
+            }
+        }
         ui.label(egui::RichText::new(tl!("Align")).size(11.0).color(app.tokens.text_dim));
         for (a, icon_txt, name, tip) in [
             (CaptionAlign::Left, "L", "left", tl!("Align left")),

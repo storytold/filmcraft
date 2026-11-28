@@ -2924,6 +2924,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-text",
  "filmcraft-time",
+ "unicode-segmentation",
 ]
 
 [[package]]
