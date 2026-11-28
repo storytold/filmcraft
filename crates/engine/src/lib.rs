@@ -16,6 +16,7 @@ pub mod captions;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod conform;
 pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;
@@ -46,6 +47,7 @@ pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
+pub mod prompter;
 pub mod proxies;
 pub mod relink;
 pub mod remix;
@@ -558,6 +560,9 @@ pub struct Session {
     pub mcrec: multicam::Recorder,
     /// Voice-over recording: the input device and the take in progress.
     pub voiceover: voiceover::VoiceOver,
+    /// The prompter's position when it is not in step with the playhead, and the prompter logs of
+    /// voice-over takes (session state: not saved, never an undo step).
+    pub prompter: prompter::PrompterState,
     /// The last `tts.preview` result, for the host to play (Text to Speech ▸ Preview).
     pub tts_preview: Option<Arc<filmcraft_tts::Audio>>,
     /// Synthesized narrations (`tts.render` fills it from a background job).
@@ -675,6 +680,7 @@ impl Session {
             mixrec: Default::default(),
             mcrec: Default::default(),
             voiceover: Default::default(),
+            prompter: Default::default(),
             tts_preview: None,
             tts_cache: Default::default(),
             trim_play: Default::default(),
@@ -1498,6 +1504,8 @@ mod previews_tests;
 mod project_manager_tests;
 #[cfg(test)]
 mod project_panel_tests;
+#[cfg(test)]
+mod prompter_tests;
 #[cfg(test)]
 mod proxies_tests;
 #[cfg(test)]

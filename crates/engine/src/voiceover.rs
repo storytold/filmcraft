@@ -11,7 +11,7 @@
 //! | `audio.voiceover.settings` | get / set the Voice-Over Record Settings (preferences), list input devices |
 //! | `audio.voiceover.start` | arm and start capturing; returns R, C, the punch-out and the countdown cue times |
 //! | `audio.voiceover.sync` | the host's playback actually started at `time`: restart the capture there |
-//! | `audio.voiceover.stop` | stop capturing; write, import and place the recording (one undo step) |
+//! | `audio.voiceover.stop` | stop capturing; write, import and place the recording (one undo step); returns the take's prompter log as `promptLog` |
 //!
 //! Input goes through the [`AudioInput`] trait. The desktop app installs a cpal input; headless
 //! sessions (CLI, MCP, tests) use [`SyntheticInput`], a deterministic generated signal that produces
@@ -373,6 +373,8 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
     s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
+    // the prompter starts the take at the playhead, and its log with where the prompt is
+    crate::prompter::begin_take(s, record_start, capture_start);
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     Ok(json!({
@@ -401,7 +403,10 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.pending_stop = None;
     let Some(rec) = s.voiceover.rec.as_mut() else { return Err(bad("audio.voiceover.sync", "no voice-over is recording")) };
     rec.capture_start = t.clamp(Tick::ZERO, rec.record_start);
-    Ok(json!({"captureStart": rec.capture_start.0}))
+    let (record_start, capture_start) = (rec.record_start, rec.capture_start);
+    // the take restarts here, and so does its prompter log
+    crate::prompter::begin_take(s, record_start, capture_start);
+    Ok(json!({"captureStart": capture_start.0}))
 }
 
 /// Directory recordings are written to.
@@ -452,7 +457,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
-        return Ok(json!({"recording": false, "placed": false}));
+        return Ok(json!({"recording": false, "placed": false, "promptLog": crate::prompter::finish_take(s)}));
     }
     if rec.epoch != s.document_epoch {
         // another project was installed since the take started: its ids name other tracks now
@@ -460,6 +465,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
+        crate::prompter::finish_take(s);
         return Err(bad("audio.voiceover.stop", "the project was replaced; the take was not placed"));
     }
     let t_stop = s.voiceover.pending_stop.unwrap_or_else(|| time_p(s, p, "").unwrap_or(s.playhead()));
@@ -493,6 +499,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
+        crate::prompter::finish_take(s);
         return Err(bad("audio.voiceover.stop", format!("input failed: {error}; check Settings > Audio Hardware and select a working input, then retry")));
     }
     s.voiceover.captured.resize(want, 0.0);
@@ -502,7 +509,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
-        return Ok(json!({"recording": false, "placed": false}));
+        return Ok(json!({"recording": false, "placed": false, "promptLog": crate::prompter::finish_take(s)}));
     }
     let sample_count = samples.len();
     let sequence = s.project.sequence(rec.seq).ok_or(EngineError::NoSequence)?;
@@ -551,9 +558,15 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.rec = None;
     s.voiceover.pending_stop = None;
     s.voiceover.captured.clear();
+    let prompt_log = crate::prompter::finish_take(s);
+    // where the take went, so the picture can be conformed to it (#5265)
+    s.prompter.last_take_clip =
+        s.project.sequence(rec.seq).and_then(|q| q.find_item(clip)).map(|(track, it)| crate::conform::TakeClip::of(rec.epoch, rec.seq, track, it));
     Ok(json!({
         "recording": false,
         "placed": true,
+        // the prompter's moves during the take (kept in the session, not yet on the clip)
+        "promptLog": prompt_log,
         "path": path,
         "item": item.0,
         "clip": clip.0,

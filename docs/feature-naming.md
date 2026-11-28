@@ -50,3 +50,51 @@ them, and their old/new-name aliases are gone because the label is the name agai
 4. Review current help/marketing copy and retain factual format/comparison references and required notices where appropriate.
 
 The app name, package names, file formats, iconography and existing first-party trademark license are unchanged.
+
+## New feature names
+
+Each new user-visible name gets the check of the craft-contrib naming standard (rule 4). Finding
+nothing does not mean a name is free.
+
+### Prompter (2026-11-25, #5260)
+
+The Program monitor overlay that shows the section, talking points and script at the playhead
+(`view.prompter`, Program wrench menu ▸ Prompter).
+
+- **Owners' trademark lists:** Apple's list has no word containing "prompt", and neither has
+  Blackmagic Design's trademark page. Adobe's list could not be read (the page returned no list).
+- **Registers:** the USPTO, EUIPO eSearch, TMview and WIPO Global Brand Database searches were not
+  run; their search pages need a browser session that was not available. Third-party copies of
+  USPTO records (trademark.justia.com, trademarkregistration.app) show "prompter" only inside
+  longer marks for teleprompter products: PROMPTER PEOPLE (Prompter People Inc., teleprompters),
+  SMARTPROMPTER (Telestream, prompting software), PICTOPROMPTER and EPROMPTER. LITTLE PROMPTER is
+  registered in class 9 with "PROMPTER" disclaimed, that is, treated as descriptive. No record of
+  "Prompter" alone for software was found in those copies.
+- **Descriptive use:** "prompter" is an ordinary English word for what prompts a speaker. Unrelated
+  products use it for their own feature: the "Teleprompter for Video" iOS app ("read from the
+  prompter while recording"), the "Prompter - Teleprompter Prompt" iOS app ("record with the
+  prompter"), and Datavideo's dvPrompter.
+- **Decision:** used as a plain descriptive word. The register searches are still open; the pull
+  request asks a Craft owner to confirm the name or to run them before it ships.
+
+### Conform Sections to Last Take (2026-11-25, #5265)
+
+The Sequence menu command that fits the sections' picture to a voice-over take
+(`sequence.conformSections`; the report is `sequence.conformSectionsReport`, labelled "Conform
+Sections Report"). The new word is "Conform", used as a verb.
+
+- **Owners' trademark lists:** not read for this name. The editors that use the word (Blackmagic
+  Design, Avid, Apple, Autodesk) were not checked against their trademark pages.
+- **Registers:** the USPTO, EUIPO eSearch, TMview and WIPO Global Brand Database searches were not
+  run; their search pages need a browser session that was not available. Third-party copies of
+  USPTO records (trademark.justia.com) show two CONFORM applications (serials 90047972 and
+  88442029) for hosted software that manages pharmaceutical and clinical-trial data, outside video
+  editing; their status could not be read. Longer marks starting with the word (CONFORMIA,
+  CONFORMIO, CONFORMANCEWARE) are for other fields.
+- **Descriptive use:** "conform" is the ordinary post-production word for matching one edit to
+  another. Unrelated products use it for their own feature: DaVinci Resolve's manuals ("Import and
+  Conform Projects", the Conform page), Autodesk's Flame-family documentation (conforming a
+  sequence), Lightworks (conform workflows with EDL and XML) and the Conform.Tools product name.
+- **Decision:** used as a plain descriptive verb in a longer label ("Conform Sections to Last
+  Take"), not as a feature name by itself. The register searches are still open; the pull request
+  asks a Craft owner to confirm the name or to run them before it ships.
