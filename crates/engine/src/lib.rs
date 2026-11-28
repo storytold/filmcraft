@@ -572,6 +572,8 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    #[cfg(test)]
+    pub(crate) mask_track_pause: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
@@ -682,6 +684,8 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            #[cfg(test)]
+            mask_track_pause: None,
             scene_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
@@ -1094,6 +1098,7 @@ impl Session {
             s.history.merge_key = None;
             s.project = project.clone();
             s.state = state.clone();
+            crate::masks::reconcile_jobs(s);
             s.bump();
         };
         match (r, first) {
@@ -1209,6 +1214,7 @@ impl Session {
 
     /// Drop dangling references after undo/redo/delete.
     pub fn fix_state(&mut self) {
+        crate::masks::reconcile_jobs(self);
         let p = self.project.clone();
         if let Some(m) = self.state.selected_mask {
             let ok =

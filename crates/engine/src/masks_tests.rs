@@ -519,9 +519,41 @@ fn every_project_replacing_path_drops_pending_tracking_jobs() {
     let _ = std::fs::remove_file(&tpl);
 }
 
+fn pause_tracking(s: &mut Session) -> std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)> {
+    let gate = std::sync::Arc::new((std::sync::Mutex::new(true), std::sync::Condvar::new()));
+    s.mask_track_pause = Some(gate.clone());
+    gate
+}
+
+fn wait_for_first_tracked_frame(s: &Session, job: u64) {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed().as_secs() < 60 {
+        if s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.progress.done.load(std::sync::atomic::Ordering::Relaxed) >= 1) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("tracking worker did not reach step 1");
+}
+
+fn release_tracking(gate: &std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>) {
+    *gate.0.lock().unwrap() = false;
+    gate.1.notify_all();
+}
+
+fn drain_tracking(s: &mut Session) {
+    let t0 = std::time::Instant::now();
+    while !s.mask_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(s.mask_jobs.is_empty());
+}
+
 #[test]
 fn removing_earlier_effect_mid_track_keeps_writing_to_tracked_effect() {
     let (mut s, clip) = tracking_session();
+    let gate = pause_tracking(&mut s);
     let blur = s.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap()["applied"][0]["index"].as_u64().unwrap() as usize;
     let invert = s.execute("effects.apply", json!({"clips": [clip.0], "effect": "invert"})).unwrap()["applied"][0]["index"].as_u64().unwrap() as usize;
     assert!(blur < invert);
@@ -529,15 +561,15 @@ fn removing_earlier_effect_mid_track_keeps_writing_to_tracked_effect() {
     s.execute("masks.add", json!({"clip": clip.0, "effect": blur, "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
     s.execute("masks.add", json!({"clip": clip.0, "effect": invert, "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
 
-    s.execute("masks.track", json!({"clip": clip.0, "effect": invert, "mask": 0, "direction": "forward", "frames": 6})).unwrap();
+    let job =
+        s.execute("masks.track", json!({"clip": clip.0, "effect": invert, "mask": 0, "direction": "forward", "frames": 6})).unwrap()["job"].as_u64().unwrap();
+    wait_for_first_tracked_frame(&s, job);
+    assert_eq!(s.mask_jobs.len(), 1);
     s.execute("effects.remove", json!({"clip": clip.0, "index": blur})).unwrap();
+    assert_eq!(s.mask_jobs.len(), 1, "job must stay pending through removal");
+    release_tracking(&gate);
+    drain_tracking(&mut s);
 
-    let t0 = std::time::Instant::now();
-    while !s.mask_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
-        s.poll_persistence();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(s.mask_jobs.is_empty());
     let l = s.execute("masks.list", json!({"clip": clip.0})).unwrap();
     assert_eq!(l["masks"].as_array().unwrap().len(), 1, "{l}");
     let keys = l["masks"][0]["pathKeyframes"].as_array().unwrap().len();
@@ -551,19 +583,21 @@ fn removing_earlier_effect_mid_track_keeps_writing_to_tracked_effect() {
 #[test]
 fn removing_earlier_mask_mid_track_keeps_writing_to_tracked_mask() {
     let (mut s, clip) = tracking_session();
+    let gate = pause_tracking(&mut s);
     let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
     s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
 
-    s.execute("masks.track", json!({"clip": clip.0, "effect": "opacity", "mask": 1, "direction": "forward", "frames": 6})).unwrap();
+    let job = s.execute("masks.track", json!({"clip": clip.0, "effect": "opacity", "mask": 1, "direction": "forward", "frames": 6})).unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    wait_for_first_tracked_frame(&s, job);
+    assert_eq!(s.mask_jobs.len(), 1);
     s.execute("masks.remove", json!({"clip": clip.0, "effect": "opacity", "mask": 0})).unwrap();
+    assert_eq!(s.mask_jobs.len(), 1, "job must stay pending through removal");
+    release_tracking(&gate);
+    drain_tracking(&mut s);
 
-    let t0 = std::time::Instant::now();
-    while !s.mask_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
-        s.poll_persistence();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(s.mask_jobs.is_empty());
     let l = s.execute("masks.list", json!({"clip": clip.0, "effect": "opacity"})).unwrap();
     assert_eq!(l["masks"].as_array().unwrap().len(), 1);
     assert_eq!(l["masks"][0]["name"], "Mask (2)");
@@ -574,14 +608,93 @@ fn removing_earlier_mask_mid_track_keeps_writing_to_tracked_mask() {
 #[test]
 fn removing_tracked_effect_cancels_pending_job() {
     let (mut s, clip) = tracking_session();
+    let gate = pause_tracking(&mut s);
     let blur = s.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap()["applied"][0]["index"].as_u64().unwrap() as usize;
     let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"clip": clip.0, "effect": blur, "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
 
     let job = s.execute("masks.track", json!({"clip": clip.0, "effect": blur, "mask": 0, "direction": "forward"})).unwrap()["job"].as_u64().unwrap();
+    wait_for_first_tracked_frame(&s, job);
     assert_eq!(s.mask_jobs.len(), 1);
     s.execute("effects.remove", json!({"clip": clip.0, "index": blur})).unwrap();
     assert!(s.mask_jobs.is_empty());
     let j = s.jobs.iter().find(|j| j.id == job).unwrap();
     assert!(j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
+    release_tracking(&gate);
+}
+
+#[test]
+fn undoing_earlier_mask_removal_restores_tracking_to_original_mask() {
+    let (mut s, clip) = tracking_session();
+    let gate = pause_tracking(&mut s);
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+
+    let job = s.execute("masks.track", json!({"clip": clip.0, "effect": "opacity", "mask": 1, "direction": "forward", "frames": 6})).unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    wait_for_first_tracked_frame(&s, job);
+    s.execute("masks.remove", json!({"clip": clip.0, "effect": "opacity", "mask": 0})).unwrap();
+    assert_eq!(s.mask_jobs.len(), 1);
+    assert_eq!(s.mask_jobs[0].target.mask, 0);
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.mask_jobs.len(), 1);
+    assert_eq!(s.mask_jobs[0].target.mask, 1);
+
+    release_tracking(&gate);
+    drain_tracking(&mut s);
+
+    let l = s.execute("masks.list", json!({"clip": clip.0, "effect": "opacity"})).unwrap();
+    assert_eq!(l["masks"].as_array().unwrap().len(), 2);
+    assert_eq!(l["masks"][0]["pathKeyframes"].as_array().unwrap().len(), 0, "Mask (1) must stay untouched: {l}");
+    assert_eq!(l["masks"][1]["pathKeyframes"].as_array().unwrap().len(), 7, "Mask (2) must receive all tracked keys: {l}");
+}
+
+#[test]
+fn edit_group_rollback_reconciles_pending_mask_jobs() {
+    let (mut s, clip) = tracking_session();
+    let gate = pause_tracking(&mut s);
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+
+    let job = s.execute("masks.track", json!({"clip": clip.0, "effect": "opacity", "mask": 1, "direction": "forward", "frames": 6})).unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    wait_for_first_tracked_frame(&s, job);
+    let res: crate::Result<()> = s.edit_group("Failing Group", |s| {
+        s.execute("masks.remove", json!({"clip": clip.0, "effect": "opacity", "mask": 0}))?;
+        Err(crate::EngineError::Other("abort".into()))
+    });
+    assert!(res.is_err());
+    assert_eq!(s.mask_jobs.len(), 1);
+    assert_eq!(s.mask_jobs[0].target.mask, 1);
+
+    release_tracking(&gate);
+    drain_tracking(&mut s);
+
+    let l = s.execute("masks.list", json!({"clip": clip.0, "effect": "opacity"})).unwrap();
+    assert_eq!(l["masks"][0]["pathKeyframes"].as_array().unwrap().len(), 0, "Mask (1) must stay untouched: {l}");
+    assert!(!l["masks"][1]["pathKeyframes"].as_array().unwrap().is_empty(), "Mask (2) must receive tracked keys: {l}");
+}
+
+#[test]
+fn undoing_mask_add_mid_track_cancels_pending_job() {
+    let (mut s, clip) = tracking_session();
+    let gate = pause_tracking(&mut s);
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+
+    let job = s.execute("masks.track", json!({"clip": clip.0, "effect": "opacity", "mask": 0, "direction": "forward", "frames": 6})).unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    wait_for_first_tracked_frame(&s, job);
+    assert_eq!(s.mask_jobs.len(), 1);
+    assert_eq!(s.undo().as_deref(), Some("Create Mask"));
+    assert!(s.mask_jobs.is_empty());
+    let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+    assert!(j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
+    release_tracking(&gate);
 }

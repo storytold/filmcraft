@@ -605,6 +605,10 @@ pub struct PendingTrack {
     /// Effect id (`EffectInstance::effect`) when tracking started, so a stale index never writes
     /// into a different effect.
     effect_id: String,
+    /// Mask name when tracking started, used to reconcile targets after undo/redo/rollback.
+    mask_name: String,
+    /// True once `on_effect_removed` or `on_mask_removed` shifts `target`.
+    shifted: bool,
     /// Sequence the clip lives in.
     pub seq: filmcraft_project::ItemId,
     /// (media time, path) in tracking order.
@@ -666,6 +670,8 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     job.progress.total.store(steps as u64, std::sync::atomic::Ordering::Relaxed);
     let keys: Arc<Mutex<Vec<(Tick, MaskPath)>>> = Arc::default();
     let (prog, res, out) = (job.progress.clone(), job.result.clone(), keys.clone());
+    #[cfg(test)]
+    let pause_gate = s.mask_track_pause.clone();
     let start_path = mask.path_at(mt0);
     let run = move || {
         use std::sync::atomic::Ordering;
@@ -706,6 +712,16 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
                     *lock(&prog.status) = format!("Frame {step} of {steps} · {} features", st.inliers);
                     prev = next;
                     k_prev = k;
+                    #[cfg(test)]
+                    if let Some(gate) = &pause_gate
+                        && step == 1
+                    {
+                        let (mtx, cv) = &**gate;
+                        let mut paused = lock(mtx);
+                        while *paused && !prog.cancel.load(Ordering::Relaxed) {
+                            paused = cv.wait(paused).unwrap_or_else(|e| e.into_inner());
+                        }
+                    }
                 }
             }
         }
@@ -735,6 +751,8 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         job: id,
         target: MaskSel { clip, effect: ei, mask: mi },
         effect_id: it.effects[ei].effect.clone(),
+        mask_name: mask.name.clone(),
+        shifted: false,
         seq: seq_id,
         keys,
         applied: 0,
@@ -785,6 +803,7 @@ pub(crate) fn on_effect_removed(s: &mut Session, seq: filmcraft_project::ItemId,
         }
         if pj.target.effect > removed_idx {
             pj.target.effect -= 1;
+            pj.shifted = true;
         }
         true
     });
@@ -801,9 +820,66 @@ pub(crate) fn on_mask_removed(s: &mut Session, seq: filmcraft_project::ItemId, c
         }
         if pj.target.mask > removed_mask {
             pj.target.mask -= 1;
+            pj.shifted = true;
         }
         true
     });
+}
+
+/// Reconcile pending mask-tracking jobs after `undo`, `redo`, `revert_to`, or `edit_group` rollback
+/// restores `s.project`. Each job keeps tracking its original `(effect_id, mask_name)` if uniquely
+/// located, or is cancelled with a message when missing or ambiguous.
+pub(crate) fn reconcile_jobs(s: &mut Session) {
+    let mut cancelled = false;
+    let mut i = 0;
+    while i < s.mask_jobs.len() {
+        let pj = &s.mask_jobs[i];
+        if pj.epoch != s.document_epoch {
+            i += 1;
+            continue;
+        }
+        let item = s.project.sequence(pj.seq).and_then(|q| q.find_item(pj.target.clip)).map(|(_, it)| it);
+        let Some(it) = item else {
+            cancel_job(s, pj.job);
+            s.mask_jobs.remove(i);
+            cancelled = true;
+            continue;
+        };
+        let still_exact = !pj.shifted
+            && it
+                .effects
+                .get(pj.target.effect)
+                .filter(|e| e.effect == pj.effect_id)
+                .and_then(|e| e.masks.get(pj.target.mask))
+                .is_some_and(|m| m.name == pj.mask_name);
+        if still_exact {
+            i += 1;
+            continue;
+        }
+        let mut matches = it
+            .effects
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.effect == pj.effect_id)
+            .flat_map(|(ei, e)| e.masks.iter().enumerate().filter(|(_, m)| m.name == pj.mask_name).map(move |(mi, _)| (ei, mi)));
+        match (matches.next(), matches.next()) {
+            (Some((ei, mi)), None) => {
+                let pj = &mut s.mask_jobs[i];
+                pj.target.effect = ei;
+                pj.target.mask = mi;
+                pj.shifted = false;
+                i += 1;
+            }
+            _ => {
+                cancel_job(s, pj.job);
+                s.mask_jobs.remove(i);
+                cancelled = true;
+            }
+        }
+    }
+    if cancelled {
+        s.error_toast("masks.track", "the mask is gone");
+    }
 }
 
 /// Cancel and drop every pending tracking job. Called when the project is replaced, so a job started
