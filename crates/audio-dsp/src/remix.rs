@@ -8,7 +8,9 @@
 //!             from the period, squared log ratio), backtracked from the strongest end
 //!          ─► per beat: 12-bin chroma and 12 mel cepstra (26 mel bands, DCT-II, c0 dropped)
 //!          ─► beat self-similarity S(i, j) = 0.6 · cos(chroma) + 0.4 · (1 + cos(z-scored cepstra)) / 2
-//! plan:  output = piece₀ ⧺ piece₁ ⧺ … ⧺ piece_k; each joint leaves the source at a beat boundary
+//! plan:  bounded beam search keeps alternative beat-aligned arrangements, prefers matching
+//!        four-beat phase, then balances context similarity against target error.
+//!        output = piece₀ ⧺ piece₁ ⧺ … ⧺ piece_k; each joint leaves the source at a beat boundary
 //!        b_i and continues at another beat boundary b_j, chosen where the context of the jump
 //!        (the beats before and after) is most similar: J(i, j) = mean of S along the diagonals
 //!        through (i, j) over `CONTEXT` beats on both sides.
@@ -30,6 +32,13 @@
 //! Positions are in samples of the analysed signal (`i64`).
 
 use crate::fft::Fft;
+
+#[path = "remix_arrange.rs"]
+mod arrange;
+#[path = "remix_melody.rs"]
+mod melody;
+#[path = "remix_options.rs"]
+mod options;
 
 /// Beats of context on each side of a joint that the similarity looks at.
 pub const CONTEXT: usize = 4;
@@ -156,6 +165,12 @@ pub struct Analysis {
     /// Beat self-similarity, `beats.len()²`, row-major; beat `i` is `[beats[i], beats[i + 1])`
     /// (the last runs to the end).
     pub sim: Vec<f32>,
+    /// RMS of each beat, preserving dynamics lost by normalized spectral descriptors.
+    pub levels: Vec<f32>,
+    /// Ordered quarter-beat pitch-register similarity, row-major (not folded to chroma).
+    pub melody_sim: Vec<f32>,
+    /// Whether a beat has enough pitched content for melodic comparison.
+    pub melody_present: Vec<bool>,
 }
 
 impl Analysis {
@@ -167,6 +182,56 @@ impl Analysis {
     /// How well a jump from beat boundary `i` (the source is left there) to beat boundary `j`
     /// (playback continues there) fits: mean similarity of the beats after `i` and after `j`, and
     /// of the beats before them, over [`CONTEXT`] beats. 0 … 1.
+    pub fn melody_score(&self, i: usize, j: usize) -> Option<f32> {
+        let m = self.beats.len();
+        let mut score = 0f32;
+        let mut informative = 0;
+        for offset in -4isize..4 {
+            let Some(a) = i.checked_add_signed(offset).filter(|&x| x < m) else { continue };
+            let Some(b) = j.checked_add_signed(offset).filter(|&x| x < m) else { continue };
+            // Identical silence is not evidence of a matching melody.
+            if self.melody_present.get(a) != Some(&true) && self.melody_present.get(b) != Some(&true) {
+                continue;
+            }
+            let value = *self.melody_sim.get(a.checked_mul(m)?.checked_add(b)?)?;
+            score += value;
+            informative += 1;
+        }
+        (informative >= 2).then(|| score / informative as f32)
+    }
+
+    /// Similarity immediately around a seam, retaining ordered pitches on both beats.
+    pub fn local_melody_score(&self, i: usize, j: usize) -> Option<f32> {
+        let m = self.beats.len();
+        let (before_i, before_j) = (i.checked_sub(1)?, j.checked_sub(1)?);
+        if i >= m || j >= m || !self.melody_present.get(i).copied().unwrap_or(false) || !self.melody_present.get(j).copied().unwrap_or(false) {
+            return None;
+        }
+        let after = *self.melody_sim.get(i.checked_mul(m)?.checked_add(j)?)?;
+        // A silent preceding pair must not lift a mismatched seam above the local floor.
+        if self.melody_present.get(before_i) != Some(&true) && self.melody_present.get(before_j) != Some(&true) {
+            return Some(after);
+        }
+        let before = *self.melody_sim.get(before_i.checked_mul(m)?.checked_add(before_j)?)?;
+        Some((before + after) * 0.5)
+    }
+
+    /// A strong immediate match can bridge variations in surrounding orchestration,
+    /// but only on matching four-beat phase with independent harmonic/timbral support.
+    pub fn melody_compatible(&self, i: usize, j: usize, floor: f32) -> bool {
+        let Some(context) = self.melody_score(i, j) else { return false };
+        if context >= floor {
+            return true;
+        }
+        if !i.abs_diff(j).is_multiple_of(4) || context < floor * 0.70 || self.local_melody_score(i, j).is_none_or(|s| s < floor) {
+            return false;
+        }
+        let Some((bi, bj)) = i.checked_sub(1).zip(j.checked_sub(1)) else { return false };
+        let m = self.beats.len();
+        let harmonic = self.sim.get(i * m + j).zip(self.sim.get(bi * m + bj)).map_or(0.0, |(a, b)| (a + b) * 0.5);
+        harmonic >= 0.65
+    }
+
     pub fn jump_score(&self, i: usize, j: usize) -> f32 {
         let m = self.beats.len();
         let (mut s, mut n) = (0f32, 0f32);
@@ -180,7 +245,23 @@ impl Analysis {
                 n += 1.0;
             }
         }
-        if n > 0.0 { s / n } else { 0.0 }
+        let level = |start: usize, end: usize| {
+            let values = self.levels.get(start..end.min(self.levels.len())).unwrap_or(&[]);
+            values.iter().copied().sum::<f32>() / values.len().max(1) as f32
+        };
+        let outgoing = level(i.saturating_sub(2), i).max(1e-6);
+        let incoming = level(j, j.saturating_add(2)).max(1e-6);
+        let difference_db = (20.0 * (incoming / outgoing).log10()).abs();
+        let dynamics_penalty = 0.18 * (difference_db / 6.0).min(2.0);
+        if n > 0.0 {
+            let harmonic = s / n;
+            let matching = self
+                .melody_score(i, j)
+                .map_or(harmonic, |melodic| 0.30 * harmonic + 0.70 * self.local_melody_score(i, j).map_or(melodic, |local| 0.65 * local + 0.35 * melodic));
+            (matching - dynamics_penalty).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 }
 
@@ -193,6 +274,10 @@ pub enum RemixError {
     TooLong,
     /// The detected beat grid would need too much similarity storage or work.
     TooComplex,
+    /// Invalid or unbounded planner input.
+    InvalidInput,
+    /// The target exceeds the bounded arrangement-search duration.
+    TargetTooLong,
     /// Not enough rhythmic content to find a beat (silence, noise, speech).
     NoBeat,
     /// The source has fewer beats than a remix needs.
@@ -207,6 +292,8 @@ impl std::fmt::Display for RemixError {
             RemixError::InvalidSampleRate => "the audio sample rate is not supported for remix analysis",
             RemixError::TooLong => "the music is too long to remix",
             RemixError::TooComplex => "the music has too many beats to remix",
+            RemixError::InvalidInput => "invalid remix analysis or parameters",
+            RemixError::TargetTooLong => "the target duration exceeds sixteen times the source length",
             RemixError::NoBeat => "no beat found in the audio",
             RemixError::TooShort => "the music is too short to remix",
             RemixError::TargetTooShort => "the target duration is too short for this music",
@@ -393,9 +480,16 @@ fn mel_bands(mel: &[Vec<(usize, f64)>], mag: &[f32]) -> [f64; BANDS] {
 }
 
 /// Per-beat chroma (12) and cepstra (12) from a 4× larger STFT.
-fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
-    let n = (onset_frame(sr) * 2).max(1024);
-    let hop = n / 2;
+struct BeatFeatures {
+    chroma: Vec<[f32; 12]>,
+    cepstra: Vec<[f32; 12]>,
+    melody_sim: Vec<f32>,
+    melody_present: Vec<bool>,
+}
+
+fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> BeatFeatures {
+    let n = (onset_frame(sr) * 4).max(2048);
+    let hop = n / 4;
     let mags = stft_mag(x, n, hop);
     let bins = n / 2 + 1;
     let hz = |k: usize| k as f64 * sr as f64 / n as f64;
@@ -462,7 +556,8 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
         let sd = (cep.iter().map(|c| (c[k] - mean).powi(2)).sum::<f32>() / m).sqrt().max(1e-6);
         cep.iter_mut().for_each(|c| c[k] = (c[k] - mean) / sd);
     }
-    (chroma, cep)
+    let (melody_sim, melody_present) = melody::similarities(&mags, sr, n, hop, beats, x.len());
+    BeatFeatures { chroma, cepstra: cep, melody_sim, melody_present }
 }
 
 fn similarity_cells(beats: usize) -> Result<usize, RemixError> {
@@ -544,19 +639,26 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     if beats.len() < 2 * MIN_PIECE_BEATS + 2 {
         return Err(if beats.len() < 4 { RemixError::NoBeat } else { RemixError::TooShort });
     }
-    let (chroma, cep) = beat_features(&mono, sample_rate, &beats);
+    // Bound all dense matrices before fingerprint analysis allocates similarity storage.
+    similarity_cells(beats.len())?;
+    let BeatFeatures { chroma, cepstra: cep, melody_sim, melody_present } = beat_features(&mono, sample_rate, &beats);
     let m = beats.len();
     let mut sim = vec![0f32; similarity_cells(m)?];
     fill_similarity(&mut sim, &chroma, &cep);
+    let levels = beats
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| {
+            let end = beats.get(i + 1).copied().unwrap_or(len as i64) as usize;
+            let values = mono.get(start as usize..end).unwrap_or(&[]);
+            (values.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / values.len().max(1) as f64).sqrt() as f32
+        })
+        .collect();
     let period_s = period * hop as f64;
-    Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim })
+    Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim, levels, melody_sim, melody_present })
 }
 
 // ------------------------------------------------------------------------------------- planning
-
-/// Most joints a plan may use. Extending a short source to a long target adds joints until each
-/// jump fits, which a degenerate source (a tiny span between the intro and outro) never satisfies.
-const MAX_PLAN_JOINTS: usize = 1024;
 
 /// Number of joints the Segments slider asks for.
 pub fn joints_for(segments: f64) -> usize {
@@ -564,7 +666,45 @@ pub fn joints_for(segments: f64) -> usize {
 }
 
 /// Plan a remix of the analysed music to `target` samples.
+/// Experimental strict search; threshold is a fingerprint similarity, not a
+/// perceptual guarantee. Existing callers keep the duration-constrained search.
+pub fn melodic_alternatives(a: &Analysis, target: i64) -> Vec<Plan> {
+    options::alternatives(a, target)
+}
+
+pub fn plan_with_melody_floor(a: &Analysis, target: i64, params: Params, floor: f32) -> Result<Plan, RemixError> {
+    if !floor.is_finite() || !(0.0..=1.0).contains(&floor) {
+        return Err(RemixError::InvalidInput);
+    }
+    match arrange::arrange_with_threshold(a, target, params, Some(floor)) {
+        Err(RemixError::TargetTooShort) => {
+            options::with_floor(a, target, floor).into_iter().find(|p| p.len().abs_diff(target) as f64 <= a.period).ok_or(RemixError::TargetTooShort)
+        }
+        result => result,
+    }
+}
+
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
+    if a.beats.len() < 2 || !a.period.is_finite() || a.period <= 0.0 {
+        return Err(RemixError::TooShort);
+    }
+    match arrange::arrange(a, target, params) {
+        // Ordinary extensions may fall back when reserving the outro leaves no usable
+        // arrangement or when the target exceeds the phrase search budget.
+        Err(RemixError::TargetTooLong | RemixError::TargetTooShort) if target > a.len && target <= MAX_OUTPUT_SAMPLES => {
+            let plan = long_extension_plan(a, target, params)?;
+            if plan.is_playable() { Ok(plan) } else { Err(RemixError::TargetTooShort) }
+        }
+        result => result,
+    }
+}
+
+// The upstream fallback for ordinary extensions does not reserve a closing suffix.
+// Strict matching never uses it.
+// A finite joint count prevents degenerate sources from making it loop forever.
+const MAX_PLAN_JOINTS: usize = 1024;
+
+fn long_extension_plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
     let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
     let len = a.len;
     let b = &a.beats;
@@ -936,10 +1076,41 @@ mod tests {
     }
 
     #[test]
+    fn strict_large_targets_have_a_duration_error_while_ordinary_extensions_remain_supported() {
+        let (_, _, a) = music(120.0, 24);
+        let target = a.len * 17;
+        let extended = plan(&a, target, Params::default()).unwrap();
+        assert!(extended.len().abs_diff(target) <= a.period as u64);
+        assert!(extended.is_playable());
+        assert_eq!(plan_with_melody_floor(&a, target, Params::default(), 0.5), Err(RemixError::TargetTooLong));
+    }
+
+    #[test]
+    fn thirty_fold_extension_remains_bounded_and_playable() {
+        let (_, _, a) = music(120.0, 15);
+        let target = a.len * 30;
+        let p = plan(&a, target, Params::default()).unwrap();
+        assert!(p.pieces.len() > 33);
+        assert!(p.pieces.len() <= MAX_PLAN_JOINTS + 1);
+        assert!(p.is_playable());
+        assert!(p.len().abs_diff(target) <= a.period as u64);
+    }
+
+    #[test]
     fn planning_a_huge_target_from_a_tiny_source_terminates() {
         let beats: Vec<i64> = (0..24).map(|i| i * 10).collect();
         let m = beats.len();
-        let a = Analysis { sample_rate: 48_000, len: 240, beats, period: 10.0, bpm: 0.0, sim: vec![0.0; m * m] };
+        let a = Analysis {
+            sample_rate: 48_000,
+            len: 240,
+            beats,
+            period: 10.0,
+            bpm: 0.0,
+            sim: vec![0.0; m * m],
+            levels: vec![0.0; m],
+            melody_sim: vec![0.0; m * m],
+            melody_present: vec![false; m],
+        };
         // 2^50 samples would need ~2^43 joints: the plan gives up at its joint limit instead
         let _ = plan(&a, 1 << 50, Params::default());
         // degenerate analyses are refused, not indexed
@@ -1075,7 +1246,7 @@ mod tests {
             for (frame, want) in mags.iter().zip(want) {
                 assert_eq!(mel_bands(&mel, frame).map(f64::to_bits), want.map(f64::to_bits), "{sr} Hz");
             }
-            let (chroma, cep) = beat_features(x, sr, &truth);
+            let BeatFeatures { chroma, cepstra: cep, .. } = beat_features(x, sr, &truth);
             let mut sim = vec![0f32; chroma.len() * chroma.len()];
             fill_similarity(&mut sim, &chroma, &cep);
             let want = reference_similarity(&chroma, &cep);

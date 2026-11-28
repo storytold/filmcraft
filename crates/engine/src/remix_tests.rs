@@ -160,3 +160,93 @@ fn overlaps_are_refused_and_noise_cannot_be_remixed() {
     let err = s.execute("clip.remix.enable", json!({})).unwrap_err().to_string();
     assert!(err.contains("beat") || err.contains("short"), "{err}");
 }
+
+#[test]
+fn analysis_does_not_leak_between_projects_with_reused_item_ids() {
+    let (first, _) = dsp::test_music(SR, 120.0, 16, 3);
+    let (mut second, _) = dsp::test_music(SR, 100.0, 14, 71);
+    for channel in &mut second {
+        channel.truncate(first[0].len());
+    }
+    let (mut one, a) = session(&first, None);
+    let (mut two, b) = session(&second, None);
+    assert_eq!(item(&one, a).item, item(&two, b).item);
+    assert_eq!(item(&one, a).duration, item(&two, b).duration);
+    let first_result = one.execute("clip.remix", json!({"clip":a.0,"seconds":20.0})).unwrap();
+    let second_result = two.execute("clip.remix", json!({"clip":b.0,"seconds":20.0})).unwrap();
+    assert!((first_result["bpm"].as_f64().unwrap() - 120.0).abs() < 1.0);
+    assert!((second_result["bpm"].as_f64().unwrap() - 100.0).abs() < 1.0, "second source must have its own analysis: {second_result}");
+}
+
+#[test]
+fn extending_then_reverting_then_shortening_matches_a_fresh_clip() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let original = item(&s, c);
+    s.execute("clip.remix", json!({"clip":c.0,"seconds":46.0})).unwrap();
+    s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
+    assert_eq!(item(&s, c), original);
+    let after_reset = s.execute("clip.remix", json!({"clip":c.0,"seconds":16.0})).unwrap();
+    let (mut fresh, fresh_clip) = session(&m, None);
+    let direct = fresh.execute("clip.remix", json!({"clip":fresh_clip.0,"seconds":16.0})).unwrap();
+    assert_eq!(after_reset["pieces"], direct["pieces"]);
+    assert_eq!(after_reset["originalSeconds"], direct["originalSeconds"]);
+    assert_eq!(after_reset["duration"], direct["duration"]);
+}
+
+#[test]
+fn strict_phrase_matching_leaves_an_unsuitable_target_unchanged() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let before = s.project.to_json();
+    let response = s.execute("clip.remix", json!({"clip":c.0,"seconds":1.0,"matchMelody":true})).unwrap();
+    assert_eq!(response["applied"], false);
+    assert_eq!(s.project.to_json(), before);
+    let alternatives = response["alternatives"].as_array().unwrap();
+    assert!(!alternatives.is_empty(), "a refusal must offer at least one usable choice");
+    for choice in alternatives {
+        let result = s.execute("clip.remix", json!({"clip":c.0,"seconds":choice["seconds"],"matchMelody":true})).unwrap();
+        assert_eq!(result["applied"], true);
+        let beat_seconds = 60.0 / result["bpm"].as_f64().unwrap();
+        let requested = choice["seconds"].as_f64().unwrap();
+        assert!((item(&s, c).duration.seconds() - requested).abs() <= beat_seconds);
+        assert_eq!(item(&s, c).speed, 1.0);
+        s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
+    }
+}
+
+#[test]
+fn strict_phrase_invalid_sample_target_is_an_error_without_edits() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let before = s.project.to_json();
+    let undo = s.history.undo.len();
+    // Positive ticks can still round down to zero audio samples in the planner.
+    let error = s.execute("clip.remix", json!({"clip":c.0,"duration":1,"matchMelody":true})).unwrap_err();
+    assert_eq!(error.to_string(), "cannot remix: invalid remix analysis or parameters");
+    assert_eq!(s.project.to_json(), before);
+    assert_eq!(s.history.undo.len(), undo);
+}
+
+#[test]
+fn successful_strict_remix_reports_applied_true() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let duration = item(&s, c).duration;
+    let result = s.execute("clip.remix", json!({"clip":c.0,"duration":duration.0,"matchMelody":true})).unwrap();
+    assert_eq!(result["applied"], true);
+}
+
+#[test]
+fn source_identity_cache_preserves_the_analysis_duration_limit() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let id = s.state.active_sequence.unwrap();
+    Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().find_item_mut(c).unwrap().1.duration = Tick::from_seconds_f64(601.0);
+    let before = s.project.to_json();
+    let undo = s.history.undo.len();
+    let error = s.execute("clip.remix", json!({"clip":c.0,"seconds":20.0})).unwrap_err();
+    assert!(error.to_string().contains("longer than 10 minutes"), "{error}");
+    assert_eq!(s.project.to_json(), before);
+    assert_eq!(s.history.undo.len(), undo);
+}
