@@ -4242,10 +4242,11 @@ fn build() -> Vec<CommandSpec> {
             ))
         }),
         query!("project.inspect", "Inspect Project", "{}", |s, _| Ok(crate::commands::inspect_project(s))),
-        query!("sequence.inspect", "Inspect Sequence", r#"{"item":id?}"#, |s, p| {
+        query!("sequence.inspect", "Inspect Sequence", r#"{"item":id?,"from":ticks|time?,"to":ticks|time?}"#, |s, p| {
             let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
             let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
-            Ok(inspect_sequence(s, id, q))
+            let window = inspect_window(p, q)?;
+            Ok(inspect_sequence(s, id, q, window))
         }),
         query!("state.inspect", "Inspect Editor State", "{}", |s, _| Ok(serde_json::to_value(&s.state).unwrap_or_default())),
         query!(
@@ -5340,20 +5341,42 @@ pub fn inspect_project(s: &Session) -> Value {
     })
 }
 
-pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence) -> Value {
+/// The `from`/`to` span a `sequence.inspect` call is limited to (ticks or time objects; an open end
+/// reaches the start of the sequence or the end of time), or `None` for the whole sequence.
+fn inspect_window(p: &Value, q: &filmcraft_project::Sequence) -> Result<Option<(Tick, Tick)>> {
+    let (rate, df) = (q.settings.frame_rate, q.settings.drop_frame);
+    let from = tick_or_time_p(p, "from", rate, df, "sequence.inspect")?;
+    let to = tick_or_time_p(p, "to", rate, df, "sequence.inspect")?;
+    if from.is_none() && to.is_none() {
+        return Ok(None);
+    }
+    let (from, to) = (from.unwrap_or(Tick::ZERO), to.unwrap_or(Tick(i64::MAX)));
+    if from >= to {
+        return Err(bad("sequence.inspect", "`from` must be before `to`"));
+    }
+    Ok(Some((from, to)))
+}
+
+/// Whether `start`..`start + duration` touches the window; a zero-length span (a point marker) counts at its start.
+fn in_window(window: Option<(Tick, Tick)>, start: Tick, duration: Tick) -> bool {
+    window.is_none_or(|(from, to)| start < to && start.0.saturating_add(duration.0.max(1)) > from.0)
+}
+
+/// The sequence as JSON; with a `window`, only the clips, transitions and markers that touch it.
+pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence, window: Option<(Tick, Tick)>) -> Value {
     let rate = q.settings.frame_rate;
     let tr = |t: &filmcraft_project::Track| {
         json!({
             "id": t.id.0, "name": t.name, "locked": t.locked, "syncLock": t.sync_lock, "enabled": t.enabled, "muted": t.muted, "solo": t.solo,
             "label": t.label.map(|l| l.name()),
-            "items": t.items.iter().map(|i| json!({
+            "items": t.items.iter().filter(|i| in_window(window, i.start, i.duration)).map(|i| json!({
                 "clip": i.id.0, "item": i.item.0, "name": i.name, "start": i.start.0, "duration": i.duration.0,
                 "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse, "maintainPitch": i.maintain_pitch,
                 "end": i.end().0, "endFrame": rate.frame_at(i.end()), "sourceOut": i.source_out().0, "gainDb": i.gain_db,
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(), "customLabelColor": i.custom_label_color,
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-            "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "align": filmcraft_edit::transitions::bounds(t, x).map(|b| filmcraft_edit::transitions::alignment(x, b.1, rate.frame_duration()).id()), "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
+            "transitions": t.transitions.iter().filter(|x| in_window(window, x.start, x.duration)).map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "align": filmcraft_edit::transitions::bounds(t, x).map(|b| filmcraft_edit::transitions::alignment(x, b.1, rate.frame_duration()).id()), "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
         })
     };
     // the frames export renders, a partial last frame included
@@ -5368,7 +5391,8 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "in": q.mark_in.map(|t| t.0),
         "out": q.mark_out.map(|t| t.0),
         "split": q.split,
-        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color_value(), "author": m.author, "url": m.url})).collect::<Vec<_>>(),
+        "window": window.map(|(from, to)| json!({"from": from.0, "to": to.0})),
+        "markers": q.markers.iter().filter(|m| in_window(window, m.start, m.duration)).map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color_value(), "author": m.author, "url": m.url})).collect::<Vec<_>>(),
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
         "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
