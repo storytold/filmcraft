@@ -212,8 +212,11 @@ fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
     out.push_str("[Desktop Entry]\n");
     out.push_str("Type=Application\n");
     out.push_str(&format!("Name={name}\n"));
+    out.push_str("Name[ru]=FilmCraft\n");
     out.push_str("GenericName=Video Editor\n");
+    out.push_str("GenericName[ru]=Видеоредактор\n");
     out.push_str("Comment=Edit video, color and sound\n");
+    out.push_str("Comment[ru]=Монтаж видео, работа с цветом и звуком\n");
     out.push_str(&format!("Exec=\"{}\" %F\n", escape_exec_argument(exe)));
     out.push_str(&format!("Icon={app_id}\n"));
     out.push_str("Terminal=false\n");
@@ -223,6 +226,7 @@ fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
     out.push_str("MimeType=application/x-filmcraft;video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;");
     out.push_str("video/vnd.avi;video/x-msvideo;application/mxf;video/mp2t;video/mpeg;video/3gpp;\n");
     out.push_str("Keywords=video;editor;film;timeline;color;grading;nle;\n");
+    out.push_str("Keywords[ru]=видео;видеоредактор;монтаж;фильм;таймлайн;цвет;цветокоррекция;грейдинг;nle;\n");
     out
 }
 

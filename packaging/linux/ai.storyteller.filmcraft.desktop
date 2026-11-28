@@ -1,8 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=FilmCraft
+Name[ru]=FilmCraft
 GenericName=Video Editor
+GenericName[ru]=Видеоредактор
 Comment=Edit video, color and sound
+Comment[ru]=Монтаж видео, работа с цветом и звуком
 Exec=filmcraft %F
 TryExec=filmcraft
 Icon=ai.storyteller.filmcraft
@@ -12,3 +15,4 @@ StartupWMClass=ai.storyteller.filmcraft
 Categories=AudioVideo;Video;AudioVideoEditing;
 MimeType=application/x-filmcraft;video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;video/vnd.avi;video/x-msvideo;application/mxf;video/mp2t;video/mpeg;video/3gpp;
 Keywords=video;editor;film;timeline;color;grading;nle;
+Keywords[ru]=видео;видеоредактор;монтаж;фильм;таймлайн;цвет;цветокоррекция;грейдинг;nle;

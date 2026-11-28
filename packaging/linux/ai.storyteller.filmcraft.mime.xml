@@ -5,6 +5,7 @@
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-filmcraft">
     <comment>FilmCraft project</comment>
+    <comment xml:lang="ru">Проект FilmCraft</comment>
     <sub-class-of type="application/json"/>
     <icon name="ai.storyteller.filmcraft"/>
     <glob pattern="*.fcproj"/>
