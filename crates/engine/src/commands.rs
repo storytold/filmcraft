@@ -5402,11 +5402,14 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
+    let mut renamed_from = None;
     if adopt
         && let Some(name) = project_name_for(path)
         && s.project.name != name
     {
-        name_project(std::sync::Arc::make_mut(&mut s.project), name);
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        renamed_from = Some((p.name.clone(), p.root.name.clone()));
+        name_project(p, name);
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
@@ -5415,16 +5418,27 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let stored = crate::doc_path::project_for_document(&s.project, Some(path), |p| s.media.follow(p));
     let bytes = filmcraft_format::encode_with_view(&stored, Some(&view), false);
     let mut backup = None;
-    if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
-        let b = schema_backup_path(path, s.loaded_schema);
-        if s.services.read_file(&b).is_err()
-            && let Ok(old) = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES)
-        {
-            s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
-            backup = Some(b);
+    let written = (|| -> Result<()> {
+        if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
+            let b = schema_backup_path(path, s.loaded_schema);
+            if s.services.read_file(&b).is_err()
+                && let Ok(old) = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES)
+            {
+                s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
+                backup = Some(b);
+            }
         }
+        s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+    })();
+    if let Err(e) = written {
+        // nothing was saved: the project keeps its name
+        if let Some((name, root)) = renamed_from {
+            let p = std::sync::Arc::make_mut(&mut s.project);
+            p.name = name;
+            p.root.name = root;
+        }
+        return Err(e);
     }
-    s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if adopt {
         s.path = Some(path.to_string());
         s.previews_follow_path();
