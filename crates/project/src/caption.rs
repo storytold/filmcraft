@@ -96,6 +96,10 @@ pub struct CaptionStyle {
     /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
     /// like graphic text: the nearest weight when the family has no face of that name.
     pub font_style: String,
+    /// Background padding around the text in pixels at 1080 lines, `[left and right, top and
+    /// bottom]`. `None` keeps the automatic padding: 0.3 × the font size left and right, none above
+    /// or below.
+    pub background_padding: Option<[f32; 2]>,
 }
 
 impl Default for CaptionStyle {
@@ -113,6 +117,7 @@ impl Default for CaptionStyle {
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
             font_style: "SemiBold".into(),
+            background_padding: None,
         }
     }
 }
@@ -314,6 +319,17 @@ mod tests {
         let st: CaptionStyle = serde_json::from_str(old).unwrap();
         assert_eq!(st, CaptionStyle::default());
         assert_eq!(st.font_style, "SemiBold");
+    }
+
+    #[test]
+    fn styles_saved_without_padding_keep_the_automatic_padding() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.background_padding, None);
+        let padded = CaptionStyle { background_padding: Some([20.0, 12.0]), ..Default::default() };
+        assert_eq!(serde_json::from_str::<CaptionStyle>(&serde_json::to_string(&padded).unwrap()).unwrap(), padded);
     }
 
     #[test]
