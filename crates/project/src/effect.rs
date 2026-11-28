@@ -258,6 +258,8 @@ const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
+/// The built-in effect and transition registry: every effect's id, menu path and parameters with
+/// their defaults and ranges. Built once by [`effect_defs`].
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
         // ---- intrinsic ----
@@ -473,7 +475,8 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("wheel_highlights_l", "Highlights Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
                 grp(b("hsl_on", "Enable HSL Secondary", false), "HSL Secondary"),
                 grp(fs("hsl_hue", "Hue Center", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "HSL Secondary"),
-                grp(fs("hsl_hue_range", "Hue Range", 30.0, (1.0, 180.0), (1.0, 180.0), "°", 0), "HSL Secondary"),
+                // the key's full width around Hue Center (render `hsl_key`): 360° keys every hue (#4596)
+                grp(fs("hsl_hue_range", "Hue Range", 30.0, (1.0, 360.0), (1.0, 360.0), "°", 0), "HSL Secondary"),
                 grp(fs("hsl_sat_min", "Saturation Min", 10.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
                 grp(fs("hsl_luma_min", "Luma Min", 5.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
                 grp(fs("hsl_luma_max", "Luma Max", 95.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
