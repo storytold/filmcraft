@@ -20,6 +20,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
 | `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
+| `view.prompter` | Program wrench menu ▸ Prompter | the [Prompter](#prompter) at the bottom of the Program picture; off by default, Program monitor only, also shown in full-screen Program; takes `{"enabled": bool}` |
 | `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
 | `view.guideTemplates.save`, `.manage`, `.apply`, `.delete` | Guide Templates ▸ Save Guides as Template… / Manage Guides… | templates are stored in the user preferences (`guides.templates`) |
 
@@ -27,10 +28,127 @@ Guides are in frame pixels. Drag out of the top ruler for a horizontal guide or 
 a vertical one; drag a guide to move it (unless locked) and drop it outside the picture to remove it.
 
 Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.settings.<command suffix>`
-(wrench menu items, e.g. `program.settings.display.alpha`), `<monitor>.ruler.top|left`,
+(wrench menu items, e.g. `program.settings.display.alpha`), `program.prompter`, `<monitor>.ruler.top|left`,
 `<monitor>.guide.<n>`, `program.compare.reference|prev|next|set`, `source.waveform`, and in the
 dialogs `guides.add.vertical|horizontal|position|ok|cancel`, `guides.save.name|ok|cancel`,
 `guides.manage.row.<n>|apply|delete|close`.
+
+## Prompter
+
+For narration recorded to picture (voice-over recording) and for rehearsing it with normal
+playback, the Program monitor can show a prompter at the bottom of the picture: Program wrench
+menu ▸ Prompter, or `view.prompter`. It is off by default. It only reads the sequence: it does not
+change playback, recording or the project, it is drawn by the monitor and never rendered or
+exported, and it stays on in full-screen Program (`view.fullScreenProgram`), where the other
+overlays are turned off.
+
+**Sections are range markers.** A marker with a duration is a section: its name is the section's
+name and its range is the section. Point markers are not sections. Where range markers overlap,
+the one that started last is shown while it lasts, so a marker inside another interrupts it and
+the outer one comes back after it; of markers starting together, the shorter is shown first.
+
+**The marker's comment is the section's text.**
+
+- A line starting with `-`, `*` or `•` and a space is a talking point. It can end in a duration in
+  brackets, `[m:ss]` or `[h:mm:ss]`: `- Third line of the graph [0:30]`. Points without a duration
+  share the time the others leave, equally. A bracket that is not such a duration stays part of the
+  point's text.
+- Every other line is script. It runs from the start of the section to its end, in proportion to
+  its characters, so it finishes when the section does.
+
+**What it shows** at the playhead, on a card centred at the bottom of the picture (inside the
+action-safe margin, at most 45% of the picture's height):
+
+- a header with the section's marker flag in the marker's colour, the section's name, and the time
+  elapsed and the section's length; under it a progress bar in the marker's colour, split where
+  one talking point ends and the next begins;
+- the current talking point as the largest line, in bold on a highlight with ▶, its length in a
+  badge and a bar under it showing how far through it you are; the last finished point above it,
+  smaller, with ✓; up to three next points, each with a dot and its length; and how many more
+  follow;
+- the script, larger than the other text, with the line you are reading on a highlighted reading
+  line marked by a bar, what is already read dimmed; it moves up a line at a time;
+- the next section, with its marker's flag and how soon it starts, in the last 10 seconds of a
+  section (the second half of a section shorter than 20 seconds) and between sections;
+- warnings, each on its own block with ⚠: when the talking points' durations add up to more than
+  the section or leave no time for the points without one, and when a comment was cut;
+- the caption at the playhead, from the top caption track that is turned on, drawn as the Timeline
+  draws captions: the track's badge (C1) beside the caption text in a caption block.
+
+Talking points and script side by side share the card, points on the left; on a narrow card the
+script goes under the points. The card's text and spacing grow with the picture, from the small
+Program panel to full screen on a large display. When the picture is too small for everything, the
+card keeps the header and the current point (on one line if two do not fit; the card grows to
+hold it), or two script lines, and then, in this order, what fits: the next point, the next section, the
+warnings, the caption, more script, the other points, the last finished point, the count. Between
+sections it says so, and a sequence without range markers says how to make sections. Only the
+first 64 KiB of a comment and its first 100 talking points are read.
+
+**Next and Previous.** The prompter has its own position, the prompt time, which is normally the
+playhead. Markers ▸ Prompter ▸ Next Point (`prompter.next`, Alt+Page Down) and Previous Point
+(`prompter.previous`, Alt+Page Up) move it to the start of the next or previous talking point, or,
+in a section without talking points, script paragraph (paragraphs are separated by a blank line).
+A section with neither is one step. At the last point of a section Next goes to the start of the
+next section, also across a gap between sections; Previous goes back to the start of the current
+point once it is more than 2 seconds in, else to the point before, which at a section's first point
+is the previous section's last point. Only what the prompter shows counts, so points hidden under a
+nested section are skipped and the outer section is a step where it resumes. Neither changes
+playback, the picture, a recording or the project, and neither is an undo step. From its new
+position the prompter keeps moving with the playhead. Return to Playhead (`prompter.toPlayhead`,
+Alt+Home) puts it back; so does starting playback or a voice-over recording. Seeking and stopping
+playback keep the gap. The commands are disabled, saying why, without range markers, after the
+last point (Next), at or before the first (Previous) and when the prompter is at the playhead
+(Return to Playhead).
+
+**Faster and Slower.** Markers ▸ Prompter ▸ Prompt Faster (`prompter.faster`, Alt+Shift+Page Down),
+Prompt Slower (`prompter.slower`, Alt+Shift+Page Up) and Reset Prompt Rate (`prompter.resetRate`,
+Alt+Shift+Home) change how fast the prompter advances relative to the playhead, when you notice you
+are reading faster or slower than the sections were timed for. Each step is 5%, between 50% and
+200%; at a limit the command is disabled and says so, and Reset is disabled at 100%. Only the
+prompter's own clock changes: the picture plays at normal speed, playback speed is untouched and the
+voice-over recording is not affected. The change applies from where the prompter is, with no jump,
+and the ahead/behind readout shows the gap growing (faster: the prompter moves ahead) or closing
+and reversing (slower). Next, Previous and Return to Playhead keep the rate. The rate lasts until
+it is reset or playback stops (the gap it built up stays, as stopping always kept the gap); starting
+playback and starting a voice-over take also start at 100%, so a rate never carries into the next
+take. A seek during playback moves the prompter by the rate times the jump. While the rate is not
+100% the card's header shows "rate 105%" in a readout badge of its own before the ahead/behind
+badge, and the overlay's accessibility label carries it. In a short header the rate badge goes
+before the ahead/behind one. The rate is not saved with the project.
+
+**Ahead/behind.** While the prompt time is not the playhead, the card's header shows the gap in a
+readout badge before the time, an outlined pill with a chevron pointing forward or back: "ahead 0:08" when the prompter is later than the picture (the narrator moved
+on first), "behind 0:12" when it is earlier (the picture moved on). It rounds up to whole seconds,
+so any gap shows, and reads `h:mm:ss` from an hour on. In step it shows nothing. When the header is
+short of room the section name is cut first and the time goes before the readout. Between sections
+the card says "No section at the prompter's position" with the readout.
+
+**Take log.** During a voice-over recording every move is logged with its time:
+`prompter.takeLog` returns `inProgress` (the take being recorded) and `last` (the last finished
+take), and `audio.voiceover.stop` returns the finished take's log as `promptLog`. A log has
+`sequence`, `recordStart`, `entries` and `dropped` (moves past the first 10 000). The first entry
+(`kind` `start`) is where the prompt was when the capture began; then one entry per move (`next`,
+`previous`, `toPlayhead`, `rate`) with `takeTime` (the playhead minus the record point, negative in the
+pre-roll), `playhead`, `promptBefore`, `promptAfter` (ticks), `rateBefore` and `rateAfter` (percent), and the `marker`,
+`point` and `paragraph` the prompt landed on. A `rate` entry is a Faster, Slower or Reset (also the
+reset when playback stops during the take); its prompt time is unchanged. Between entries the
+prompt runs with the playhead at the last entry's `rateAfter`, so the prompt time at take time `x`
+is `promptAfter + (x - takeTime) * rateAfter / 100` of the last entry before `x`. The log is kept in the
+session; it is not yet stored with the recorded clip.
+
+**Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
+node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`
+returns the same content for the active sequence at any time (default: the prompt time), with the
+prompter's `promptTime`, `playhead`, `gap` (prompt time minus playhead, ticks), `direction`
+(`ahead`, `behind` or null) and `rate` (percent): `section`
+(marker, name, start, duration, elapsed, remaining, progress, `points` with their text, written
+duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
+characters and its `paragraph`, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
+`sections` (the number of range markers). It is disabled when no sequence is open. Code:
+A time that is given but cannot be read (`{"timecode": "invalid"}`) is refused, not answered for the
+playhead. `crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`
+(drawing). Tests: `cargo test -p filmcraft-engine prompter_tests::` and
+`cargo test -p filmcraft-ui-egui --test it prompter_ui::`.
 
 ## Source playback
 

@@ -41,6 +41,11 @@ impl FilmcraftApp {
         {
             self.session.set_playhead(Tick::ZERO);
         }
+        // playback starts with the Prompter in step with the picture and at its normal rate
+        if filmcraft_engine::prompter::gap(&self.session) != Tick::ZERO {
+            let _ = self.session.execute("prompter.toPlayhead", json!({}));
+        }
+        self.reset_prompter_rate();
         // A loop restart keeps counting into the same meter.
         if !self.playback.playing || self.playback.speed != speed {
             self.playback.meter.start(speed);
@@ -126,7 +131,16 @@ impl FilmcraftApp {
             || self.session.voiceover.recording()
     }
 
+    /// Back to the normal Prompter rate, keeping the gap (a no-op at that rate).
+    fn reset_prompter_rate(&mut self) {
+        if filmcraft_engine::prompter::rate(&self.session) != filmcraft_engine::prompter::NORMAL_RATE_PERCENT {
+            let _ = self.session.execute("prompter.resetRate", json!({}));
+        }
+    }
+
     pub fn stop(&mut self) {
+        // a Prompter rate lasts until playback stops; the gap it built up stays
+        self.reset_prompter_rate();
         self.playback.playing = false;
         self.playback.tts_preview = false;
         self.playback.stop_at = None;
