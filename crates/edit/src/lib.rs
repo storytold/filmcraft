@@ -1134,9 +1134,12 @@ pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, c
     rate_stretch_items(seq, &[clip], edge, delta, ctx)
 }
 
-/// Rate stretch a clip and its linked partners as one edit: the tightest neighbour on any member
-/// clamps them all, so they keep one speed. A neighbour on the sound track cannot leave the picture
-/// stretching further (and the pair still linked at different rates).
+/// Rate stretch a clip and its linked partners as one edit: they keep one speed, the first
+/// member's (the clip the drag starts from), the way `set_speed_group` does, so a split edit (a
+/// picture shorter or longer than its sound) does not leave the members at different speeds.
+/// Every member lasts its own source span over that speed, and the tightest neighbour or
+/// one-frame minimum on any member clamps the group. A neighbour on the sound track cannot leave
+/// the picture stretching further (and the pair still linked at different rates).
 pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
     // clips on locked tracks are left as they are; with every clip locked the edit is refused
     let mut open = Vec::with_capacity(clips.len());
@@ -1151,29 +1154,49 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
         return Err(EditError::Locked);
     }
     let clips = open.as_slice();
-    let mut d = delta;
-    for c in clips {
-        let x = clamp_rate_stretch(seq, *c, edge, d, ctx)?;
-        if x.0.signum() != d.0.signum() {
-            d = Tick::ZERO;
-        } else if x.abs() < d.abs() {
-            d = x;
-        }
+    if delta == Tick::ZERO {
+        let (_, first) = seq.find_item(clips[0]).ok_or(EditError::NoItem(clips[0]))?;
+        return Ok(first.speed);
     }
-    let mut speed = 1.0;
-    for c in clips {
-        let (_, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
-        let src_len = it.source_out() - it.source_in;
-        let new_dur = match edge {
-            Edge::Out => it.duration + d,
-            Edge::In => it.duration - d,
+    // the group's speed, from the first member and `delta` ...
+    let (_, first) = seq.find_item(clips[0]).ok_or(EditError::NoItem(clips[0]))?;
+    let new_dur = match edge {
+        Edge::Out => first.duration + delta,
+        Edge::In => first.duration - delta,
+    };
+    let asked = (first.source_out() - first.source_in).0 as f64 / new_dur.0 as f64;
+    // ... clamped by every member: member i lasts src_len_i / speed, which each member's
+    // neighbour and the one-frame minimum bound from either side (in f64: with no next clip the
+    // room is `Tick::MAX`, and a duration plus it would not fit an i64)
+    let mut speed = asked;
+    let cur = (first.source_out() - first.source_in).0 as f64 / first.duration.0 as f64;
+    for &c in clips {
+        let (tid, it) = seq.find_item(c).ok_or(EditError::NoItem(c))?;
+        let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
+        let (prev_end, next_start) = neighbours(tr, c);
+        let src_len = (it.source_out() - it.source_in).0 as f64;
+        let room = match edge {
+            Edge::Out => (next_start - it.end()).0,
+            Edge::In => (it.start - prev_end).0,
         };
-        speed = src_len.0 as f64 / new_dur.0 as f64;
-        let (_, it) = seq.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
+        let longest = (it.duration.0 as f64 + room as f64).max(ctx.min_duration.0 as f64);
+        speed = speed.max(src_len / longest).min(src_len / ctx.min_duration.0 as f64);
+    }
+    // the request cannot go its way at all (a neighbour already over the member): nothing changes,
+    // as a clamped-to-zero delta did before
+    if (speed - cur).signum() != (asked - cur).signum() {
+        return Ok(cur);
+    }
+    for &c in clips {
+        let (_, it) = seq.find_item_mut(c).ok_or(EditError::NoItem(c))?;
+        let src_len = (it.source_out() - it.source_in).0 as f64;
+        // a member with no source span keeps its length: there is no speed it could share
+        let d = (src_len / speed).round();
+        let d = Tick(if d.is_finite() && d >= ctx.min_duration.0 as f64 { d as i64 } else { it.duration.0 });
         if edge == Edge::In {
-            it.start += d;
+            it.start = it.end() - d;
         }
-        it.duration = new_dur;
+        it.duration = d;
         it.speed = speed;
     }
     Ok(speed)
