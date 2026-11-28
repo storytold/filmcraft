@@ -2001,7 +2001,7 @@
 	Luma	Luma
 	Luma Curve	Luma Eğrisi
 	Luma Fade	Luma Kararması
-	Luma Key	Luma Key
+	Luma Key	Luma Anahtarı
 	Luma Source	Luma Kaynağı
 	Luma and Chroma	Luma ve Kroma
 	Color Grading Presets	Renk Derecelendirme Hazır Ayarları
@@ -2023,11 +2023,11 @@
 	Master Amplitude	Ana Genlik
 	Mastering	Mastering
 	Match frame sets in point	Kareyi eşleme giriş noktasını ayarlar
-	Matte	Matte
+	Matte	Maske
 	Matte Alpha	Matte Alfa
 	Matte Cleanup	Matte Temizleme
 	Matte Generation	Matte Oluşturma
-	Matte Luma	Matte Luma
+	Matte Luma	Luma Maskesi
 	Maximum	Maksimum
 	Maximum Amplitude	Maksimum Genlik
 	Maximum Block Size	Maksimum Blok Boyutu
@@ -2174,7 +2174,7 @@
 	Pause Media Encoder queue during playback	Oynatma sırasında Media Encoder kuyruğunu duraklat
 	Peak Frequency	Tepe Frekansı
 	Peak Gain	Tepe Kazancı
-	Pedestal	Pedestal
+	Pedestal	Siyah Seviyesi
 	Pentagon	Beşgen
 	Per line	Satır başına
 	Percent Blur	Bulanıklık Yüzdesi
@@ -3022,7 +3022,7 @@
 	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	Avid tarzı OP-Atom: DNxHR HQ görüntü dosyası ve kanal başına bir adet 24 bit 48 kHz PCM dosyası (_A1, _A2…)
 	BMP	BMP
 	BMP Sequence	BMP Sekansı
-	Baseline	Baseline
+	Baseline	Temel
 	Begin Text Editing for a Graphic Layer	Grafik Katmanı için Metin Düzenlemeyi Başlat
 	Begins With	Şununla Başlar
 	Blur In	Bulanıklaşarak Giriş
@@ -3135,7 +3135,7 @@
 	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8 bit 4:2:2), 24 bit 48 kHz PCM, başlangıç zaman kodu
 	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High uzun GOP (piksel başına 0,3 bit), 24 bit 48 kHz PCM
 	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, 24 bit 48 kHz PCM, başlangıç zaman kodu
-	Main	Main
+	Main	Ana
 	Mark In (Hover Scrub)	Girişi İşaretle (Üzerine Gelerek Kaydırma)
 	Mark Out (Hover Scrub)	Çıkışı İşaretle (Üzerine Gelerek Kaydırma)
 	Masks	Maskeler
@@ -3630,7 +3630,7 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Denetim sunucusu devre dışı: FILMCRAFT_CONTROL_TOKEN 64 rastgele onaltılık karakter içermelidir (bkz. docs/control-protocol.md)
 
 # Export: H.264 High 10 and all-intra (#1221).
-	High 10	High 10
+	High 10	Yüksek 10
 	10-bit color	10 bit renk
 	All Intra	Yalnızca intra
 	Every frame a keyframe (edit-friendly, larger files)	Her kare bir anahtar kare (kurgu dostu, daha büyük dosyalar)
