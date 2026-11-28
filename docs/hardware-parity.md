@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (adjustment layers on the GPU compositor; VA-API read-back through vaDeriveImage) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (adjustment layers on the GPU compositor; VA-API read-back through vaDeriveImage; GPU effects: Color Grading basic / creative / vignette in Rec. 2100 PQ / HLG sequences too) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -54,7 +54,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Feature | Premiere (Mercury Playback Engine: Metal, CUDA, OpenCL) | Ours (wgpu: Metal, D3D12, Vulkan) | % |
 |---|---|---|---|
 | Compositing, blend modes, transforms | GPU | **GPU** (#32), CPU compositor is the oracle | 90% |
-| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Color Grading basic / creative / vignette | ~40% |
+| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Color Grading basic / creative / vignette (SDR and Rec. 2100 PQ / HLG; with no input LUT, look, sharpen, curves, wheels or HSL set) | ~40% |
 | Color Grading curves, wheels, HSL secondary | GPU | CPU | 0% |
 | Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
 | Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 4.0–5.0× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
@@ -89,6 +89,7 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | GPU effects: Color Grading basic / creative / vignette in Rec. 2100 PQ / HLG sequences too |
 | 2026-10-24 | minor | VA-API read-back through vaDeriveImage |
 | 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Color Grading on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

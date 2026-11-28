@@ -389,6 +389,37 @@ impl OutputTransform {
             curve => l.map(|v| encode_channel(v as f64, curve, Range::Full).clamp(0.0, 1.0) as f32),
         }
     }
+
+    /// The transform as plain numbers for a shader, which runs [`apply`](Self::apply)'s stages
+    /// (BT.2390 tone mapping, the working → target matrix, desaturation into the target gamut) and
+    /// encodes the target's SDR curve itself. `None` for a target the shader does not encode (an
+    /// HDR export target), which stays on the CPU.
+    pub fn gpu_params(&self) -> Option<GpuOutputParams> {
+        if self.target.curve() != Curve::Sdr {
+            return None;
+        }
+        Some(GpuOutputParams {
+            target: self.target,
+            matrix: (!self.identity_matrix).then_some(self.matrix),
+            tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
+            compress: self.compress,
+        })
+    }
+}
+
+/// [`OutputTransform`] as plain numbers for a shader ([`OutputTransform::gpu_params`]): the stages
+/// after the compositor — tone mapping, working → target matrix, gamut desaturation, in the order
+/// [`OutputTransform::apply`] runs them — with the target's SDR curve left to the shader's resolve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuOutputParams {
+    /// The target colour space (SDR: the shader's resolve is the sRGB curve).
+    pub target: ColorSpace,
+    /// Working → target primaries (row-major), when they differ.
+    pub matrix: Option<[[f32; 3]; 3]>,
+    /// BT.2390 tone mapping (source peak, target peak) in cd/m², on max(R,G,B) as a ratio.
+    pub tone: Option<(f32, f32)>,
+    /// Target luma weights to desaturate into the target gamut with ([`desaturate_into_gamut`]).
+    pub compress: Option<[f32; 3]>,
 }
 
 /// Convenience: a log colour space → display Rec. 709 (tone mapped), used for the built-in
@@ -549,5 +580,21 @@ mod tests {
         assert!((hi[0] - 1.0).abs() < 0.01);
         // plain pipeline is an identity
         assert!(OutputTransform::display(&ColorPipeline::REC709).is_identity());
+    }
+
+    #[test]
+    fn output_gpu_params_cover_the_display_transform() {
+        // a plain pipeline: the shader's sRGB resolve is the whole transform
+        let plain = OutputTransform::display(&ColorPipeline::REC709).gpu_params().unwrap();
+        assert!(plain.matrix.is_none() && plain.tone.is_none() && plain.compress.is_none());
+        // an HDR working space on a SDR monitor: tone mapping, the working → 709 matrix and the
+        // gamut compression, the stages the resolve pass runs
+        let hdr = OutputTransform::display(&self::hdr(WorkingSpace::Rec2100Hlg)).gpu_params().unwrap();
+        assert_eq!(hdr.target, ColorSpace::Rec709);
+        assert!(hdr.matrix.is_some() && hdr.compress.is_some());
+        assert_eq!(hdr.tone, Some((HDR_PEAK_NITS as f32, REFERENCE_WHITE_NITS as f32)));
+        // an HDR export target has no shader encode yet: it stays on the CPU
+        let export = OutputTransform::new(&self::hdr(WorkingSpace::Rec2100Hlg), ColorSpace::Rec2100Pq);
+        assert!(export.gpu_params().is_none());
     }
 }

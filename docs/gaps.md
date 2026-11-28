@@ -109,7 +109,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** hardware decode on macOS (VideoToolbox H.264 / HEVC), Windows (Media Foundation /
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows); GPU compositing, blend modes, 34 effect ids incl. Color Grading basic / creative / vignette,
+  (Windows); GPU compositing, blend modes, 34 effect ids incl. Color Grading basic / creative / vignette (also in Rec. 2100 PQ / HLG sequences; a Color Grading effect with an input LUT, look, sharpen, curves, wheels or HSL set renders on the CPU),
   GPU export rendering (#421).
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
@@ -370,4 +370,5 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
+| 2026-10-24 | minor | G5: Color Grading basic / creative / vignette on the GPU in Rec. 2100 PQ / HLG sequences too |
 | 2026-10-24 | minor | G16: Program playback on a source slower than real time drops frames instead of freezing (#2696) |

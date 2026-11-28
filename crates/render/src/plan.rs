@@ -277,6 +277,12 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, caps: DeviceCaps, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
+    // An HDR / wide-gamut sequence plans as layers too when the shader can encode the display
+    // transform. Sources are decoded into the working space (the shader's input transform for
+    // display-referred media, `colorman::decode` on the CPU for log media and camera gamuts) and
+    // the compositor's resolve pass runs the sequence's display transform (working space → monitor).
+    // Frames the compositor cannot finish stay on the CPU: an adjustment layer, a transition it
+    // cannot mix, or a display transform the shader cannot encode.
     if whole_frame_on_cpu(project, seq, t, opts.scale, caps) {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
@@ -308,11 +314,12 @@ pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOpti
     project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t, opts.scale, caps))
 }
 
-/// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
-/// on the CPU, and so does a frame with an adjustment layer the device (`caps`) can't run or a
-/// complex transition anywhere at `t` (whole-frame fallback).
+/// The frames [`plan_frame`] does not plan as layers: a display transform the shader cannot
+/// encode, an adjustment layer the device (`caps`) can't run, or a complex transition anywhere at
+/// `t` (whole-frame fallback). An HDR / wide-gamut sequence stays on the GPU when the compositor
+/// can finish the display transform.
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick, scale: f32, caps: DeviceCaps) -> bool {
-    !seq.settings.color.is_plain() || !layered_at(project, seq, t, scale, caps)
+    crate::colorman::display_transform(&seq.settings.color).gpu_params().is_none() || !layered_at(project, seq, t, scale, caps)
 }
 
 fn is_adjustment(project: &Project, it: &TrackItem) -> bool {

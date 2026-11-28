@@ -643,8 +643,9 @@ fn gpu_hook_rgba8_direct_hdr_limiter_and_fallbacks() {
     let first = |name: &str| std::fs::read(tmp(&format!("{name}000.png"))).unwrap();
 
     // 7e. HDR output (`hdr_out == true`) -> bypasses `render_rgba8`:
-    //     - On a Rec.2100 PQ sequence, `export()` sets `hdr_out = true` (`rgba8_direct = false`)
-    //       and `is_cpu_frame` sends the wide-gamut frame to the CPU (`rgba8_calls == 0`).
+    //     - On a Rec.2100 PQ sequence, `export()` sets `hdr_out = true` (`rgba8_direct = false`).
+    //       When the display transform has GPU params, `is_cpu_frame` is false and the float
+    //       `render` path runs on the GPU (`f32_calls == 2, rgba8_calls == 0, frames == 2`).
     //     - On `Pipeline::new(..., hdr_out = true)`, `!hdr_out` directly disables `rgba8_direct`
     //       so `pipe.frame(...)` calls float `render` (`f32_calls == 1, rgba8_calls == 0`) and
     //       encodes HDR floats.
@@ -664,7 +665,7 @@ fn gpu_hook_rgba8_direct_hdr_limiter_and_fallbacks() {
     let f32_calls = RENDER_F32_CALLS.load(std::sync::atomic::Ordering::SeqCst);
     let rgba8_calls = RENDER_RGBA8_CALLS.load(std::sync::atomic::Ordering::SeqCst);
     let stats = gpu_render_stats();
-    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (0, 0, 0, 2), "Rec.2100 PQ export bypasses render_rgba8 and renders on CPU");
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "Rec.2100 PQ export bypasses render_rgba8 and renders on the GPU");
 
     crate::reset_frame_renderers_for_tests();
     RENDER_F32_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
