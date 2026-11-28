@@ -420,6 +420,11 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
         let parent = parent_bin(&app.session.project.root, v.bin);
         navigate(app, v.inst, parent.map(|b| b.0));
     }
+    // items dropped on the up button move out of this bin into the one above (#5135)
+    if can_up && let Some(parent) = parent_bin(&app.session.project.root, v.bin) {
+        let target = (parent != root_id).then_some(parent.0);
+        crate::panels::project_views::accept_drop_into(app, ui, up, target, actions);
+    }
     let mut crumb = format!("{}.fcproj", app.session.project.name);
     for b in bin_path(&app.session.project.root, v.bin) {
         crumb.push_str(" / ");
