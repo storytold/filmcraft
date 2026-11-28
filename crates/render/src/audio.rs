@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use filmcraft_audio_dsp::channels::{self as chans, Layout, Mixdown};
 use filmcraft_frame::AudioBuffer;
 use filmcraft_project::{AudioChannels, Project, Sequence, Track, TrackId, TrackItem};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_time::{TICKS_PER_SECOND, Tick, TimeRange};
 
 use crate::mixer::Override;
 use crate::{SourceProvider, transitions};
@@ -224,13 +224,13 @@ fn mix_item(project: &Project, item: &TrackItem, timing: &TrackItem, win: Window
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
         let read = |m0: i64, len: usize| Some(nested_mix(project, &q, Window { start: m0, frames: len, sr }, sources, w, live.depth));
-        effected(item, &read, a0, n, sr, w)
+        effected(item, &read, a0, n, sr, w, source_read_limit(w, bounded_sample_rate(q.settings.sample_rate), sr))
     } else {
         let Some(src) = sources.source(item.item) else { return };
         if !src.info().has_audio() {
             return;
         }
-        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
+        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w, stream_read_limit(src.info(), item, sr))
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
@@ -328,9 +328,10 @@ fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn S
 pub(crate) type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
 
 /// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for
-/// timeline samples `[a0, a0 + n)`, `w` channels.
-fn effected(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
-    let read = |x0: i64, len: usize| raw_channels(item, src, x0, len, sr, w);
+/// timeline samples `[a0, a0 + n)`, `w` channels. A speed-changed clip reads at most `limit`
+/// samples from `src` at once ([`source_read_limit`]).
+fn effected(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32, w: usize, limit: usize) -> Vec<Vec<f32>> {
+    let read = |x0: i64, len: usize| raw_channels(item, src, x0, len, sr, w, limit);
     if crate::audio_fx::has_effects(item) { crate::audio_fx::process(item, a0, n, sr, &read) } else { read(a0, n) }
 }
 
@@ -350,7 +351,7 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
+        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2, stream_read_limit(src.info(), item, sr));
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
                 *d = x * g;
@@ -387,10 +388,81 @@ fn read_speed(item: &TrackItem) -> f64 {
     item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED)
 }
 
+/// Longest source read, in samples at `sr`, that a speed-changed clip makes from a source with
+/// `channels` channels at `rate`. A source refuses a read whose buffer would hold more than
+/// `MAX_AUDIO_BUFFER_BYTES`, at the requested rate or at its own (the AVI, MKV, MP4 and MXF readers
+/// count the two samples a resampling read takes past the window), and a nested sequence's mix,
+/// `channels` wide at its own rate, is held to the same size. A request whose source window is
+/// longer than this is read in pieces ([`varispeed`]).
+fn source_read_limit(channels: usize, rate: u32, sr: u32) -> usize {
+    let frames = filmcraft_media::MAX_AUDIO_BUFFER_BYTES / channels.max(1).saturating_mul(std::mem::size_of::<f32>());
+    // a margin for that rounding and those samples, as the engine's sync analysis keeps
+    let room = frames.saturating_sub(64);
+    let at_own_rate = room as u128 * u128::from(sr.max(1)) / u128::from(rate.max(1));
+    room.min(usize::try_from(at_own_rate).unwrap_or(usize::MAX))
+}
+
+/// [`source_read_limit`] for the stream a media clip plays.
+fn stream_read_limit(info: &filmcraft_media::MediaInfo, item: &TrackItem, sr: u32) -> usize {
+    info.audio_streams.get(item.audio_stream).map_or(0, |a| source_read_limit(a.channels as usize, a.sample_rate, sr))
+}
+
+/// The source position timeline sample `x` of a speed-changed clip reads at `sr`, as a whole
+/// source sample and the fraction of the way to the next one. A forward clip reads the sample that
+/// starts at its source time; a reversed clip reads the one that ends there, one sample lower. A
+/// frame hold freezes the picture, not the sound: the position ignores it, so a held clip plays its
+/// range at its speed.
+fn source_position(item: &TrackItem, x: i64, sr: u32) -> (i64, f64) {
+    let t = item.moving_source_time_at(Tick::from_units(x, sr as i64));
+    let whole = t.to_units_floor(sr as i64);
+    let tps = TICKS_PER_SECOND as i128;
+    let frac = (t.0 as i128 * sr as i128).rem_euclid(tps) as f64 / tps as f64;
+    (if item.reverse { whole.saturating_sub(1) } else { whole }, frac)
+}
+
+/// A varispeed clip's samples at the source positions `at`, one for each output sample (a whole
+/// source sample and the fraction of the way to the next one), interpolated linearly. The function
+/// reads the positions in runs whose source window, from the lowest position to the sample after
+/// the highest, holds at most `limit` samples, so a request too long to read at once plays the same
+/// samples as the shorter requests it could be cut into. A run the source refuses is silent, and the
+/// result is `None` when the source refuses every run. With a limit too small for a sample and the
+/// one after it, the function makes one read cut to the limit, as a single read always did.
+fn varispeed(at: &[(i64, f32)], src: SourceAudio, sr: u32, limit: usize) -> Option<AudioBuffer> {
+    let window = |lo: i64, hi: i64| usize::try_from(hi.saturating_sub(lo)).unwrap_or(usize::MAX).saturating_add(2);
+    let mut out: Option<AudioBuffer> = None;
+    let mut i = 0;
+    while let Some(&(p, _)) = at.get(i) {
+        let (mut lo, mut hi, mut j) = (p, p, i + 1);
+        while let Some(&(q, _)) = at.get(j) {
+            if window(lo.min(q), hi.max(q)) > limit {
+                break;
+            }
+            (lo, hi, j) = (lo.min(q), hi.max(q), j + 1);
+        }
+        if window(lo, hi) > limit {
+            j = at.len();
+            (lo, hi) = at[i..].iter().fold((lo, hi), |(l, h), &(q, _)| (l.min(q), h.max(q)));
+        }
+        if let Some(raw) = src(lo, window(lo, hi).min(limit)) {
+            let b = out.get_or_insert_with(|| AudioBuffer::silence(sr, raw.channel_count(), at.len()));
+            for (dst, ch) in b.channels.iter_mut().zip(&raw.channels) {
+                for (d, &(whole, fr)) in dst[i..j].iter_mut().zip(&at[i..j]) {
+                    let i0 = usize::try_from(whole.saturating_sub(lo)).unwrap_or(0);
+                    let a = ch.get(i0).copied().unwrap_or(0.0);
+                    let bb = ch.get(i0 + 1).copied().unwrap_or(a);
+                    *d = a + (bb - a) * fr;
+                }
+            }
+        }
+        i = j;
+    }
+    out
+}
+
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
 /// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
-/// the clip.
-fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
+/// the clip. A speed-changed clip reads at most `limit` samples from `src` at once.
+fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize, limit: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
@@ -414,23 +486,19 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         // Maintain Audio Pitch: time-stretched (falls back to varispeed for a span too long to read)
         Some(stretched)
     } else {
-        // varispeed: read a longer span and resample linearly
-        let span = ((n as f64) * speed).ceil() as usize + 2;
-        let s0 = if item.reverse { src_start_ticks.to_units_floor(sr as i64) - span as i64 } else { src_start_ticks.to_units_floor(sr as i64) };
-        src(s0, span).map(|raw| {
-            let mut b = AudioBuffer::silence(sr, raw.channel_count(), n);
-            for (c, ch) in raw.channels.iter().enumerate() {
-                for i in 0..n {
-                    let pos = if item.reverse { span as f64 - 1.0 - i as f64 * speed } else { i as f64 * speed };
-                    let i0 = pos.floor().max(0.0) as usize;
-                    let fr = (pos - i0 as f64) as f32;
-                    let a = ch.get(i0).copied().unwrap_or(0.0);
-                    let bb = ch.get(i0 + 1).copied().unwrap_or(a);
-                    b.channels[c][i] = a + (bb - a) * fr;
-                }
-            }
-            b
-        })
+        // varispeed: resample linearly. Each output sample reads the source at its own position,
+        // worked out from its own timeline sample, so the samples do not depend on where a request
+        // starts (as the mixer promises). The positions follow the speed the clip is read at, as
+        // the block starts above and a transition's handles do.
+        let capped = (speed != item.speed.abs()).then(|| TrackItem { speed, ..item.clone() });
+        let timing = capped.as_ref().unwrap_or(item);
+        let at: Vec<(i64, f32)> = (a0..a1)
+            .map(|x| {
+                let (whole, frac) = source_position(timing, x, sr);
+                (whole, frac as f32)
+            })
+            .collect();
+        varispeed(&at, src, sr, limit)
     };
     let Some(buf) = buf else { return out };
     if buf.channels.is_empty() {
@@ -565,8 +633,72 @@ mod tests {
     #[test]
     fn blocks_of_a_clip_above_the_speed_cap_stay_contiguous() {
         let it = item(1000.0);
-        let whole = raw_channels(&it, &ramp, 0, 200, 48_000, 2);
-        let second = raw_channels(&it, &ramp, 100, 100, 48_000, 2);
+        let whole = raw_channels(&it, &ramp, 0, 200, 48_000, 2, usize::MAX);
+        let second = raw_channels(&it, &ramp, 100, 100, 48_000, 2, usize::MAX);
         assert!((second[0][0] - whole[0][100]).abs() < 1e-4, "block 2 starts at {}, the whole read has {} there", second[0][0], whole[0][100]);
+    }
+
+    #[test]
+    fn a_clip_above_the_speed_cap_reads_its_source_at_the_capped_speed() {
+        // A 1000x clip is read at 100x: timeline sample k reads source sample 100 k, where its block
+        // starts and transition handles put it.
+        let whole = raw_channels(&item(1000.0), &ramp, 0, 200, 48_000, 2, usize::MAX);
+        for k in [0usize, 1, 150, 199] {
+            let want = (100 * k) as f32 / 1e6;
+            assert!((whole[0][k] - want).abs() < 1e-6, "sample {k}: {} vs {want}", whole[0][k]);
+        }
+    }
+
+    #[test]
+    fn a_long_read_at_the_speed_cap_reads_no_more_than_a_source_returns() {
+        // At 100x, 700 000 samples cover 70 million source samples, more than a two-channel 48 kHz
+        // source returns at once: the clip reads them in two pieces, each within the limit, and a
+        // source that refuses both leaves the clip silent.
+        let mut it = item(1000.0);
+        it.duration = Tick::from_seconds_f64(20.0);
+        let reads = std::cell::RefCell::new(Vec::new());
+        let refuse = |_: i64, len: usize| -> Option<AudioBuffer> {
+            reads.borrow_mut().push(len);
+            None
+        };
+        let limit = source_read_limit(2, 48_000, 48_000);
+        let out = raw_channels(&it, &refuse, 0, 700_000, 48_000, 2, limit);
+        let reads = reads.into_inner();
+        assert_eq!(reads.len(), 2, "reads of {reads:?} frames");
+        assert!(reads.iter().all(|&len| len <= limit), "reads of {reads:?} frames, limit {limit}");
+        assert!(out.iter().all(|c| c.iter().all(|v| *v == 0.0)));
+    }
+
+    #[test]
+    fn a_request_longer_than_a_source_returns_plays_what_shorter_requests_play() {
+        // With room for 1 000 source samples in a read, 200 samples at 100x span about 19 900 and
+        // 200 samples at 37.3x about 7 400: the clip reads them in pieces, each within the limit and
+        // each with the sample after its last position, so every sample plays what a request for
+        // that sample alone plays.
+        let limit = 1000;
+        let reads = std::cell::RefCell::new(Vec::new());
+        let counted = |m: i64, len: usize| {
+            reads.borrow_mut().push(len);
+            ramp(m, len)
+        };
+        for (speed, reverse) in [(1000.0, false), (1000.0, true), (37.3, false), (37.3, true)] {
+            let mut it = item(speed);
+            it.reverse = reverse;
+            reads.borrow_mut().clear();
+            let whole = raw_channels(&it, &counted, 0, 200, 48_000, 2, limit);
+            let at = format!("speed {speed}, reversed {reverse}, reads of {:?} frames", reads.borrow());
+            assert!(reads.borrow().len() > 1 && reads.borrow().iter().all(|&len| len <= limit), "{at}");
+            for k in 0..200 {
+                let alone = raw_channels(&it, &ramp, k as i64, 1, 48_000, 2, limit);
+                assert_eq!(whole[0][k], alone[0][0], "{at}: sample {k}");
+                assert_eq!(whole[1][k], alone[1][0], "{at}: sample {k}");
+            }
+        }
+        // forward at 100x, timeline sample k reads source sample 100 k
+        let whole = raw_channels(&item(1000.0), &ramp, 0, 200, 48_000, 2, limit);
+        for k in [0usize, 9, 10, 11, 150, 199] {
+            let want = (100 * k) as f32 / 1e6;
+            assert!((whole[0][k] - want).abs() < 1e-6, "sample {k}: {} vs {want}", whole[0][k]);
+        }
     }
 }
