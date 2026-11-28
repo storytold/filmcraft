@@ -407,9 +407,12 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
 
 @vertex
 fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((vi << 1u) & 2u) * 2.0 - 1.0;
-    let y = f32(vi & 2u) * 2.0 - 1.0;
-    return vec4(x, y, 0.0, 1.0);
+    var pos = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return vec4<f32>(pos[vi], 0.0, 1.0);
 }
 
 @fragment
