@@ -73,3 +73,4 @@ toml = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 craft-update = { workspace = true }
+craft-i18n = { workspace = true }

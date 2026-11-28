@@ -344,6 +344,8 @@ fn dynamic_names() -> Vec<String> {
     crate::panels::timeline::CLIP_MENU.iter().flat_map(|g| g.iter()).for_each(|(l, _)| push(&mut out, l));
     crate::panels::timeline::EDIT_POINT_TYPES.iter().for_each(|(l, ..)| push(&mut out, l));
     crate::panels::project::NEW_ITEMS.iter().for_each(|(l, _)| push(&mut out, l));
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::updates_ui::update_texts().into_iter().for_each(|t| push(&mut out, t));
     // section headers keyed by their English name (collapsed state), translated when drawn
     let sections = [
         // Color Grading

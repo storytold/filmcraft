@@ -97,6 +97,8 @@ craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs",
 craft-behavior = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
 # The runtime host (ui-egui `framework`): the app's host services, window services, binding overrides and theme mode.
 craft-host = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
+# The update dialogs' words in the interface language (ui-egui `updates_ui`).
+craft-i18n = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
 craft-window = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
 craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
 craft-theme = { git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
