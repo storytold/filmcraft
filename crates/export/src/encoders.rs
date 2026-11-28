@@ -59,7 +59,7 @@ impl VideoEncoder for UncompressedEncoder {
         // muxer cannot build for it is built here: reserved, data reference index, the fourcc's
         // pre_defined/reserved words, the quality words, the frame size and the fixed 32/32 dpi,
         // then `compressorname` and depth 24 with the -1 colour-table id. `colr` follows below.
-        let mut raw = Vec::with_capacity(78);
+        let mut raw = Vec::with_capacity(97);
         raw.extend_from_slice(&[0; 6]);
         raw.extend_from_slice(&1u16.to_be_bytes());
         // pre_defined, reserved, the two quality words
@@ -76,26 +76,25 @@ impl VideoEncoder for UncompressedEncoder {
         raw.extend_from_slice(&0xFFFFu16.to_be_bytes());
         // `colr` is written here too, not by the muxer: the payload-verbatim path above is the only
         // one this entry takes, so `SampleEntry::write` never reaches its own `write_color_box`.
-        // NCLX BT.709 limited range, which is what the samples are. 8 bytes of box header, the
-        // `nclx` kind, three u16 colour codes and the range flag: 19 bytes.
+        // RGB24 stores the input sRGB bytes directly. Only the 4:2:2 layouts use the limited-range
+        // BT.709 YCbCr conversion. The codes are from ITU-T H.273 (09/2023), Tables 2–4.
+        let (transfer, matrix, full_range) = if self.layout == UncompressedPixelFormat::Rgb24 { (13u16, 0u16, true) } else { (1, 1, false) };
+        // Box header, `nclx` kind, three u16 colour codes and the range flag.
         raw.extend_from_slice(&19u32.to_be_bytes());
         raw.extend_from_slice(b"colr");
         raw.extend_from_slice(b"nclx");
         raw.extend_from_slice(&1u16.to_be_bytes());
-        raw.extend_from_slice(&1u16.to_be_bytes());
-        raw.extend_from_slice(&1u16.to_be_bytes());
-        raw.push(0);
+        raw.extend_from_slice(&transfer.to_be_bytes());
+        raw.extend_from_slice(&matrix.to_be_bytes());
+        raw.push(u8::from(full_range) << 7);
         let mut e = SampleEntry::video(
             filmcraft_isobmff::FourCc(self.layout.fourcc()),
             filmcraft_isobmff::CodecConfig::Unknown { fourcc: filmcraft_isobmff::FourCc(self.layout.fourcc()), raw },
             self.w as u16,
             self.h as u16,
         );
-        // Uncompressed video carries no colour description of its own and the picture is BT.709
-        // limited range (every other format here signals it in the bitstream or its frame headers):
-        // the `colr` box is the only place a decoder can learn it.
         if let Some(v) = e.video.as_mut() {
-            v.color = Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 });
+            v.color = Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer, matrix, full_range });
         }
         e
     }

@@ -82,17 +82,24 @@ fn uncompressed_quicktime_export_roundtrip() {
         let file = filmcraft_isobmff::open(bytes.clone()).unwrap();
         let track = file.tracks.iter().find(|t| t.kind == filmcraft_isobmff::TrackKind::Video).unwrap();
         assert_eq!(std::str::from_utf8(&track.entries[0].format.0).unwrap(), tag);
-        assert_eq!(track.entries[0].video.as_ref().unwrap().depth, 24);
+        let video = track.entries[0].video.as_ref().unwrap();
+        assert_eq!(video.depth, 24);
         assert_eq!(track.samples.len(), 24, "{layout:?}");
         assert_eq!(track.samples[0].size as usize, layout.frame_bytes(w, h), "{layout:?}");
         assert!(r.bytes >= (layout.frame_bytes(w, h) * 24) as u64, "{layout:?}: {} bytes", r.bytes);
-        // and back: the matte in BT.709 (a 180-line picture would otherwise be guessed BT.601:
-        // uncompressed video has no in-band colour description, the `colr` box is the only one)
         let src = filmcraft_codecs::open_bytes(&name, bytes).unwrap();
         let info = src.info().video.clone().unwrap();
         assert_eq!(info.codec, codec);
         let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
-        assert_eq!(f.color.matrix, filmcraft_color::Matrix::Bt709, "{layout:?}");
+        if layout == UncompressedPixelFormat::Rgb24 {
+            // The byte-for-byte RGB layout has no YCbCr matrix or studio-swing scaling.
+            assert_eq!(video.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 13, matrix: 0, full_range: true }));
+            assert_eq!(info.color.range, filmcraft_color::Range::Full);
+        } else {
+            // The `colr` box signals BT.709 for 4:2:2. At 180 lines the decoder would default to BT.601.
+            assert_eq!(f.color.matrix, filmcraft_color::Matrix::Bt709, "{layout:?}");
+            assert_eq!(f.color.range, filmcraft_color::Range::Limited, "{layout:?}");
+        }
         let px = f.to_rgba8();
         assert!(px[0] > 240 && px[1] < 16 && px[2] < 16 && px[3] == 255, "{layout:?}: {:?}", &px[..4]);
     }
