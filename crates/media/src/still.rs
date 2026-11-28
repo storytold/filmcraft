@@ -1,4 +1,4 @@
-//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw, PSD) as media
+//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw, PSD, HEIF / HEIC) as media
 //! sources. Animated PNG and GIF files open as movies instead ([`crate::animated`]); here they would
 //! show their first frame.
 //!
@@ -19,6 +19,7 @@ use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result,
 pub mod dng;
 pub mod exr;
 pub mod hdr;
+pub mod heif;
 pub mod psd;
 mod ycbcr_tiff;
 
@@ -30,6 +31,7 @@ pub fn sniff(name: &str, b: &[u8]) -> bool {
     crate::dpx::sniff(b)
         || hdr::sniff(b)
         || psd::sniff(b)
+        || heif::sniff(b)
         || crate::tga::sniff(name, b)
         || b.starts_with(b"\x89PNG")
         || b.starts_with(&[0xFF, 0xD8, 0xFF])
@@ -64,6 +66,9 @@ pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
     }
     if psd::sniff(bytes) {
         return psd::decode(name, bytes);
+    }
+    if heif::sniff(bytes) {
+        return heif::decode(name, bytes);
     }
     if ycbcr_tiff::sniff(bytes) {
         return ycbcr_tiff::decode(name, bytes);

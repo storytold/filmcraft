@@ -86,6 +86,8 @@ craft-media-source = { version = "0.1.0", git = "https://github.com/storytold/cr
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
 # The video codecs (including H.264 encode, APV encode, ProRes, DNxHD / DNxHR and decoders), on the same commit as craft-media.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
+# HEIF / HEIC photos (iPhone, Mac): pure-Rust container and HEVC still decoder, panic-guarded
+craft-heif = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }
 craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248" }

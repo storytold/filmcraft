@@ -241,7 +241,7 @@ pub(crate) fn extension(path: &str) -> String {
 pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
     match extension(path).as_str() {
         "wav" | "aif" | "aiff" | "mp3" | "aac" | "m4a" | "flac" | "ogg" | "opus" | "bwf" => MediaKind::AudioOnly,
-        "png" | "jpg" | "jpeg" | "tif" | "tiff" | "psd" | "bmp" | "gif" | "webp" | "exr" | "dpx" | "tga" => MediaKind::Still,
+        "png" | "jpg" | "jpeg" | "tif" | "tiff" | "psd" | "bmp" | "gif" | "webp" | "exr" | "dpx" | "tga" | "heic" | "heif" | "hif" => MediaKind::Still,
         _ => MediaKind::Movie,
     }
 }

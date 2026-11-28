@@ -24,12 +24,15 @@ craft-media = { workspace = true }
 craft-media-source = { workspace = true }
 filmcraft-dng = { workspace = true }
 craft-dpx = { workspace = true }
+craft-heif = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
 
 [dev-dependencies]
+# synthetic lossless HEIF files for the HEIC import tests
+craft-heif = { workspace = true, features = ["testdata"] }
 filmcraft-testkit = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 # APNG fixtures for the animated-image tests (the image crate does not encode APNG)

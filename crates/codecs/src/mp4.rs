@@ -93,7 +93,8 @@ pub struct Mp4Source {
 }
 
 pub fn sniff(b: &[u8]) -> bool {
-    b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip")
+    // a HEIF / HEIC photo starts with an `ftyp` too: it is a still, for the still decoder
+    b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip") && !filmcraft_media::still::heif::sniff(b)
 }
 
 /// Audio packet start positions in source sample frames at `rate`: the running total of the sample

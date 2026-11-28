@@ -31,6 +31,8 @@ web-time = "1"
 symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp1", "mp2", "mp3", "flac", "alac", "pcm", "wav", "aiff", "ogg", "vorbis", "isomp4"] }
 
 [dev-dependencies]
+# synthetic HEIF photos: the MP4 openers must leave them to the still decoder
+craft-heif = { workspace = true, features = ["testdata"] }
 filmcraft-testkit = { workspace = true }
 serde_json = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
