@@ -2976,6 +2976,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "symphonia 0.5.5",
+ "tempfile",
  "thiserror 2.0.21",
  "web-time",
 ]
