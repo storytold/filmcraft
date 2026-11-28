@@ -1092,6 +1092,92 @@ fn merge(v: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 }
 
 #[test]
+fn speed_change_keeps_clip_edges_on_frames() {
+    // V1: a [0,30), b [30,60). At 70% a's 30 source frames last 42.86 frames: a takes 42 whole
+    // frames, as the Speed/Duration dialog reads it, and the ripple moves b by whole frames.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 30, 0);
+    fx.put(v1, 30, 30, 0);
+    let mut n = fx.next;
+    set_speed(&mut fx.seq, a, 0.7, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    let items = &fx.seq.video_tracks[0].items;
+    assert_eq!((items[0].start, items[0].duration, items[1].start), (f(0), f(42), f(42)));
+    assert_eq!(items[0].speed, 0.7);
+    // other lengths and speeds, with and without a ripple: every edge stays on a frame, and the
+    // clip reads no further into its source than before (at 1.00001, 30 frames would read past it)
+    for (len, speed) in [(1, 0.7), (7, 0.45), (10, 0.333), (13, 1.5), (30, 2.5), (24, 3.0), (30, 1.00001)] {
+        for ripple in [false, true] {
+            let mut fx = Fx::new();
+            let v1 = fx.v(0);
+            let a = fx.put(v1, 0, len, 0);
+            fx.put(v1, 100, 10, 0);
+            let mut n = fx.next;
+            set_speed(&mut fx.seq, a, speed, false, ripple, &mut Fx::ctx(&mut n)).unwrap();
+            for it in &fx.seq.video_tracks[0].items {
+                assert_eq!((R.snap(it.start), R.snap(it.end())), (it.start, it.end()), "{len} frames at {speed}, ripple {ripple}");
+                assert!(it.duration >= f(1), "{len} frames at {speed}, ripple {ripple}");
+            }
+            let (_, it) = fx.seq.find_item(a).unwrap();
+            assert!(it.source_out() <= f(len), "{len} frames at {speed}, ripple {ripple}");
+        }
+    }
+}
+
+#[test]
+fn speed_change_at_37_fps_keeps_clip_edges_on_frames() {
+    // At 37 fps a frame is 6_865_297_297.3 ticks, so n frames counted from frame 1 can be a tick
+    // shorter than the first n frames. V1: a plays frames 1 to 3, b starts at frame 3. At 45% a's
+    // 2 frames last 4.44 frames: a takes 4, and both a's end and b's new start are frame 5.
+    let r = FrameRate { num: 37, den: 1 };
+    let mut fx = Fx::new();
+    fx.seq.settings.frame_rate = r;
+    let v1 = fx.v(0);
+    let mut a = fx.item(0, 0, 0);
+    (a.start, a.duration) = (r.tick_of(1), r.tick_of(3) - r.tick_of(1));
+    let mut b = fx.item(0, 0, 0);
+    (b.start, b.duration) = (r.tick_of(3), r.tick_of(5) - r.tick_of(3));
+    let (a_id, b_id) = (a.id, b.id);
+    let mut n = fx.next;
+    overwrite(&mut fx.seq, vec![(v1, a), (v1, b)], &mut Fx::ctx(&mut n)).unwrap();
+    set_speed(&mut fx.seq, a_id, 0.45, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    let (_, a) = fx.seq.find_item(a_id).unwrap();
+    assert_eq!((a.start, a.end()), (r.tick_of(1), r.tick_of(5)));
+    let (_, b) = fx.seq.find_item(b_id).unwrap();
+    assert_eq!(b.start, r.tick_of(5));
+}
+
+#[test]
+fn a_duration_typed_in_the_speed_dialog_applies_exactly() {
+    // The Speed/Duration dialog sends a typed Duration as the speed that gives it, length × speed
+    // × 100 / typed length, and the command divides by 100. For each (clip length, earlier speed,
+    // typed length) the clip must take exactly the typed length. In the 2.4-hour and 8.9-hour
+    // cases float rounding puts the exact length one and two ticks short of the typed frame.
+    for (len, first, typed) in [
+        (30, 1.0, 43),
+        (24, 1.0, 7),
+        (100, 1.0, 333),
+        (1, 1.0, 97),
+        (43, 25.0 / 43.0, 100),
+        (30, 0.7, 40),
+        (30, 2.5, 13),
+        (211_253, 1.0, 587_933),
+        (768_759, 1.0, 1_184_085),
+    ] {
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let a = fx.put(v1, 0, len, 0);
+        let mut n = fx.next;
+        set_speed(&mut fx.seq, a, first, false, true, &mut Fx::ctx(&mut n)).unwrap();
+        let (dur, was) = fx.seq.find_item(a).map(|(_, it)| (it.duration, it.speed)).unwrap();
+        let speed = dur.0 as f64 * was * 100.0 / f(typed).0 as f64 / 100.0;
+        set_speed(&mut fx.seq, a, speed, false, true, &mut Fx::ctx(&mut n)).unwrap();
+        let (_, it) = fx.seq.find_item(a).unwrap();
+        assert_eq!(it.duration, f(typed), "{len} frames at {first}, typed as {typed}");
+    }
+}
+
+#[test]
 fn unused_kind_import() {
     let _ = TrackKind::Video;
 }
