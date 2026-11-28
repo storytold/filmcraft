@@ -1388,10 +1388,35 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
+    // #4891: the bar only gets the width the header leaves it, which on a narrow window
+    // is less than the nine titles need. Titles that do not fit go behind an overflow
+    // button at the end of the bar instead of running on underneath what follows it.
+    let budget = ui.available_width();
+    let mut st = ui.style().as_ref().clone();
+    crate::theme::menu_style(&mut st);
+    let font = st.text_styles[&egui::TextStyle::Button].clone();
+    let pad = st.spacing.button_padding.x * 2.0;
+    let gap = st.spacing.item_spacing.x;
+    let title_w = |text: &str| ui.painter().layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE).size().x + pad;
+    let widths: Vec<f32> = MENUS.iter().map(|top| title_w(app.ui.language.tr(top))).collect();
+    let total: f32 = widths.iter().sum::<f32>() + gap * (MENUS.len() - 1) as f32;
+    let mut visible = MENUS.len();
+    if total > budget {
+        let mut used = title_w("»") + gap;
+        visible = 0;
+        for w in &widths {
+            let add = if visible == 0 { *w } else { *w + gap };
+            if visible > 0 && used + add > budget {
+                break;
+            }
+            used += add;
+            visible += 1;
+        }
+    }
     // The bar's titles and their menus share one size and colour, as in a native menu bar.
     egui::MenuBar::new().style(crate::theme::menu_style).config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
-        let mut titles = Vec::with_capacity(MENUS.len());
-        for top in MENUS {
+        let mut titles = Vec::with_capacity(visible + 1);
+        for top in &MENUS[..visible] {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
             let r = ui.menu_button(app.ui.language.tr(top), |ui| {
                 ui.set_min_width(260.0);
@@ -1401,6 +1426,22 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
             });
             app.auto.add(&format!("menu.{top}"), r.response.rect, top);
+            titles.push(r.response);
+        }
+        if visible < MENUS.len() {
+            let r = ui.menu_button("»", |ui| {
+                for top in &MENUS[visible..] {
+                    let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
+                    ui.menu_button(app.ui.language.tr(top), |ui| {
+                        ui.set_min_width(260.0);
+                        if mine.is_empty() {
+                            ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
+                        }
+                        menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
+                    });
+                }
+            });
+            app.auto.add("menu.overflow", r.response.rect, "More menus");
             titles.push(r.response);
         }
         switch_on_hover(ui.ctx(), &titles);
