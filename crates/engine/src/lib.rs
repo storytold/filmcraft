@@ -725,21 +725,27 @@ impl Session {
         !self.stepped.is_empty() || self.export_queue.is_active()
     }
 
-    /// Start auto-save and the crash-recovery journal (native frontends). Loads preferences from
-    /// the data directory and finds unsaved changes left by sessions that died
-    /// ([`Session::recovery_candidates`]).
-    pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
-        let prefs_path = cfg.data_dir.join("preferences.json");
-        self.prefs = autosave::Preferences::load(&prefs_path);
+    /// Load and apply saved preferences, and persist subsequent preference edits at `path`.
+    /// This does not start auto-save or scan crash-recovery journals, so headless clients can
+    /// share the desktop's settings without managing its recovery sessions.
+    pub fn load_preferences(&mut self, path: &std::path::Path) {
+        self.prefs = autosave::Preferences::load(path);
         // a restart restores the persisted Selection Follows Playhead toggle (#3089)
         self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
+        self.prefs_path = Some(path.to_path_buf());
+        self.apply_media_cache();
+    }
+
+    /// Start auto-save and the crash-recovery journal (native frontends). Loads preferences from
+    /// the data directory and finds unsaved changes left by sessions that died
+    /// ([`Session::recovery_candidates`]).
+    pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
+        self.load_preferences(&cfg.data_dir.join("preferences.json"));
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
-        self.prefs_path = Some(prefs_path);
-        self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
         Ok(())
@@ -801,8 +807,13 @@ impl Session {
         self.sync_persistence();
     }
 
-    /// Replace preferences (persisting them and updating the worker).
+    /// Persist preferences before applying them to the session and worker. A failed save leaves
+    /// the old runtime state intact, so callers comparing against `prefs` still retry the edit.
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
+        if let Some(path) = &self.prefs_path {
+            // Cache cleanup can delete files: do not apply any setting until persistence succeeds.
+            p.save(path)?;
+        }
         let cache_changed = self.prefs.media_cache != p.media_cache;
         self.prefs = p;
         // the session mirrors the persisted Selection Follows Playhead toggle (#3089)
@@ -818,10 +829,7 @@ impl Session {
         if let Some(w) = &self.persistence {
             w.set_prefs(self.prefs.auto_save.clone());
         }
-        match &self.prefs_path {
-            Some(path) => self.prefs.save(path),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
     /// Keep render previews next to the saved project (moves an unsaved project's previews).

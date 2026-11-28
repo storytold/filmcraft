@@ -15,6 +15,55 @@ fn json_out(o: &Output) -> Value {
 }
 
 #[test]
+fn preferences_are_loaded_applied_and_persisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_str().unwrap();
+    let path = dir.path().join("preferences.json");
+    let saved = br#"{"playback":{"hardwareDecoding":"off"}}"#;
+    std::fs::write(&path, saved).unwrap();
+
+    assert_eq!(json_out(&cli(&["--data-dir", data, "exec", "prefs.get", "key=playback.hardwareDecoding"])), "off");
+    let stats = json_out(&cli(&["--data-dir", data, "exec", "perf.stats"]));
+    assert_eq!(stats["decode"]["hardware"]["enabled"], false, "the saved setting must reach the decoder registry");
+    assert_eq!(std::fs::read(&path).unwrap(), saved, "loading does not rewrite preferences");
+    assert!(!dir.path().join("Recovery").exists(), "headless preference loading must not start recovery journaling");
+
+    json_out(&cli(&["--data-dir", data, "exec", "prefs.set", "key=playback.hardwareDecoding", "value=auto"]));
+    assert_eq!(json_out(&cli(&["--data-dir", data, "exec", "prefs.get", "key=playback.hardwareDecoding"])), "auto");
+    let stats = json_out(&cli(&["--data-dir", data, "exec", "perf.stats"]));
+    assert_eq!(stats["decode"]["hardware"]["enabled"], true);
+
+    json_out(&cli(&["--data-dir", data, "exec", "prefs.set", "key=playback.hardwareDecoding", "value=off"]));
+    json_out(&cli(&["--data-dir", data, "exec", "prefs.reset", "category=playback"]));
+    assert_eq!(json_out(&cli(&["--data-dir", data, "exec", "prefs.get", "key=playback.hardwareDecoding"])), "auto");
+}
+
+#[test]
+fn preferences_use_the_default_data_directory_unless_overridden() {
+    let default_dir = tempfile::tempdir().unwrap();
+    std::fs::write(default_dir.path().join("preferences.json"), br#"{"playback":{"hardwareDecoding":"off"}}"#).unwrap();
+    let explicit_dir = tempfile::tempdir().unwrap();
+    for (args, expected) in [
+        (vec!["exec", "prefs.get", "key=playback.hardwareDecoding"], "off"),
+        (vec!["--data-dir", explicit_dir.path().to_str().unwrap(), "exec", "prefs.get", "key=playback.hardwareDecoding"], "auto"),
+    ] {
+        let out = crate::filmcraft_command().env("FILMCRAFT_DATA_DIR", default_dir.path()).args(args).output().unwrap();
+        assert_eq!(json_out(&out), expected);
+    }
+    assert!(!explicit_dir.path().join("preferences.json").exists(), "reading defaults must not create a preferences file");
+}
+
+#[test]
+fn preferences_write_failure_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory at the file's destination fails writes on every platform, even as root.
+    std::fs::create_dir(dir.path().join("preferences.json")).unwrap();
+    let out = cli(&["--data-dir", dir.path().to_str().unwrap(), "exec", "prefs.set", "key=playback.hardwareDecoding", "value=off"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("saving preferences"));
+}
+
+#[test]
 fn help_and_usage_errors() {
     let h = cli(&["help"]);
     assert!(h.status.success());

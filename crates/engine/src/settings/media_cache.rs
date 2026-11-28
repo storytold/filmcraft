@@ -169,11 +169,14 @@ impl Session {
     /// Note a project file as the most recent one (General ▸ At Startup ▸ Open Most Recent).
     pub fn note_recent_project(&mut self) {
         let Some(p) = self.path.clone() else { return };
-        if self.prefs.general.recent_projects.first() == Some(&p) {
-            return;
+        self.prefs.note_recent(&p);
+        if let Some(path) = &self.prefs_path {
+            // Do not save the session's stale preference snapshot or reapply another session's
+            // settings as a side effect of opening a project. Only the recent list is refreshed.
+            match self.prefs.save_recent_project(path, &p) {
+                Ok(recent) => self.prefs.general.recent_projects = recent,
+                Err(e) => self.log.push(crate::panels::Level::Warning, "preferences", format!("Could not save recent projects: {e}")),
+            }
         }
-        let mut next = self.prefs.clone();
-        next.note_recent(&p);
-        let _ = self.set_prefs(next);
     }
 }

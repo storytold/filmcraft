@@ -483,11 +483,51 @@ impl Preferences {
         fs::read(path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).map(Self::from_value).unwrap_or_default()
     }
 
+    /// Serialize preference writes with recent-project read/modify/write operations. Explicit
+    /// preference saves replace the snapshot; a recent-project update changes only that field.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        let _lock = Self::lock_file(path)?;
+        filmcraft_format::atomic_write(path, &serde_json::to_vec_pretty(self).map_err(io::Error::other)?)
+    }
+
+    /// Update only the recent-project list in the latest document, preserving even fields this
+    /// version does not recognize. A bad/unreadable file is left intact, never replaced by defaults.
+    pub(crate) fn save_recent_project(&self, path: &Path, project: &str) -> io::Result<Vec<String>> {
+        let _lock = Self::lock_file(path)?;
+        // Preferences are small; an incidental recent-project update must not read an unbounded file.
+        let mut document = match filmcraft_media::reader::read_regular_file_bounded(path, 16 * 1024 * 1024) {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => self.to_value(),
+            Err(e) => return Err(e),
+        };
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "preferences and their general category must be JSON objects");
+        let root = document.as_object_mut().ok_or_else(invalid)?;
+        let general = root.entry("general").or_insert_with(|| json!({})).as_object_mut().ok_or_else(invalid)?;
+        let mut current = Self::from_value(json!({"general": general}));
+        current.note_recent(project);
+        let recent = current.general.recent_projects;
+        general.insert("recentProjects".into(), json!(&recent));
+        filmcraft_format::atomic_write(path, &serde_json::to_vec_pretty(&document).map_err(io::Error::other)?)?;
+        Ok(recent)
+    }
+
+    /// Lock a stable sidecar: atomic saves replace the preferences inode. Keep the sidecar after
+    /// closing so two writers cannot lock different files. Fail on contention/unsupported locks
+    /// instead of blocking the UI or risking a lost update; the caller can retry the save.
+    fn lock_file(path: &Path) -> io::Result<File> {
         if let Some(d) = path.parent() {
             fs::create_dir_all(d)?;
         }
-        filmcraft_format::atomic_write(path, &serde_json::to_vec_pretty(self).unwrap_or_default())
+        let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "preferences path needs a file name"))?;
+        let mut lock_name = std::ffi::OsString::from(".");
+        lock_name.push(name);
+        lock_name.push(".lock");
+        let file = File::options().create(true).truncate(false).read(true).write(true).open(path.with_file_name(lock_name))?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(fs::TryLockError::WouldBlock) => Err(io::Error::new(io::ErrorKind::WouldBlock, "preferences are being saved by another process; try again")),
+            Err(fs::TryLockError::Error(e)) => Err(e),
+        }
     }
 }
 
