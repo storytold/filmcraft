@@ -455,6 +455,22 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
     panic.downcast_ref::<String>().map(String::as_str).or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("no message")
 }
 
+/// `--recover`: recover the first project waiting, if any. The error of a recovery that failed,
+/// which can be after it opened the project.
+fn recover_first(session: &mut Session) -> Option<String> {
+    let id = session.recovery_candidates().first()?.id.clone();
+    match session.execute("file.recover", json!({"id": id})) {
+        Ok(r) => {
+            log::info!("recovered {r}");
+            None
+        }
+        Err(e) => {
+            log::error!("recovery failed: {e}");
+            Some(e.to_string())
+        }
+    }
+}
+
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
 fn native_options(agent: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
@@ -532,10 +548,19 @@ fn app_creator(
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);
+        let home = args::starts_on_home(&files, startup_flag, &session.prefs.general.at_startup, session.prefs_path.as_deref());
+        // The file is what makes the next launch a later run, whether or not a setting changes (#2421)
+        if let Some(path) = session.prefs_path.as_deref()
+            && !path.exists()
+            && let Err(e) = session.prefs.save(path)
+        {
+            log::warn!("could not write {}: {e}", path.display());
+        }
         if let Some(p) = project {
             if let Err(e) = session.execute("file.open", json!({"path": p})) {
                 log::error!("{e}");
             }
+        } else if home {
         } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
             // Settings ▸ General ▸ At Startup ▸ Open Most Recent
             let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
@@ -556,13 +581,11 @@ fn app_creator(
         if !media.is_empty() {
             let _ = session.execute("file.import", json!({"paths": media}));
         }
-        if recover == Some(true) && !session.recovery_candidates().is_empty() {
-            let id = session.recovery_candidates()[0].id.clone();
-            match session.execute("file.recover", json!({"id": id})) {
-                Ok(r) => log::info!("recovered {r}"),
-                Err(e) => log::error!("recovery failed: {e}"),
-            }
-        }
+        let before_recovery = session.document_epoch;
+        let recovery_error = if recover == Some(true) { recover_first(&mut session) } else { None };
+        // a project the recovery installed, also when it then failed to confirm its new copy or
+        // to remove the old one
+        let recovered = session.document_epoch != before_recovery;
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(session_notice.is_none());
         if let Some(health) = session_notice {
@@ -580,6 +603,15 @@ fn app_creator(
                 notice.shown = Some(health.shown.clone());
                 app.notice = Some(notice);
             }
+        }
+        // shown, not only logged: a recovery can open the project and still fail to confirm its
+        // new copy, and the message says the original copy was kept, before anyone discards it
+        if let Some(e) = recovery_error {
+            app.ui.status = e;
+        }
+        // Home only when `--recover` did not bring a project back, saved to a file or not
+        if home && !recovered {
+            app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
         }
         app.graphics_notice = notice;
         if recover == Some(false) {
