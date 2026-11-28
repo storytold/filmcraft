@@ -754,7 +754,7 @@ fn speed_edits_preserve_one_frame_minimum() {
 /// The Duration the dialog shows for a typed speed is the length the clip gets.
 #[test]
 fn speed_readout_matches_the_applied_duration() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let original = d.v1(0);
     let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
     d.exec("timeline.trim", json!({"clip": original.id.0, "edge": "out", "deltaFrames": 30 - rate.frame_at(original.duration)}));
