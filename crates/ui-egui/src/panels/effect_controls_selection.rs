@@ -55,6 +55,8 @@ struct State {
 pub(crate) struct Interaction {
     state: State,
     points: Vec<Point>,
+    /// The timeline times of every keyframe drawn in the lane this frame, disabled rows' included (a Shift scrub snaps to them).
+    drawn: Vec<Tick>,
     area: Rect,
     background: Response,
     cancelled: bool,
@@ -103,7 +105,33 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
     }
 }
 
+/// Where a ruler scrub with Shift held lands: on the nearest of `targets` within 8 px of the pointer time `tick`, like a keyframe
+/// dragged with Shift (#2441). Otherwise `fallback` (the frame-snapped time).
+pub(crate) fn snap_scrub(tick: Tick, targets: &[Tick], pixels_per_tick: f64, fallback: Tick) -> Tick {
+    let mut best: Option<(f64, Tick)> = None;
+    for target in targets {
+        let distance = ((*target - tick).0 as f64 * pixels_per_tick).abs();
+        if distance <= 8.0 && best.is_none_or(|b| distance < b.0) {
+            best = Some((distance, *target));
+        }
+    }
+    best.map_or(fallback, |b| b.1)
+}
+
 impl Interaction {
+    /// The timeline times of the keyframes drawn this frame, which a Shift scrub snaps to: a disabled row's keyframes too, which
+    /// are drawn but can't be selected or dragged.
+    pub(crate) fn key_times(&self) -> &[Tick] {
+        &self.drawn
+    }
+
+    /// Records a keyframe drawn at `at` outside its row (on its value graph) at timeline `time`, when it shows in the lane.
+    pub(crate) fn drawn_key(&mut self, ui: &egui::Ui, time: Tick, at: Pos2) {
+        if self.area.contains(at) && ui.clip_rect().contains(at) {
+            self.drawn.push(time);
+        }
+    }
+
     /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
     /// gestures as UI-only previews.
     pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
@@ -141,7 +169,7 @@ impl Interaction {
                 None => {}
             }
         }
-        Self { state, points: Vec::new(), area, background, cancelled }
+        Self { state, points: Vec::new(), drawn: Vec::new(), area, background, cancelled }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -170,8 +198,12 @@ impl Interaction {
         }
         let time = super::timeline_time_of(it, key.time);
         let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
+        let drawn = self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center());
+        if drawn {
+            self.drawn.push(time);
+        }
         // A disabled row's keyframes (Scale Width under Uniform Scale) can't be marquee-selected either.
-        if ui.is_enabled() && self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
+        if ui.is_enabled() && drawn {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }
         if !self.cancelled && response.drag_started_by(egui::PointerButton::Primary) {
@@ -275,6 +307,17 @@ pub(crate) fn paint(painter: &egui::Painter, rect: Rect, interp: Interpolation, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shift_scrub_snaps_to_a_keyframe_within_reach_only() {
+        let keys = [Tick(1000), Tick(5000)];
+        assert_eq!(snap_scrub(Tick(1030), &keys, 0.1, Tick(1030)), Tick(1000));
+        assert_eq!(snap_scrub(Tick(1200), &keys, 0.1, Tick(1190)), Tick(1190));
+        assert_eq!(snap_scrub(Tick(4950), &keys, 0.1, Tick(4950)), Tick(5000));
+        assert_eq!(snap_scrub(Tick(3000), &[], 0.1, Tick(2990)), Tick(2990));
+        // the reach is measured from the pointer time, not from the frame-snapped fallback
+        assert_eq!(snap_scrub(Tick(1070), &keys, 0.1, Tick(1100)), Tick(1000));
+    }
+
     #[test]
     fn keyframe_timeline_coordinates_follow_trim_speed_and_reverse() {
         let mut session = filmcraft_engine::Session::default();
