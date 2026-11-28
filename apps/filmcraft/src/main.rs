@@ -413,6 +413,26 @@ fn main() -> eframe::Result {
     started
 }
 
+/// The plug-in host (craft-abi 1). Plug-ins live in `<data dir>/Plug-ins`; without a data directory
+/// they are kept for this run only. A failure leaves the app running without plug-ins.
+fn start_plugins(session: &mut Session, data_dir: Option<std::path::PathBuf>) -> Option<std::sync::Arc<filmcraft_plugins::PluginHost>> {
+    let cfg = filmcraft_plugins::HostConfig {
+        store_dir: data_dir.map(|d| d.join("Plug-ins")),
+        link: filmcraft_plugins::host::system_link_client(),
+        ..Default::default()
+    };
+    match filmcraft_plugins::PluginHost::start(session, cfg) {
+        Ok(host) => {
+            host.set_file_picker(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft plug-in", &["wasm"]).pick_file()));
+            Some(host)
+        }
+        Err(e) => {
+            log::error!("plug-ins are unavailable: {e}");
+            None
+        }
+    }
+}
+
 /// Set for a FilmCraft started again after its graphics panicked (#2553), so that one does not
 /// start a third.
 const RELAUNCHED: &str = "FILMCRAFT_GRAPHICS_RELAUNCHED";
@@ -523,6 +543,7 @@ fn app_creator(
         );
         let mut session = Session::default();
         filmcraft_link::commands::install(&mut session);
+        let plugins = start_plugins(&mut session, data_dir.clone().or_else(default_data_dir));
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);
             cfg.local_offset = local_offset;
@@ -648,10 +669,15 @@ fn app_creator(
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+        let frame_plugins = plugins.clone();
         app.hooks.per_frame = Some(Box::new(move |ctx, session| {
             filmcraft_link::ui::show_translated(ctx, session, &|text| filmcraft_ui_egui::i18n::t(text).to_string());
+            if let Some(host) = &frame_plugins {
+                filmcraft_plugins::ui::frame(host, ctx, session);
+            }
         }));
-        app.hooks.dialog_label = Some(Box::new(filmcraft_link::prompt::dialog_name));
+        app.hooks.dialog_label =
+            Some(Box::new(move || filmcraft_link::prompt::dialog_name().or_else(|| plugins.as_ref().and_then(|host| host.dialog_label()))));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         app.hooks.clipboard_text = Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok()));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).

@@ -7,8 +7,6 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-11-15 · **Last updated:** 2026-11-15 · **Change:** minor (FilmCraft v0.20.0 and v0.20.1 (Flatpak updater fix); ProRes decode and encode, MP3 decode and encode, VP8 and MJPEG decode, Ogg audio, containers, exact time formats and EDL reading and writing now come from craft-libs; export names the encoder that ran and when hardware encoding fell back to software (#3952), APV 4:4:4 exports carry full-resolution chroma (#4656) and resampled audio no longer depends on where a read starts (#4710); narration ships natural voices in official packages (#2318, #3773); the scrub playhead no longer waits for the audio device (#2633); graphics start tries each mode in a child process and falls back to the integrated GPU when the chosen adapter cannot draw to the window (#2553, #2581, #2634); Project panel Reveal in Project scrolls to the source clip and restores a sideways-scrolled list (#4760); update prompts open release notes through the desktop host and the updater reports installing, ready, installed and failed; project files are capped at 256 MiB on every read; interchange, still and animated decode, audio buffers, mixer graphs, AV1/HEVC/MPEG-2 decoding, pin chains and CFB storages take bounded work; screenshots, session logs and voice-over takes use private temp folders; CI runs a nightly release dry run, clippy and tests for Windows-only crates, and Harden-Runner on every job; readiness estimates unchanged) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
-
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
@@ -56,7 +54,7 @@ Method and calibration: [docs/target-app-parity.md](docs/target-app-parity.md#th
 | Performance | ~55% | 60–120 | [performance.md](docs/performance.md) |
 | Stability | ~45% | 60–120 | [gaps.md G4](docs/gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests) |
 | Platforms (macOS, Windows, Linux, FreeBSD, web) | ~60% | 50–90 | [gaps.md G9](docs/gaps.md#g9-windows-and-linux-at-run-time) |
-| Plugins and ecosystem | ~5% | 200–400 | [gaps.md G11](docs/gaps.md#g11-no-plugin-hosting) |
+| Plugins and ecosystem | ~5% | 200–400 | [gaps.md G11](docs/gaps.md#g11-no-native-plugin-hosting) |
 | AI features | ~25% | 150–300 | [gaps.md G12](docs/gaps.md#g12-ai-features) |
 
 ## Features

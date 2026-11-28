@@ -16,20 +16,12 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
-/// The narrowest search field `widgets::search_field` lays out without a negative inner width
-/// (22 points of icon and 8 of margin).
-const SEARCH_FIELD_MIN_WIDTH: f32 = 30.0;
-
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    // next's dock can squeeze a group below the old dock's minimum (a tiny window), so the row
-    // never gets a negative width; the search field needs room for its icon and margins
-    let sr = Rect::from_min_size(rect.min + vec2(8.0, 6.0), vec2((rect.width() - 16.0).max(0.0), 22.0));
+    let sr = Rect::from_min_size(rect.min + vec2(8.0, 6.0), vec2(rect.width() - 16.0, 22.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
     let mut q = app.ui.effects_search.clone();
-    if sr.width() >= SEARCH_FIELD_MIN_WIDTH {
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
-        crate::widgets::search_field(&mut child, &mut q, tl!("Search effects"), sr.width(), &t);
-    }
+    crate::widgets::search_field(&mut child, &mut q, tl!("Search effects"), sr.width(), &t);
     app.ui.effects_search = q.clone();
     let body = Rect::from_min_max(pos2(rect.min.x, sr.max.y + 6.0), rect.max);
     // wide panel: the tree on the left, the Color Grading Presets thumbnail grid on the right
@@ -41,7 +33,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("fx-body"));
     bui.set_clip_rect(body);
     let filter = q.trim();
-    let defs = filmcraft_project::effect_defs();
+    let plugin_defs = filmcraft_project::plugin_effect_defs();
+    let defs: Vec<_> = filmcraft_project::effect_defs().iter().chain(plugin_defs.iter().copied()).collect();
     // folder tree: top-level categories in Premiere's order
     let tops = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS;
     let mut apply: Option<String> = None;
@@ -81,7 +74,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            let mut items: Vec<_> = defs.iter().filter(|d| d.category.first() == Some(&top)).filter(|d| matches_effect(d, filter)).collect();
+            let mut items: Vec<_> = defs.iter().copied().filter(|d| d.category.first() == Some(&top)).filter(|d| matches_effect(d, filter)).collect();
             // Premiere lists effect folders and effects alphabetically (obsolete ones last)
             if top == "Video Effects" || top == "Legacy" {
                 items.sort_by_key(|d| (d.category.get(1) == Some(&"Obsolete"), d.category.get(1).copied().unwrap_or(""), d.name.to_ascii_lowercase()));

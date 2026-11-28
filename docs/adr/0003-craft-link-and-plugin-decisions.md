@@ -1,12 +1,13 @@
-# ADR 0003: Craft Link decisions
+# ADR 0003: Craft Link and plug-in host decisions
 
 - **Status:** proposed, with [PR #4351](https://github.com/storytold/filmcraft/pull/4351) (2026-11-09)
-- **Code:** `crates/link`, `crates/engine`
+- **Code:** `crates/link`, `crates/plugins`, `crates/media`, `crates/codecs`
 
 ## Context
 
-PR #4351 adds Edit in EffectCraft (Craft Link, `crates/link`). Two choices in it shape how the rest of the
-app behaves. This ADR records them and the alternatives that the code or the commit history shows. The user flow is in
+PR #4351 adds Edit in EffectCraft (Craft Link, `crates/link`) and a host for WebAssembly plug-ins
+(`crates/plugins`). Four choices in it shape how the rest of the app behaves. This ADR records them and
+the alternatives that the code or the commit history shows. The user flow is in
 [craft-link.md](../craft-link.md).
 
 ## Decisions
@@ -45,9 +46,43 @@ Alternatives considered:
 The cost is order. An effect that ran on the inner clip before EffectCraft's motion and opacity now runs
 after the whole EffectCraft result.
 
+### 3. Restore the document when a plug-in call faults
+
+A plug-in changes the document only through `cmd.execute`. The first command of a guest call takes a
+`Checkpoint`. When the call faults, the bridge puts it back. The checkpoint holds the project, the editor
+state, the undo and redo stacks, the command journal, the path the document saves to, the media pool with
+the document of each stored media path, and the saved revision, so a dirty document comes back dirty. A
+rollback runs only while the session revision is still the one the plug-in's last command left. Otherwise
+the plug-in's edits stay and the user gets a message, so the rollback never undoes work that is not the
+plug-in's.
+
+The checkpoint cannot undo a file a command wrote or a job it started.
+
+Alternative considered: a narrower checkpoint of the project, state, history and journal. That was the
+first version. It left a changed save path, a swapped or cleared media pool and a wrong saved revision
+behind after `file.newProject`, `file.open` and `file.newProjectFromTemplate`. The checkpoint grew to cover
+each of them.
+
+### 4. `Opener` is a shared closure, so each host owns its format book
+
+`filmcraft_media::Opener` is `Arc<dyn Fn(&str, Arc<[u8]>) -> Option<Result<SharedSource>> + Send + Sync>`.
+`OpenerFn` keeps the plain function shape and `opener_of` wraps one as an `Opener`. The built-in container
+openers stay plain functions in `codecs::openers()`. The plug-in host registers a closure that holds the
+format book of the session it was attached to with `MediaPool::register_opener`.
+
+Alternative considered: a plain-function `Opener` that searches a process-wide list of format books and
+uses the first live one that handles the extension. Rejected. With two hosts in one process the second
+session opened files through the first host's plug-in, or failed without trying its own. The global list is
+gone.
+
 ## Consequences
 
 - A user who nests a clip and sees a banner they did not want presses Undo once. The nest, the lifted
   effects and the selection come back.
 - Lifted effects run after the EffectCraft result. A grade that depended on running before motion changes
   the picture.
+- A plug-in fault leaves no change in the project, state, history, path or pool. Files and jobs that its
+  commands started stay.
+- Adding a built-in container opener is unchanged: add a plain function to the `plain` array in
+  `codecs::openers()`. A new opener that needs state is a closure.
+- Two plug-in hosts in one process do not see each other's formats.

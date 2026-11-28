@@ -9,15 +9,6 @@ Opus 5.5 agent-hours (calibration in [target-app-parity.md](target-app-parity.md
 The one-page summary is [ROADMAP.md](../ROADMAP.md); the ranked work list is [gaps.md](gaps.md).
 There is no `cargo xtask scorecard` or `cargo xtask parity` yet ([G7](gaps.md#g7-no-measured-parity-tool-in-ci)).
 
-## Export preview navigation (#1388)
-
-Export mode offers playback with sequence audio, frame stepping, start/end navigation and a
-frame-snapped scrub bar over the selected export range. Navigation leaves project content and
-export settings unchanged. This is a reduced-resolution sequence preview with output framing;
-encoder simulation and live export-job pictures remain outside this feature. Behaviour and
-validation are documented in the [UI README](../crates/ui-egui/README.md#export-preview-1388).
-Parity percentages are unchanged.
-
 ## Current focus
 
 In order. Each item links to its gap entry, which says what "done" means.
@@ -89,7 +80,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## After beta
 
-Plugin hosting (VST3 / AU, then OpenFX; owner decision, [G11](gaps.md#g11-no-plugin-hosting)),
+The WebAssembly plug-in host exists (`crates/plugins`). Native plugin hosting (VST3 / AU, then OpenFX; owner decision,
+[G11](gaps.md#g11-no-native-plugin-hosting)),
 AI features with openly licensed models ([G12](gaps.md#g12-ai-features)), delivery formats
 ([G13](gaps.md#g13-delivery-formats)), localization ([G14](gaps.md#g14-localization-3-of-the-12-key-languages-missing-hindi-arabic-vietnamese)),
 the web app shell ([G20](gaps.md#g20-the-web-app-shell)).
