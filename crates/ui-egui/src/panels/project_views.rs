@@ -42,13 +42,16 @@ pub struct Badge {
     pub proxy: bool,
     /// Proxies are enabled (the badge is lit).
     pub proxy_on: bool,
+    /// A clip in some sequence uses the item.
+    pub used: bool,
 }
 
 /// An item's badges in the Project panel, read from its media (a subclip reads its parent's):
 /// offline, with the word the badge shows and, for an Unreadable file, the error the media pool
 /// recorded; then whether a proxy is attached and whether proxies are on.
 pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> Badge {
-    let mut b = Badge { offline: false, offline_text: "", offline_reason: None, proxy: false, proxy_on: false };
+    let mut b =
+        Badge { offline: false, offline_text: "", offline_reason: None, proxy: false, proxy_on: false, used: app.ui.project_panel.used.contains(&it.id.0) };
     let target = match &it.kind {
         ItemKind::Subclip { parent, .. } => app.session.project.item(*parent),
         _ => Some(it),
@@ -87,12 +90,36 @@ fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2
         let pr = Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0));
         ui.painter().rect_filled(pr, 2.0, if b.proxy_on { t.accent } else { Color32::from_gray(70) });
         ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+        x += 18.0;
     }
+    if b.used {
+        used_badge(app, ui, Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0)), pre, id, false);
+    }
+}
+
+/// The "used" chip: a tick in a box, drawn with lines so it needs no font. It marks an item some
+/// sequence uses, and registers its automation id and a hover text (#5224). On a thumbnail it sits
+/// on a dark plate with a white tick, as the other thumbnail badges do, so any picture shows it; in
+/// a row it takes the theme's active icon colour, which contrasts with the row in every theme.
+fn used_badge(app: &mut FilmcraftApp, ui: &egui::Ui, r: Rect, pre: &str, id: ItemId, on_thumb: bool) {
+    let color = if on_thumb {
+        ui.painter().rect_filled(r, 2.0, Color32::from_black_alpha(170));
+        Color32::WHITE
+    } else {
+        app.tokens.icon_active
+    };
+    let stroke = Stroke::new(1.5, color);
+    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, color), StrokeKind::Inside);
+    let c = r.center();
+    ui.painter().line_segment([c + vec2(-3.5, 0.0), c + vec2(-1.0, 2.5)], stroke);
+    ui.painter().line_segment([c + vec2(-1.0, 2.5), c + vec2(3.5, -2.5)], stroke);
+    app.auto.add(&format!("{pre}.item.{}.used", id.0), r, tl!("Used in a sequence"));
+    ui.interact(r, egui::Id::unique((pre, "used", id.0)), Sense::hover()).on_hover_text(tl!("Used in a sequence"));
 }
 
 /// The part of a List-view name column `name_r` the item's name may use, and whether its badges
 /// get the rest. The badges (6 px after the name, then the offline icon's 18 px and the proxy chip's
-/// 16 px, as [`paint_badges`] draws them) keep their room at the column's end and a long name is cut
+/// 16 px and the used chip's 16 px, as [`paint_badges`] draws them) keep their room at the column's end and a long name is cut
 /// short before them, so the name never hides an Unreadable badge and its reason. Only a column too
 /// narrow for the badges leaves them out.
 fn name_room(b: &Badge, name_r: Rect) -> (Rect, bool) {
@@ -101,10 +128,14 @@ fn name_room(b: &Badge, name_r: Rect) -> (Rect, bool) {
         w += 18.0;
     }
     if b.proxy {
+        // a proxy chip is 16 px, with a 2 px gap before the used chip when that follows
+        w += if b.used { 18.0 } else { 16.0 };
+    }
+    if b.used {
         w += 16.0;
     }
     // the name starts 2 px into the column
-    let fits = (b.offline || b.proxy) && name_r.width() >= w + 2.0;
+    let fits = (b.offline || b.proxy || b.used) && name_r.width() >= w + 2.0;
     let text_r = if fits { Rect::from_min_max(name_r.min, pos2(name_r.max.x - w, name_r.max.y)) } else { name_r };
     (text_r, fits)
 }
@@ -589,6 +620,7 @@ struct ListCtx {
 }
 
 pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
+    app.ui.project_panel.used = pp::used_items(&app.session.project);
     let t = app.tokens;
     let f = font(app);
     let thumbs = app.session.prefs.project_panel.thumbnails;
@@ -1031,6 +1063,9 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
         ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
         app.auto.add(&format!("{pre}.item.{}.proxy", id.0), pr, "Proxy attached");
     }
+    if badge.used {
+        used_badge(app, ui, Rect::from_min_size(pos2(th.min.x + 4.0, th.min.y + 4.0), vec2(18.0, 14.0)), pre, id, true);
+    }
     let f = font(app);
     let ty = th.max.y + 11.0;
     let mut dw = 0.0;
@@ -1116,6 +1151,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
 }
 
 pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
+    app.ui.project_panel.used = pp::used_items(&app.session.project);
     let Some(bin) = app.session.project.root.find_bin(v.bin).cloned() else { return };
     let size = v.icon_size;
     let th_h = size * 9.0 / 16.0;

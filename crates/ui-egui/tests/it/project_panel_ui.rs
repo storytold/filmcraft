@@ -657,6 +657,36 @@ fn a_dragged_bin_nests_in_another_and_back_out() {
     assert_eq!(parent(&mut d, inner), Some(root));
 }
 
+/// #5224: an item some sequence uses shows a "used" chip in the List and Icon views, whichever way
+/// it got onto the timeline, and loses it when its last clip goes.
+#[test]
+fn an_item_used_in_a_sequence_shows_a_used_chip() {
+    for mode in ["list", "icon"] {
+        let mut d = project_driver();
+        d.exec("project.view.set", json!({"view": mode}));
+        let (footage, _) = d.footage();
+        // an item the demo sequence uses, and the clips that use it
+        let (item, clips) = {
+            let q = d.app().session.active_sequence().unwrap();
+            let item = q.video_tracks[0].items[0].item;
+            (item.0, q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| i.item == item).map(|i| i.id.0).collect::<Vec<_>>())
+        };
+        let bin = d.app().session.project.root.parent_of(ItemId(item)).map(|b| b.0).unwrap_or(footage);
+        d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+        d.wait_for(&format!("project.item.{item}"));
+        let chip = format!("project.item.{item}.used");
+        d.frames(2);
+        assert!(d.has(&chip), "{mode}: an item on the timeline shows the chip");
+        d.exec("timeline.select", json!({"clips": clips}));
+        d.exec("timeline.delete", json!({}));
+        d.frames(3);
+        assert!(!d.has(&chip), "{mode}: the chip goes with the item's last clip");
+        d.exec("timeline.place", json!({"item": item, "time": 0}));
+        d.frames(3);
+        assert!(d.has(&chip), "{mode}: placing the item brings the chip back");
+    }
+}
+
 #[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();
