@@ -229,11 +229,23 @@ pub struct GuideTemplate {
 
 /// A monitor guide: a vertical line at x = `position` or a horizontal line at y = `position`
 /// (frame pixels).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Guide {
     pub vertical: bool,
     pub position: f64,
+    pub color: [u8; 3],
+    pub opacity: f64,
+}
+
+impl Guide {
+    pub const DEFAULT_COLOR: [u8; 3] = [61, 165, 255];
+}
+
+impl Default for Guide {
+    fn default() -> Self {
+        Self { vertical: false, position: 0.0, color: Self::DEFAULT_COLOR, opacity: 1.0 }
+    }
 }
 
 /// Settings ▸ Media.

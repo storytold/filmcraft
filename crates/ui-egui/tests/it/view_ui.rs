@@ -583,6 +583,39 @@ fn source_waveform_follows_the_time_zoom() {
 }
 
 #[test]
+fn guide_appearance_survives_templates_and_respects_locking() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"program":{"guides":[{"vertical":true,"position":960.0}]}}));
+    assert_eq!(d.program()["guides"][0]["color"], json!([61, 165, 255]));
+    assert_eq!(d.program()["guides"][0]["opacity"], json!(1.0));
+
+    let edit = json!({"id":"view.editGuide","params":{"guide":0,"color":[240,120,30],"opacity":0.4}});
+    let invalid = json!({"id":"view.editGuide","params":{"guide":0,"color":[1,2,3],"opacity":1.5}});
+    assert_eq!(d.call("ui.menu.invoke", invalid)["ok"], false);
+    assert_eq!(d.program()["guides"][0]["color"], json!([61, 165, 255]));
+    d.ok("ui.menu.invoke", edit.clone());
+    let styled = d.program()["guides"][0].clone();
+    assert_eq!(styled["color"], json!([240, 120, 30]));
+    assert_eq!(styled["opacity"], json!(0.4));
+
+    d.ok("ui.menu.invoke", json!({"id":"view.guideTemplates.save","params":{"name":"Orange guide"}}));
+    d.menu("view.clearGuides");
+    d.ok("ui.menu.invoke", json!({"id":"view.guideTemplates.apply","params":{"name":"Orange guide"}}));
+    assert_eq!(d.program()["guides"][0], styled);
+    d.menu("view.lockGuides");
+    let remove = json!({"id":"view.removeGuide","params":{"guide":0}});
+    assert_eq!(d.call("ui.menu.invoke", remove)["ok"], false);
+    assert_eq!(d.program()["guides"][0], styled);
+    d.menu("view.lockGuides");
+    d.ok("ui.click", json!({"id":"program.guide.0","button":"right"}));
+    d.frames(3);
+    assert!(d.try_rect("program.guideMenu.color").is_some());
+    assert!(d.try_rect("program.guideMenu.opacity").is_some());
+    d.click("program.guideMenu.delete");
+    assert_eq!(d.program()["guides"], json!([]));
+}
+
+#[test]
 fn magnification_pans_and_guides_from_rulers() {
     let mut d = Driver::demo();
     // zoom dropdown → 200%
