@@ -294,6 +294,23 @@ pub(crate) fn marker_owned_menu(
         super::marker_properties::open_owned(app, marker, owner);
         ui.close();
     }
+    // record a take of this section: only a range marker of the open sequence has a span to punch
+    if matches!(owner, super::marker_properties::Owner::Sequence(id) if app.session.state.active_sequence.is_some_and(|open| open.0 == id)) {
+        let ranged = marker.duration > filmcraft_time::Tick::ZERO;
+        let idle = !app.session.voiceover.recording();
+        let response = ui.add_enabled(ranged && idle, egui::Button::new(tl!("Record Voice-over for Marker"))).on_disabled_hover_text(if ranged {
+            tl!("A voice-over is already recording")
+        } else {
+            tl!("Only a range marker has a span to record")
+        });
+        app.auto.add_response(&format!("{prefix}.recordVoiceover"), &response, tl!("Record Voice-over for Marker"));
+        if response.clicked() {
+            if let Err(e) = crate::menus::invoke(app, &ui.ctx().clone(), "voiceover.recordToggle", serde_json::json!({"marker": marker.id.0})) {
+                app.ui.status = e;
+            }
+            ui.close();
+        }
+    }
     let response = ui.button(tl!("Delete Marker"));
     app.auto.add_response(&format!("{prefix}.delete"), &response, tl!("Delete Marker"));
     if response.clicked() {

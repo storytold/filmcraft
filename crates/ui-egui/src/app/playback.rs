@@ -331,6 +331,8 @@ impl FilmcraftApp {
         let t = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
         let seq = self.session.active_sequence();
         let dur = seq.map(|q| q.duration()).unwrap_or_default();
+        // a take recorded for a range marker runs to its own bound, not to the loop's
+        let marker_take = self.session.voiceover.rec.as_ref().is_some_and(|r| r.marker.is_some());
         let exporting = self.ui.mode == state::Mode::Export;
         let looping = self.playback.looping && !exporting;
         let (lo, hi) = if exporting {
@@ -346,7 +348,7 @@ impl FilmcraftApp {
         if let Some(end) = self.playback.stop_at.filter(|e| !exporting && t >= *e && self.playback.speed > 0.0 && !looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
             self.stop();
-        } else if t >= hi && self.playback.speed > 0.0 && (exporting || looping || !self.session.voiceover.recording()) {
+        } else if t >= hi && self.playback.speed > 0.0 && (exporting || (looping && !marker_take) || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
             if looping {
                 self.session.set_playhead(lo);
@@ -469,6 +471,36 @@ mod voiceover_playback_tests {
         assert!(app.playback.playing);
         assert!(app.session.voiceover.recording());
         assert!(app.session.playhead() > from, "{:?} <= {from:?}", app.session.playhead());
+        app.session.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
+        app.stop();
+    }
+
+    /// With Loop on, a take recorded for a range marker is not wrapped back to the loop's start
+    /// when the playhead reaches the loop's end before the marker's punch-out and post-roll.
+    #[test]
+    fn a_marker_take_is_not_wrapped_by_loop_playback() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("audio.voiceover.settings", json!({"prerollSeconds": 0.0})).unwrap();
+        let dur = session.active_sequence().map(|q| q.duration()).unwrap();
+        let start = session.sequence_rate().snap(dur - Tick::from_seconds_f64(0.5));
+        let marker =
+            session.execute("markers.addRange", json!({"time": start.0, "duration": Tick::from_seconds_f64(30.0).0, "name": "Tail"})).unwrap()["marker"]
+                .as_u64()
+                .unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = None;
+        app.playback.looping = true;
+        panels::voiceover::route(&mut app, &ctx, "voiceover.recordToggle", &json!({"marker": marker}), false).unwrap().unwrap();
+        assert!(app.session.voiceover.recording());
+        app.end_preroll(0.0);
+        app.set_now_for_test(1.0);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(app.playback.playing);
+        assert!(app.session.voiceover.recording(), "the take is still recording");
+        assert!(app.session.playhead() > dur, "the playhead ran past the loop's end: {:?} <= {dur:?}", app.session.playhead());
         app.session.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
         app.stop();
     }

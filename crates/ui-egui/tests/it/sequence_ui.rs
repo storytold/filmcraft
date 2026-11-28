@@ -1876,6 +1876,43 @@ fn a_range_marker_band_opens_its_menu_and_keeps_the_marker_identity() {
     d.snapshot("marker-range-colour", "timeline.markerRange.");
 }
 
+/// A range marker's menus (Timeline and Markers panel) record a take of its span through
+/// `audio.voiceover.start`; a marker without duration offers nothing to record.
+#[test]
+fn marker_menus_record_a_take_of_the_range() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let range = d.exec("markers.addRange", json!({"frame":30,"durationFrames":60,"name":"Intro"}))["marker"].as_u64().unwrap();
+    let point = d.exec("markers.addChapter", json!({"frame":300,"name":"Point"}))["marker"].as_u64().unwrap();
+    d.ok("ui.panel.show", json!({"panel":"Markers"}));
+    d.frames(3);
+
+    d.right_marker(point, false);
+    let entry = d.ok("ui.elements", json!({"prefix":"timeline.markerMenu.recordVoiceover"}));
+    assert_eq!(entry.as_array().map(Vec::len), Some(1), "the entry is listed, so it can be found");
+    d.click("timeline.markerMenu.recordVoiceover");
+    assert!(!d.app().session.voiceover.recording(), "a marker with no duration records nothing");
+    d.ok("ui.key", json!({"key":"Escape"}));
+
+    d.right_marker(range, true);
+    d.snapshot("marker-record-voiceover-menu", "timeline.markerMenu.");
+    d.click("timeline.markerMenu.recordVoiceover");
+    let rec = d.app().session.voiceover.rec.clone().expect("recording started from the Timeline menu");
+    assert_eq!(rec.marker.map(|m| m.id.0), Some(range));
+    let m = d.app().session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == range).unwrap().clone();
+    assert_eq!((rec.record_start, rec.punch_out), (m.start, Some(m.start + m.duration)));
+    d.exec("audio.voiceover.stop", json!({"discard":true}));
+    d.frames(3);
+
+    d.ok("ui.click", json!({"id":format!("markers.row.{range}"),"button":"right"}));
+    d.frames(3);
+    d.snapshot("markers-panel-record-voiceover-menu", "markers.menu.");
+    d.click("markers.menu.recordVoiceover");
+    let rec = d.app().session.voiceover.rec.clone().expect("recording started from the Markers panel menu");
+    assert_eq!(rec.marker.map(|m| m.id.0), Some(range));
+    d.exec("audio.voiceover.stop", json!({"discard":true}));
+}
+
 #[test]
 fn markers_panel_label_refreshes_the_colour_filter_in_both_themes() {
     for theme in ["dark", "light"] {
