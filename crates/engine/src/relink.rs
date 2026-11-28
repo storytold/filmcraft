@@ -15,8 +15,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use filmcraft_media::MediaInfo;
-use filmcraft_project::{ItemId, ItemKind, MediaIdentity, MediaRef, Project};
+use filmcraft_media::{MediaError, MediaInfo, MediaKind, SharedSource};
+use filmcraft_project::{ItemId, ItemKind, MediaClip, MediaIdentity, MediaRef, Project};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -200,6 +200,17 @@ pub struct Candidate {
     pub source: Option<filmcraft_media::SharedSource>,
 }
 
+/// A numbered image selected for an existing sequence is its new first frame. Use the
+/// original sequence's rate, not the current still-import preference. Other replacements
+/// keep the normal file handling; a numbered still is not automatically promoted.
+fn open_relink_source(s: &Session, current: &MediaClip, path: &str) -> std::result::Result<SharedSource, MediaError> {
+    if current.info.kind == MediaKind::ImageSequence && filmcraft_media::sequence::Numbered::parse(path).is_some() {
+        crate::media_pool::open_image_sequence(path, &*s.services, current.info.frame_rate(), file_name(path))
+    } else {
+        s.media.open_file(path, &*s.services)
+    }
+}
+
 /// Check `path` as the new file of media item `item`. Opening the file (needed for duration,
 /// timecode and metadata) is skipped when a cheap check already failed.
 pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) -> Result<Candidate> {
@@ -241,7 +252,7 @@ pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) 
         }
     }
     if c.problems.is_empty() {
-        match s.media.open_file(path, &*s.services) {
+        match open_relink_source(s, m, path) {
             Ok(src) => {
                 let info = src.info().clone();
                 let fd = m.info.frame_rate().frame_duration();
@@ -448,18 +459,17 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("media.relink", "need `path`"))?.to_string();
     let force = bool_p(p, "force").unwrap_or(false);
     let o = MatchOptions::from_params(p);
-    let old = match s.project.item(item).and_then(|i| i.as_media()).map(|m| m.media.clone()) {
-        Some(MediaRef::File { path }) => path,
-        _ => return Err(bad("media.relink", format!("item {} is not file media", item.0))),
-    };
+    let not_file = || bad("media.relink", format!("item {} is not file media", item.0));
+    let current = s.project.item(item).and_then(|i| i.as_media()).ok_or_else(not_file)?;
+    let MediaRef::File { path: old } = &current.media else { return Err(not_file()) };
     let mut c = check_candidate(s, item, &path, &o)?;
     if !c.ok && !force {
-        return Err(EngineError::Other(format!("{} doesn't match {}: {}", file_name(&path), file_name(&old), c.problems.join("; "))));
+        return Err(EngineError::Other(format!("{} doesn't match {}: {}", file_name(&path), file_name(old), c.problems.join("; "))));
     }
     if c.source.is_none() {
         // Forced past a failed check: the file was never opened for its properties, so do it now
         // and let the item take the new file's own info instead of keeping the old file's.
-        let Ok(src) = s.media.open_file(&path, &*s.services) else {
+        let Ok(src) = open_relink_source(s, current, &path) else {
             return Err(EngineError::Other(format!("{path} can't be opened")));
         };
         c.info = Some(src.info().clone());
@@ -468,7 +478,7 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let mut plans = vec![Plan { item, cand: c }];
     let mut needs_review = Vec::new();
     if o.relink_others {
-        for plan in others(s, item, &old, &path, &o) {
+        for plan in others(s, item, old, &path, &o) {
             if needs_script_review(s, plan.item, plan.cand.identity) {
                 needs_review.push(json!({"item": plan.item.0, "path": plan.cand.path, "reason": SCRIPT_MARKS_RELINK_REVIEW}));
             } else {

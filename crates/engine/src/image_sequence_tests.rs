@@ -269,3 +269,49 @@ fn image_sequence_survives_save_and_reopen() {
     assert!(v.media.offline_status(id).is_some(), "missing first frame: offline");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn relink_image_sequence(force: bool) {
+    let dir = tmp_dir(if force { "imgseq-relink-forced" } else { "imgseq-relink-checked" });
+    let before = dir.join("before");
+    let after = dir.join("after");
+    std::fs::create_dir(&before).unwrap();
+
+    let mut s = Session::default();
+    s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "25"})).unwrap();
+    let paths = write_frames(&before, "shot_", &[3, 4, 5], "png");
+    let id = item_of(&s.execute("file.importImageSequence", json!({"path": paths[0]})).unwrap());
+    let original = s.project.item(id).unwrap().as_media().unwrap().info.clone();
+    s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "30"})).unwrap();
+
+    let (prefix, first) = if force { ("replacement_", 6) } else { ("shot_", 3) };
+    std::fs::rename(&before, &after).unwrap();
+    if force {
+        write_frames(&after, prefix, &[6, 7, 8], "png");
+    }
+    let path = after.join(format!("{prefix}{first:04}.png"));
+    s.execute("media.relink", json!({"item": id.0, "path": path, "force": force})).unwrap();
+
+    let m = s.project.item(id).unwrap().as_media().unwrap();
+    assert_eq!(m.info.kind, MediaKind::ImageSequence);
+    assert_eq!(m.info.frame_rate(), original.frame_rate(), "a preference change does not reinterpret existing media");
+    assert_eq!(m.info.duration, original.duration);
+    assert_eq!(red_at(&s, id, 0), 10 * first, "the selected frame, not the first sibling, starts the clip");
+    assert_eq!(red_at(&s, id, 2), 10 * (first + 2), "a later source frame must not repeat the first");
+
+    let project = dir.join("relinked.fcproj");
+    s.execute("file.saveAs", json!({"path": project})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": project})).unwrap();
+    assert_eq!(red_at(&reopened, id, 2), 10 * (first + 2), "the relinked sequence persists on reopen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn checked_relink_keeps_a_moved_image_sequence() {
+    relink_image_sequence(false);
+}
+
+#[test]
+fn forced_relink_keeps_a_replaced_image_sequence() {
+    relink_image_sequence(true);
+}
