@@ -2,7 +2,7 @@ use super::common::{collapse_history, item_rate, items_p, media_root};
 use super::enabled::is_clip_item;
 use super::{
     AudioChannels, BTreeMap, BinEntry, EngineError, FrameRate, ItemId, ItemKind, Label, MediaClip, MediaRef, Project, Result, Session, Tick, TimeRange, Value,
-    bad, bool_p, f64_p, json, parse_timecode, place_item, str_p, u64_p,
+    bad, bool_p, f64_p, json, media_timecode, place_item, str_p, u64_p,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -142,7 +142,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
     let secs = f64_p(p, "seconds").unwrap_or(10.0).max(rate.frame_duration().seconds());
     let duration = rate.snap_nearest(Tick::from_seconds_f64(secs)).max(rate.frame_duration());
     let start_tc = match str_p(p, "timecode") {
-        Some(tc) => Some(parse_timecode(tc, rate, false, 0).map_err(|e| bad("file.newOfflineFile", format!("timecode: {e:?}")))?),
+        Some(tc) => Some(media_timecode(tc, rate).map_err(|e| bad("file.newOfflineFile", format!("timecode: {e:?}")))?.0),
         None => None,
     };
     // A name, never a path: the item's media path is what Make Offline ▸ delete would remove.
