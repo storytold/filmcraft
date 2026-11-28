@@ -3644,3 +3644,245 @@
 	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
 	Color Grading Section	Renk Derecelendirme Bölümü
 	Read Video Scopes	Video Ölçümlerini Oku
+	Center at Cut	Kesimde Ortala
+	Start at Cut	Kesimde Başlat
+	End at Cut	Kesimde Bitir
+	Custom Start	Özel Başlangıç
+	Replace File	Dosyayı Değiştir
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}”, “{folder}” klasöründe zaten var. Değiştirmek istiyor musunuz?
+	Replace	Değiştir
+	Previous: {name}	Önceki: {name}
+	Next: {name}	Sonraki: {name}
+	Slip: {offset} frame	Kaydırma: {offset} kare
+	Slip: {offset} frames	Kaydırma: {offset} kare
+	at the media limit	medya sınırında
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Yeniden adlandırmak için Zaman Çizelgesi'nde bir klip (veya bağlı klip) ya da Proje panelinde bir öğe seçin
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	MPEG ses (.mp3), 48 kHz, 320 kbps birleşik stereo
+	Edit Marker…	İşaretçiyi Düzenle…
+	In:	Giriş:
+	Marker Color:	İşaretçi Rengi:
+	Options:	Seçenekler:
+	Comment Marker	Yorum İşaretçisi
+	Chapter Marker	Bölüm İşaretçisi
+	Segmentation Marker	Bölümleme İşaretçisi
+	Web Link	Web Bağlantısı
+	Flash Cue Point	Flash İşaret Noktası
+	Invalid duration: {error}	Geçersiz süre: {error}
+	Enter a positive duration within the supported speed range.	Desteklenen hız aralığı içinde pozitif bir süre girin.
+	Show Video Names	Video Adlarını Göster
+	Show Audio Names	Ses Adlarını Göster
+	Video Names	Video Adları
+	Audio Names	Ses Adları
+	Clip Mismatch Warning	Klip Uyuşmazlığı Uyarısı
+	This clip does not match the sequence settings.	Bu klip sekans ayarlarıyla eşleşmiyor.
+	Clip: {settings}	Klip: {settings}
+	Sequence: {settings}	Sekans: {settings}
+	Change the sequence to match the clip's settings?	Sekans, klibin ayarlarıyla eşleşecek şekilde değiştirilsin mi?
+	Change Sequence Settings	Sekans Ayarlarını Değiştir
+	Keep Existing Settings	Mevcut Ayarları Koru
+	A range marker needs a positive duration	Aralık işaretçisi için pozitif bir süre gerekir
+	Add Custom Color	Özel Renk Ekle
+	Add and apply	Ekle ve uygula
+	Add color	Renk ekle
+	Add custom color	Özel renk ekle
+	Add custom color…	Özel renk ekle…
+	Author	Yazar
+	Chapter	Bölüm
+	Choose Color…	Renk Seç…
+	Choose color with system picker	Sistem seçicisiyle renk seç
+	Color picker	Renk seçici
+	Color selected markers	Seçili işaretçileri renklendir
+	Custom Color…	Özel Renk…
+	Delete Marker	İşaretçiyi Sil
+	Delete selected markers	Seçili işaretçileri sil
+	Edit Custom Color	Özel Rengi Düzenle
+	Edit Marker	İşaretçiyi Düzenle
+	Edit color	Rengi düzenle
+	Editing or removing a swatch leaves assigned colors unchanged.	Bir renk örneğini düzenlemek veya kaldırmak, atanmış renkleri değiştirmez.
+	Enter six hex digits, for example FF80C0.	Altı onaltılık basamak girin, örneğin FF80C0.
+	Hex	Hex
+	Hex color	Onaltılık renk
+	Manage Colors	Renkleri Yönet
+	Manage Colors…	Renkleri Yönet…
+	Marker owner is unavailable	İşaretçi sahibi kullanılamıyor
+	No markers	İşaretçi yok
+	No matching markers	Eşleşen işaretçi yok
+	No saved colors	Kayıtlı renk yok
+	No sequence open	Açık sekans yok
+	No source clip open	Açık kaynak klip yok
+	Notes	Notlar
+	Project Colors	Proje Renkleri
+	Range marker	Aralık işaretçisi
+	Remove saved color	Kayıtlı rengi kaldır
+	Save color	Rengi kaydet
+	Search markers	İşaretçilerde ara
+	Search name, notes, author	Ad, notlar, yazar ara
+	Select all	Tümünü seç
+	Select all visible markers	Tüm görünür işaretçileri seç
+	Sequence: {name}	Sekans: {name}
+	Source: {name}	Kaynak: {name}
+	Source: {name} (shared source markers)	Kaynak: {name} (paylaşılan kaynak işaretçileri)
+	System color picker unavailable: {error}	Sistem renk seçicisi kullanılamıyor: {error}
+	Time is outside the supported range	Zaman desteklenen aralığın dışında
+	{count} selected	{count} seçili
+	Remove Custom Color	Özel Rengi Kaldır
+	Edit Markers	İşaretçileri Düzenle
+	Delete Markers	İşaretçileri Sil
+	Marker changed or was removed. Reopen it to continue.	İşaretçi değişti veya kaldırıldı. Devam etmek için yeniden açın.
+	URL	URL
+	Open Link	Bağlantıyı Aç
+	Opens this address in your web browser	Bu adresi web tarayıcınızda açar
+	Enter a valid HTTP or HTTPS URL without credentials	Kimlik bilgileri içermeyen geçerli bir HTTP veya HTTPS URL'si girin
+	Previous	Önceki
+	Next	Sonraki
+	Enter a valid HH:MM:SS:FF timecode	Geçerli bir SS:DD:SN:KR zaman kodu girin
+	Open Presets Folder	Ön Ayarlar Klasörünü Aç
+	Scan Presets Folder	Ön Ayarlar Klasörünü Tara
+	From preset file:	Ön ayar dosyasından:
+	No presets folder: the app has no data directory	Ön ayarlar klasörü yok: uygulamanın veri dizini bulunmuyor
+	Imported {n} preset(s)	{n} ön ayar içe aktarıldı
+	Imported {n} preset(s); {skipped} skipped	{n} ön ayar içe aktarıldı; {skipped} atlandı
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} ön ayar içe aktarıldı; {warnings} tanesinde desteklenmeyen parametreler var
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} ön ayar içe aktarıldı; {skipped} atlandı, {warnings} tanesinde desteklenmeyen parametreler var
+	Imported {n} preset(s); not imported: {error}	{n} ön ayar içe aktarıldı; içe aktarılamadı: {error}
+	Preset library updated: {imported} loaded, {removed} removed	Ön ayar kitaplığı güncellendi: {imported} yüklendi, {removed} kaldırıldı
+	Preset library updated	Ön ayar kitaplığı güncellendi
+	Preset library is up to date	Ön ayar kitaplığı güncel
+	0. Export Script text	0. Senaryo metnini dışa aktar
+	1 frame ({seconds} s)	1 kare ({seconds} sn)
+	1. Import Text	1. Metni İçe Aktar
+	2. Add clips	2. Klip ekle
+	3. Follow candles	3. Mumları takip et
+	4. Add marks	4. İşaret ekle
+	A candle shows a take's row coverage. Double-click a candle or thumbnail to open Source; press Space to play.	Bir mum, bir çekimin satır kapsamını gösterir. Kaynakta açmak için bir muma veya küçük resme çift tıklayın; oynatmak için Boşluk tuşuna basın.
+	Add Another Candle	Başka Bir Mum Ekle
+	Add Script Mark	Senaryo İşareti Ekle
+	Add Track	Kanal Ekle
+	Add a mark at the Source playhead; cues the selected candle's source if needed	Kaynak oynatma kafasında bir işaret ekler; gerekirse seçili mumun kaynağını hazırlar
+	Add or edit Page on the selected line	Seçili satıra Sayfa ekle veya düzenle
+	Add or edit Scene on the selected line	Seçili satıra Sahne ekle veya düzenle
+	Cancel relink	Yeniden bağlamayı iptal et
+	Candle Color	Mum Rengi
+	Candle color	Mum rengi
+	Cannot read script as UTF-8 text: {error}	Senaryo UTF-8 metin olarak okunamıyor: {error}
+	Cannot read script: {error}	Senaryo okunamıyor: {error}
+	Caption Export Settings	Altyazı Dışa Aktarma Ayarları
+	Caption Track	Altyazı Kanalı
+	Check for Updates…	Güncellemeleri Denetle…
+	Choose a script	Bir senaryo seçin
+	Choose linked take ({count})	Bağlı çekim seç ({count})
+	Clear Offscreen	Ekran Dışını Temizle
+	Click to cue Source; Command/Ctrl-drag to move this mark to another script line	Kaynağa gitmek için tıklayın; bu işareti başka bir senaryo satırına taşımak için Command/Ctrl ile sürükleyin
+	Command-drag (Mac) or Ctrl-drag (Windows) to adjust candle length	Mum uzunluğunu ayarlamak için Command (Mac) veya Ctrl (Windows) ile sürükleyin
+	Confirm Same Footage and Relink	Aynı Görüntü Olduğunu Onayla ve Yeniden Bağla
+	Copy of the project saved to {path}	Projenin kopyası şuraya kaydedildi: {path}
+	Cube LUT	Cube LUT
+	Delete Clips	Klipleri Sil
+	Delete Line	Satırı Sil
+	Delete Mark	İşareti Sil
+	Delete Track	Kanalı Sil
+	Double-click to edit Page	Sayfayı düzenlemek için çift tıklayın
+	Double-click to edit Scene	Sahneyi düzenlemek için çift tıklayın
+	Drag the tab to move the panel	Paneli taşımak için sekmeyi sürükleyin
+	Drag to change script wrapping	Senaryo satır kaydırmasını değiştirmek için sürükleyin
+	Drag to change the script's left margin	Senaryonun sol kenar boşluğunu değiştirmek için sürükleyin
+	Edit Line	Satırı Düzenle
+	Export .cube…	.cube Olarak Dışa Aktar…
+	Exported {path} as {format}, from its file extension	Dosya uzantısına göre {path}, {format} biçiminde dışa aktarıldı
+	Exported {path}; not in the LUT: {effects}	{path} dışa aktarıldı; LUT içinde olmayanlar: {effects}
+	FilmCraft cannot confirm this is the same footage used by linked Script takes.	FilmCraft, bunun bağlı Senaryo çekimleri tarafından kullanılan aynı görüntü olduğunu doğrulayamıyor.
+	Find in Project	Projede Bul
+	Find in Script	Senaryoda Bul
+	Full Screen Program Monitor	Tam Ekran Program Monitörü
+	Get started with Script	Senaryo ile başlayın
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 9:16 dikey, dolduracak şekilde ölçekli, VBR 1 geçişli, 10 Mbps, ses yüksekliği −14 LUFS'ye normalleştirilmiş
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 9:16 dikey, dolduracak şekilde ölçekli, VBR 1 geçişli, 12 Mbps, ses yüksekliği −14 LUFS'ye normalleştirilmiş
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 9:16 dikey, dolduracak şekilde ölçekli, VBR 1 geçişli, 8 Mbps, ses yüksekliği −14 LUFS'ye normalleştirilmiş
+	Highlight Balance	Parlak Ton Dengesi
+	Highlight Hue	Parlak Ton Renk Özü
+	Highlight Level	Parlak Ton Düzeyi
+	Highlight Softness	Parlak Ton Yumuşaklığı
+	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	Aynı görüntü ise işaretlerini korumak için yeniden bağlamayı onaylayın. Aksi halde iptal edip çekimleri Senaryoda değiştirin.
+	Import Text…	Metin İçe Aktar…
+	Insert Line Below	Altına Satır Ekle
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Jump to {caption} label	{caption} etiketine atla
+	Key Out Brights	Parlak Alanları Anahtarla
+	Left margin	Sol kenar boşluğu
+	Lined Script	Çizgili Senaryo
+	Looks for a newer FilmCraft release and offers to update.	Daha yeni bir FilmCraft sürümünü arar ve güncellemeyi önerir.
+	Midtone Balance	Orta Ton Dengesi
+	Midtone Hue	Orta Ton Renk Özü
+	Midtone Level	Orta Ton Düzeyi
+	Move Left	Sola Taşı
+	Move Right	Sağa Taşı
+	Next match (Enter)	Sonraki eşleşme (Enter)
+	No matches	Eşleşme yok
+	Open Script	Senaryoyu Aç
+	Page	Sayfa
+	Pasted text exceeds the 4 MiB limit.	Yapıştırılan metin 4 MiB sınırını aşıyor.
+	Plain text .txt supported.	Düz metin .txt desteklenir.
+	Plain-text script	Düz metin senaryo
+	Previous match (Shift+Enter)	Önceki eşleşme (Shift+Enter)
+	Project saved to {path}	Proje şuraya kaydedildi: {path}
+	Reattach this candle's source first.	Önce bu mumun kaynağını yeniden bağlayın.
+	Rebind to Selected Project Clip	Seçili Proje Klibine Yeniden Bağla
+	Reconnect every matching candle in all scripts. Matching footage keeps its marks; other replacements require review.	Tüm senaryolardaki eşleşen her mumu yeniden bağla. Eşleşen görüntü işaretlerini korur; diğer değiştirmeler inceleme gerektirir.
+	Reconnected {count} Script candle(s)	{count} Senaryo mumu yeniden bağlandı
+	Relink canceled; Script marks were preserved.	Yeniden bağlama iptal edildi; Senaryo işaretleri korundu.
+	Replace and Clear Marks	Değiştir ve İşaretleri Temizle
+	Replace matching candles and clear their marks?	Eşleşen mumlar değiştirilip işaretleri temizlensin mi?
+	Replace take?	Çekim değiştirilsin mi?
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Duyarlı Tasarım – Zaman, grafiğin katman anahtar karelerini yeniden eşler; Opaklık ve Hareket gibi klip efektleri medya zamanını korur
+	Review Script marks	Senaryo işaretlerini incele
+	Save your .txt file as UTF-8 plain text, then choose Import Text… above. Or choose New to write a script.	.txt dosyanızı UTF-8 düz metin olarak kaydedin, ardından yukarıdan Metin İçe Aktar… seçeneğini seçin. Veya yeni bir senaryo yazmak için Yeni'yi seçin.
+	Script	Senaryo
+	Script Thumbnail Back	Senaryo Küçük Resmi Geri
+	Script Thumbnail Forward	Senaryo Küçük Resmi İleri
+	Script help	Senaryo yardımı
+	Script section copied	Senaryo bölümü kopyalandı
+	Script settings	Senaryo ayarları
+	Script text exceeds the 4 MiB import limit	Senaryo metni 4 MiB içe aktarma sınırını aşıyor
+	Script text needs room for five leading setup lines	Senaryo metni için başta beş kurulum satırına yer gerekir
+	Search text	Metin ara
+	Select a candle row, find the matching frame in Source, then click the diamond Mark button in Script. Click a mark to return to that frame.	Bir mum satırı seçin, Kaynakta eşleşen kareyi bulun, ardından Senaryoda elmas İşaret düğmesine tıklayın. O kareye dönmek için bir işarete tıklayın.
+	Select one available media clip, subclip, or multicamera source in Project first.	Önce Projede kullanılabilir bir medya klibi, alt klip veya çoklu kamera kaynağı seçin.
+	Select rows, then drag a clip from the Project panel onto the selection.	Satırları seçin, ardından Proje panelinden bir klibi seçimin üzerine sürükleyin.
+	Set Work Area Bar In Point	Çalışma Alanı Çubuğu Giriş Noktasını Ayarla
+	Set Work Area Bar Out Point	Çalışma Alanı Çubuğu Çıkış Noktasını Ayarla
+	Set as Default Transition	Varsayılan Geçiş Olarak Ayarla
+	Set selected candle rows to the current color; right-click for palette	Seçili mum satırlarını geçerli renge ayarlar; palet için sağ tıklayın
+	Shadow Balance	Gölge Dengesi
+	Shadow Hue	Gölge Renk Özü
+	Shadow Level	Gölge Düzeyi
+	Shadow Softness	Gölge Yumuşaklığı
+	Shadow Threshold	Gölge Eşiği
+	Show line numbers	Satır numaralarını göster
+	Show row colors	Satır renklerini göster
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Kaynak Giriş/Çıkış yalnızca 1 kare. Tüm sekansı dışa aktarmak için Tüm Kaynak seçeneğini seçin.
+	Take	Çekim
+	Text size	Metin boyutu
+	The control server can't listen on 127.0.0.1:{port}: {error}	Denetim sunucusu 127.0.0.1:{port} üzerinde dinleyemiyor: {error}
+	This preference is not available yet.	Bu tercih henüz kullanılamıyor.
+	This replacement could be different footage. Old script marks would point to the wrong frames.	Bu değiştirme farklı bir görüntü olabilir. Eski senaryo işaretleri yanlış karelere işaret edecektir.
+	This updates every matching candle in all scripts.	Bu, tüm senaryolardaki eşleşen her mumu günceller.
+	Three-Way Color Corrector	Üç Yönlü Renk Düzeltici
+	Thumbnail size	Küçük resim boyutu
+	Ticked attributes are removed from the selected clips.	İşaretli öznitelikler seçili kliplerden kaldırılır.
+	TikTok 1080×1920	TikTok 1080×1920
+	Time Format	Zaman Biçimi
+	Toggle Script Offscreen	Senaryo Ekran Dışını Aç/Kapat
+	Tonal Range	Ton Aralığı
+	Untitled Script	Adsız Senaryo
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Etkinleştirildiğinde GIF saydamlığı açık/kapalı olur: 128'in altındaki alfa saydamdır; 128 ve üzeri opaktır.
+	Wrap margin	Satır kaydırma kenar boşluğu
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
+	{current} of {count}	{current} / {count}
+	{frames} frames ({seconds} s)	{frames} kare ({seconds} sn)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} zaten mevcut, bu yüzden hiçbir şey dışa aktarılmadı. Değiştirmek için kaydetme iletişim kutusunda seçin.
+	{n} Script-linked clip(s) still need review. Select each remaining source to relink.	{n} Senaryoya bağlı klip hâlâ inceleme gerektiriyor. Yeniden bağlamak için kalan her kaynağı seçin.
+	Mark Offscreen	Ekran Dışı Olarak İşaretle
+	Mark or clear the selected candle rows as off-screen	Seçili mum satırlarını ekran dışı olarak işaretler veya işareti temizler
+
