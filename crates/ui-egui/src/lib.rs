@@ -339,6 +339,8 @@ pub struct FilmcraftApp {
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
+    /// The status message as shown, in the interface language.
+    status_text: crate::i18n::StatusText,
     /// Admitted `ui.screenshot` requests and their completion slots.
     pub(crate) shots: capture::Shots,
     /// Fresh raw-input surface geometry, refreshed in `raw_input_hook` for UI and logic callbacks.

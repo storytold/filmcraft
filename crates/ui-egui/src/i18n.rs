@@ -374,6 +374,71 @@ pub fn tr_ctx<'a>(context: &str, text: &'a str) -> &'a str {
     lang.catalog().and_then(|c| c.contextual(context, text)).unwrap_or_else(|| lang.tr(text))
 }
 
+/// Translate a message built at run time (an engine toast or error shown in the status bar) into
+/// the current language: a catalog string as is, else a catalog template filled with the
+/// message's own values, which are translated the same way (`"Failed: {e}"` with a known `e`).
+/// Unknown messages come back unchanged.
+pub fn tr_message(msg: &str) -> String {
+    current().tr_message(msg)
+}
+
+impl Language {
+    /// [`tr_message`] in this language.
+    pub fn tr_message(self, msg: &str) -> String {
+        self.tr_message_depth(msg, 0)
+    }
+
+    fn tr_message_depth(self, msg: &str, depth: u32) -> String {
+        let Some(c) = self.catalog() else { return msg.to_string() };
+        if let Some(t) = c.plain(msg) {
+            return t.to_string();
+        }
+        // nested messages ("Transcription: {e}" around an error) are a few levels deep at most
+        if depth >= 3 {
+            return msg.to_string();
+        }
+        match c.template(msg) {
+            Some((template, caps)) => {
+                let values: Vec<(&str, String)> = caps.into_iter().map(|(k, v)| (k, self.tr_message_depth(v, depth + 1))).collect();
+                let args: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                fmt(template, &args)
+            }
+            None => msg.to_string(),
+        }
+    }
+}
+
+/// A speaker's name as shown: the default names the recogniser gives ("Speaker 2") in the
+/// interface language, a name the user typed as it is. Cheap enough for every frame.
+pub fn speaker_name(name: &str) -> std::borrow::Cow<'_, str> {
+    match name.strip_prefix("Speaker ") {
+        Some(n) if !n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit()) => format!("{} {n}", t("Speaker")).into(),
+        _ => name.into(),
+    }
+}
+
+/// The status bar's text: the message as it arrived (engine toasts and errors are English) shown
+/// in the interface language. It is translated again when either the message or the language
+/// changes, and only then, so the template search does not run on every frame.
+#[derive(Debug, Default)]
+pub struct StatusText {
+    source: String,
+    lang: Option<Language>,
+    shown: String,
+}
+
+impl StatusText {
+    /// `source` in `lang`.
+    pub fn get(&mut self, source: &str, lang: Language) -> &str {
+        if self.source != source || self.lang != Some(lang) {
+            self.shown = lang.tr_message(source);
+            self.source = source.to_string();
+            self.lang = Some(lang);
+        }
+        &self.shown
+    }
+}
+
 /// Fill `{name}` placeholders. Unknown placeholders are left as written.
 pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
     let mut out = String::new();

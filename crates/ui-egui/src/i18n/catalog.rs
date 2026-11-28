@@ -9,6 +9,61 @@ pub struct Catalog {
     plain: HashMap<String, String>,
     /// strings with a disambiguating context, keyed `context \u{1} source`
     contextual: HashMap<String, String>,
+    /// context-free entries with `{name}` placeholders, for messages built at run time
+    /// ([`Catalog::template`])
+    templates: Vec<Template>,
+}
+
+/// A catalog entry whose source has placeholders: the literal text around them (`lits.len()` is
+/// `names.len() + 1`) and the translation to fill.
+#[derive(Debug)]
+struct Template {
+    lits: Vec<String>,
+    names: Vec<String>,
+    translation: String,
+    /// Bytes of literal text: the more, the more specific the match.
+    weight: usize,
+}
+
+impl Template {
+    /// None when the source has no placeholder, two placeholders side by side (ambiguous), an
+    /// unclosed brace, or too little literal text to identify a message.
+    fn parse(src: &str, translation: &str) -> Option<Template> {
+        let (mut lits, mut names) = (Vec::new(), Vec::new());
+        let mut rest = src;
+        while let Some((lit, after)) = rest.split_once('{') {
+            let (name, tail) = after.split_once('}')?;
+            if name.is_empty() || name.contains('{') || (!names.is_empty() && lit.is_empty()) {
+                return None;
+            }
+            lits.push(lit.to_string());
+            names.push(name.to_string());
+            rest = tail;
+        }
+        lits.push(rest.to_string());
+        let weight = lits.iter().map(String::len).sum();
+        (!names.is_empty() && weight >= 8).then(|| Template { lits, names, translation: translation.to_string(), weight })
+    }
+
+    /// The placeholder values when `msg` is this template filled in.
+    fn captures<'m>(&self, msg: &'m str) -> Option<Vec<&'m str>> {
+        let (first, last) = (self.lits.first()?, self.lits.last()?);
+        let mut rest = msg.strip_prefix(first.as_str())?.strip_suffix(last.as_str())?;
+        let mut out = Vec::with_capacity(self.names.len());
+        // each inner literal ends the capture before it (leftmost match); the last capture is
+        // what remains before the suffix
+        for lit in self.lits.iter().skip(1).take(self.names.len().saturating_sub(1)) {
+            let at = rest.find(lit.as_str())?;
+            out.push(rest.get(..at)?);
+            rest = rest.get(at + lit.len()..)?;
+        }
+        out.push(rest);
+        // a value that opens the template is a name or a count ("{n} selected"), never a clause:
+        // otherwise "command … is not available right now: nothing selected" would read as a
+        // count of "command … nothing" and come out half translated
+        let lead_is_clause = first.is_empty() && out.first().is_some_and(|c| [": ", "; ", ". ", "\n"].iter().any(|s| c.contains(s)));
+        (!lead_is_clause && out.iter().all(|c| !c.is_empty())).then_some(out)
+    }
 }
 
 /// A catalog entry as read from the file: (context, source, translation).
@@ -61,6 +116,9 @@ impl Catalog {
         let mut c = Catalog::default();
         for (ctx, src, tr) in parse_entries(text).0 {
             if ctx.is_empty() {
+                if let Some(t) = Template::parse(&src, &tr) {
+                    c.templates.push(t);
+                }
                 c.plain.insert(src, tr);
             } else {
                 c.contextual.insert(format!("{ctx}\u{1}{src}"), tr);
@@ -75,6 +133,23 @@ impl Catalog {
 
     pub fn contextual(&self, ctx: &str, s: &str) -> Option<&str> {
         self.contextual.get(&format!("{ctx}\u{1}{s}")).map(String::as_str)
+    }
+
+    /// A message built at run time from a catalog template (`"Failed: {e}"` matches
+    /// `"Failed: disk full"`): the most specific matching template's translation and the
+    /// placeholder values, by name. Linear in the catalog: for status messages, not every frame.
+    pub fn template<'m>(&self, msg: &'m str) -> Option<(&str, Vec<(&str, &'m str)>)> {
+        let mut best: Option<(&Template, Vec<&'m str>)> = None;
+        for t in &self.templates {
+            if best.as_ref().is_some_and(|(b, _)| b.weight >= t.weight) {
+                continue;
+            }
+            if let Some(caps) = t.captures(msg) {
+                best = Some((t, caps));
+            }
+        }
+        let (t, caps) = best?;
+        Some((t.translation.as_str(), t.names.iter().map(String::as_str).zip(caps).collect()))
     }
 }
 

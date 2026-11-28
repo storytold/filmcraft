@@ -74,6 +74,13 @@ fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon: Icon, i
     resp.on_hover_text(label).clicked() && enabled
 }
 
+/// Whether a caption shows in a search for `q` (lowercase): its text, or its speaker as stored
+/// ("Speaker 2") or as shown ("Intervenant 2" in French).
+fn caption_matches(c: &filmcraft_project::Caption, q: &str) -> bool {
+    let speaker = c.speaker.as_deref().unwrap_or("");
+    c.text.to_lowercase().contains(q) || speaker.to_lowercase().contains(q) || crate::i18n::speaker_name(speaker).to_lowercase().contains(q)
+}
+
 fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let project = app.session.project.clone();
@@ -203,7 +210,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.set_width(list.width() - 12.0);
         let mut shown = 0;
         for (n, c) in track.captions.iter().enumerate() {
-            if !q.is_empty() && !c.text.to_lowercase().contains(&q) && !c.speaker.as_deref().unwrap_or("").to_lowercase().contains(&q) {
+            if !q.is_empty() && !caption_matches(c, &q) {
                 continue;
             }
             shown += 1;
@@ -256,7 +263,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     });
                     ui.vertical(|ui| {
                         if let Some(sp) = &c.speaker {
-                            ui.label(egui::RichText::new(sp).size(11.0).color(t.text_dim).strong());
+                            ui.label(egui::RichText::new(crate::i18n::speaker_name(sp)).size(11.0).color(t.text_dim).strong());
                         }
                         let key = egui::Id::unique(("cap-text", c.id.0));
                         let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
@@ -648,7 +655,8 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.set_width(list.width() - 16.0);
         for (pi, pr) in paras.iter().enumerate() {
             let w0 = &words[pr.start];
-            let head = format!("{}  {}", w0.speaker.as_deref().unwrap_or(tl!("Speaker")), format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000));
+            let speaker = w0.speaker.as_deref().map(crate::i18n::speaker_name).unwrap_or(tl!("Speaker").into());
+            let head = format!("{speaker}  {}", format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000));
             let hr = ui.label(egui::RichText::new(head).size(11.0).color(t.text_dim).strong());
             app.auto.add(&format!("text.transcript.paragraph.{pi}"), hr.rect, "Paragraph");
             ui.horizontal_wrapped(|ui| {
@@ -793,6 +801,28 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Caption search finds a default speaker by the name the list shows ("Intervenant 2" in
+    /// French) as well as the stored one.
+    #[test]
+    fn caption_search_matches_the_speaker_name_as_shown() {
+        let c = filmcraft_project::Caption {
+            id: filmcraft_project::ClipId(1),
+            start: filmcraft_time::Tick(0),
+            duration: filmcraft_time::Tick(10),
+            text: "Bonjour".into(),
+            speaker: Some("Speaker 2".into()),
+            cue_id: None,
+            settings: String::new(),
+        };
+        let before = crate::i18n::current();
+        crate::i18n::set_current(crate::i18n::Language::Fr);
+        assert!(super::caption_matches(&c, "intervenant 2"));
+        assert!(super::caption_matches(&c, "speaker 2"));
+        assert!(super::caption_matches(&c, "bonjour"));
+        assert!(!super::caption_matches(&c, "intervenant 3"));
+        crate::i18n::set_current(before);
+    }
 
     /// Latin labels keep the 7 px per character they were laid out with; Japanese labels are as
     /// wide as they are drawn, so they no longer run into the next tab.
