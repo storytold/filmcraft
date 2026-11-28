@@ -48,6 +48,12 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
+    uic!("export.preview.toggle", "Play/Stop", [], None),
+    uic!("export.preview.seek", "Set Playhead", [], None),
+    uic!("export.preview.first", "Go to In", [], None),
+    uic!("export.preview.last", "Go to Out", [], None),
+    uic!("export.preview.stepBack", "Step Back 1 Frame", [], None),
+    uic!("export.preview.stepForward", "Step Forward 1 Frame", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -123,6 +129,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.effects", "Effects", ["Window", "Workspaces"], Some("Alt+Shift+4")),
     uic!("window.workspace.audio", "Audio", ["Window", "Workspaces"], Some("Alt+Shift+5")),
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
+    uic!("window.workspace.script", "Lined Script", ["Window", "Workspaces"], None),
+    uic!("script.openPanel", "Open Script", [], None),
+    uic!("script.findInScript", "Find in Script", [], None),
+    uic!("script.addMarkAtSelection", "Add Script Mark", [], None),
+    uic!("script.toggleOffscreen", "Toggle Script Offscreen", [], None),
+    uic!("script.thumbnailBack", "Script Thumbnail Back", [], None),
+    uic!("script.thumbnailForward", "Script Thumbnail Forward", [], None),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
     uic!("window.workspace.vertical", "Vertical", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
@@ -175,6 +188,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.settings.trim", "Trim…", ["Edit", "Preferences"], None),
 ];
 
+fn panel_menu_label(panel: PanelKind) -> &'static str {
+    match panel {
+        PanelKind::Script => "Lined Script",
+        _ => panel.title(),
+    }
+}
+
 pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
@@ -184,7 +204,7 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => true,
         Some(_) => false,
-        None => app.ui.focused == PanelKind::Source,
+        None => app.ui.mode != Mode::Export && app.ui.focused == PanelKind::Source,
     }
 }
 
@@ -206,8 +226,30 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
     items
 }
 
+/// Export owns the transport even if Source had focus before changing workspaces.
+fn export_preview_command<'a>(app: &FilmcraftApp, id: &'a str, params: &Value) -> Option<&'a str> {
+    if id.starts_with("export.preview.") {
+        return Some(id);
+    }
+    if app.ui.mode != Mode::Export || params.get("monitor").is_some_and(|monitor| !monitor.is_null()) {
+        return None;
+    }
+    match id {
+        "playback.toggle" => Some("export.preview.toggle"),
+        "playhead.stepBack" => Some("export.preview.stepBack"),
+        "playhead.stepForward" => Some("export.preview.stepForward"),
+        "markers.goToIn" => Some("export.preview.first"),
+        "markers.goToOut" => Some("export.preview.last"),
+        _ => None,
+    }
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    app.ui.script.sync_project(&app.session.project_instance);
+    if let Some(command) = export_preview_command(app, id, &params) {
+        return crate::panels::export_mode::preview_command(app, command, &params);
+    }
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -221,9 +263,20 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
-    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
-    if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch
+    // Warning asks first, from a menu (`engine.execute` keeps the sequence settings, #1540)
+    if !app.engine_call && matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
+    }
+    // From a menu, a shortcut or `ui.menu.invoke`, a command without parameters opens the dialog
+    // that asks for them. From the control channel's `engine.execute` it does not (#1540): an agent
+    // can neither see nor close a dialog, so the engine command runs with what was given, and
+    // Sequence Settings… answers the settings it would have shown.
+    let menu = !app.engine_call;
+    if !menu && id == "sequence.settings" && (params.is_null() || params.as_object().is_some_and(|m| m.is_empty())) {
+        filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+        let seq = app.session.execute("sequence.inspect", json!({})).map_err(|e| e.to_string())?;
+        return Ok(json!({"settings": seq["settings"]}));
     }
     // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
     // Sequence and Color Matte take it when they open); a `bin` of the caller wins, null included
@@ -306,7 +359,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             let source = targets_source(app, &params);
             params.as_object_mut().ok_or("command parameters must be an object")?.insert("target".into(), json!(if source { "source" } else { "program" }));
         }
-        if params.get("path").is_none() {
+        if menu && params.get("path").is_none() {
             return crate::panels::frame_export::open(app, ctx, &params);
         }
     }
@@ -320,6 +373,65 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if let Some(rest) = id.strip_prefix("window.panel.") {
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
+        return Ok(Value::Null);
+    }
+    if id == "script.openPanel" {
+        let item = params.get("item").and_then(Value::as_u64).ok_or("script.openPanel needs an item")?;
+        if app.session.project.item(filmcraft_project::ItemId(item)).and_then(|item| item.as_script()).is_none() {
+            return Err("that project item is not a script".into());
+        }
+        app.ui.script.open_document(Some(item));
+        app.show_panel(PanelKind::Script);
+        return Ok(json!({"item": item}));
+    }
+    if id == "script.findInScript" {
+        let source =
+            params.get("item").and_then(Value::as_u64).or_else(|| app.session.state.project_selection.first().map(|id| id.0)).ok_or("select a project clip")?;
+        return crate::panels::script::find_source(app, filmcraft_project::ItemId(source));
+    }
+    if id == "script.addMarkAtSelection" {
+        return crate::panels::script::add_mark_at_selection(app);
+    }
+    if id == "script.toggleOffscreen" {
+        return crate::panels::script::toggle_offscreen_selection(app);
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.clear" && params.as_object().is_none_or(|map| map.is_empty()) {
+        if ctx.text_edit_focused() {
+            return Ok(Value::Null);
+        }
+        return crate::panels::script::delete_selection(app);
+    }
+    if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
+        return crate::panels::script::shuttle_thumbnail(app, ctx, if id == "script.thumbnailBack" { -1 } else { 1 });
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.undo" && crate::panels::script::has_text_paste_undo(app) {
+        return crate::panels::script::undo_text_paste(app, ctx);
+    }
+    if app.ui.focused == PanelKind::Script && params.as_object().is_none_or(|map| map.is_empty()) && matches!(id, "edit.copy" | "edit.paste") {
+        if ctx.text_edit_focused() {
+            if id == "edit.copy" {
+                app.synthetic.push(egui::Event::Copy);
+            } else if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+                app.synthetic.push(egui::Event::Paste(text));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
+            return Ok(Value::Null);
+        }
+        if id == "edit.copy" {
+            let result = crate::panels::script::copy_paste_section(app, true)?;
+            if let Some(text) = crate::panels::script::copied_plain_text(app) {
+                ctx.copy_text(text);
+            }
+            return Ok(result);
+        }
+        if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+            return crate::panels::script::paste_plain_text(app, &text);
+        }
+        if app.ui.script.section_clipboard.is_some() {
+            return crate::panels::script::copy_paste_section(app, false);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         return Ok(Value::Null);
     }
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
@@ -344,10 +456,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
         return r;
     }
-    if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+    // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
+    if (menu || matches!(id, "file.closeProject" | "file.closeAllProjects" | "app.quit"))
+        && let Some(r) = crate::panels::clip_dialogs::route(app, id, &params)
+    {
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
@@ -371,13 +486,16 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
+    // The dialogs answer only the menu (#1540): from `engine.execute` the command goes on to the
+    // engine with the parameters given, and answers an error when it needs some. The UI commands
+    // the menu-dialog route also carries (dynamic waveforms, reveal, …) answer either way.
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, menu) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
         return r;
     }
-    if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
+    if menu && let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -509,7 +627,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(Value::Null);
         }
         "mode.export" => {
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(Value::Null);
         }
         "app.checkForUpdates" => {
@@ -531,24 +649,24 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(Value::Null);
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
-        "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
+        "file.exportAaf" | "file.exportOmf" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
         }
         // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
         // settings (#3365); with a path it exports directly.
-        "captions.export" if params.get("path").is_none() => {
+        "captions.export" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
-        "file.exportMedia" if params.get("path").is_none() => {
+        "file.exportMedia" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(json!({"mode": "export"}));
         }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
-        "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.audioGain" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             if app.ui.audio_gain.mode.is_empty() {
                 app.ui.audio_gain.mode = "adjust".into();
@@ -557,19 +675,19 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.
-        "clip.interpretFootage" if params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
+        "clip.interpretFootage" if menu && params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
         }
         // Remix Properties… from the menu opens the dialog; with params it applies directly.
-        "clip.remix.properties" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.remix.properties" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::remix::open(app, ctx);
         }
         // Add Tracks… from the menu opens the dialog (new tracks after the last ones, as Premiere
         // offers); with params it adds the tracks directly.
-        "sequence.addTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.addTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             let seq = app.session.active_sequence();
             let count = |f: fn(&filmcraft_engine::project::Sequence) -> usize| seq.map_or(0, f);
@@ -582,7 +700,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             app.dialog = Some(crate::Dialog::AddTracks);
             return Ok(json!({"dialog": "addTracks"}));
         }
-        "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.deleteTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.delete_tracks = Default::default();
             app.dialog = Some(crate::Dialog::DeleteTracks);
@@ -590,18 +708,18 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         // Sequence Settings… from the menu opens the dialog; with params the engine command applies
         // them directly.
-        "sequence.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.settings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::sequence_settings::open(app);
             return Ok(json!({"dialog": "sequenceSettings"}));
         }
         // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
         // makes the sequence directly
-        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some() => {
+        "file.newSequence" if menu && (params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some()) => {
             crate::panels::sequence_settings::open_new(app, crate::panels::project::bin_only(&params));
             return Ok(json!({"dialog": "newSequence"}));
         }
-        "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.colorSettings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
@@ -665,17 +783,25 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return Ok(Value::Null);
     }
     // File dialogs for commands that need a path.
-    if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
-        || (id == "file.importImageSequence" && params.get("path").is_none())
-        || (id == "file.saveAs" && params.get("path").is_none())
-        || (id == "file.saveCopy" && params.get("path").is_none())
-        || (id == "file.open" && params.get("path").is_none())
-        || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (id == "captions.import" && params.get("path").is_none())
-        || (id == "graphics.newFromFile" && params.get("path").is_none())
-        || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
+    if menu
+        && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
+            || (id == "file.importImageSequence" && params.get("path").is_none())
+            || (id == "file.saveAs" && params.get("path").is_none())
+            || (id == "file.saveCopy" && params.get("path").is_none())
+            || (id == "file.open" && params.get("path").is_none())
+            || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+            || (id == "captions.import" && params.get("path").is_none())
+            || (id == "graphics.newFromFile" && params.get("path").is_none())
+            || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none()))
     {
         return app.file_dialog(id, &params);
+    }
+    // Stepping a frame or jumping to an edit point parks the playhead: playback stops, then the
+    // step lands on its frame, as in Premiere Pro (#4655). Left running, the playback clock would
+    // carry the playhead on from its anchor on the next pass and overwrite the step. Stopping
+    // first ends an automation pass where playback actually was, not where the step lands.
+    if parks_playhead(id) && app.playback.playing {
+        app.stop();
     }
     let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
@@ -702,6 +828,22 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Commands that move the playhead a frame or to an edit point: playback stops where they land,
+/// as Premiere Pro's Step and Go to Edit Point keys do (#4655).
+fn parks_playhead(id: &str) -> bool {
+    matches!(
+        id,
+        "playhead.stepBack"
+            | "playhead.stepForward"
+            | "playhead.stepBack5"
+            | "playhead.stepForward5"
+            | "playhead.prevEdit"
+            | "playhead.nextEdit"
+            | "playhead.prevEditAnyTrack"
+            | "playhead.nextEditAnyTrack"
+    )
 }
 
 /// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
@@ -734,12 +876,21 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         return Ok(Value::Null);
     }
     match text {
-        TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
-        TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
+        TextCommand::Paste => {
+            if window == egui::ViewportId::ROOT
+                && app.ui.focused == PanelKind::Script
+                && let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read())
+            {
+                app.synthetic.push(egui::Event::Paste(text));
+                ctx.request_repaint();
+            } else {
+                ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste);
+            }
+        }
+        TextCommand::Events(events) => {
             app.synthetic.extend(events);
             ctx.request_repaint();
         }
-        TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
     }
     Ok(Value::Null)
 }
@@ -753,10 +904,10 @@ fn select_all_in_text_field(ctx: &egui::Context) -> bool {
     true
 }
 
-/// The window whose text field has the keyboard: a floating panel's own OS window, or the main
-/// window.
+/// The window whose text field has the keyboard. next's dock tells no floating OS window's text
+/// focus, so only the main window's text fields take the Edit menu's text commands.
 pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
-    craft_ui::docking::typing_window(ctx).or_else(|| ctx.text_edit_focused().then_some(egui::ViewportId::ROOT))
+    ctx.text_edit_focused().then_some(egui::ViewportId::ROOT)
 }
 
 /// Whether a focused text field takes the menu command `id` ([`activate_native`]): the native
@@ -1094,7 +1245,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     for p in PanelKind::ALL {
         out.push(MenuItem {
             id: panel_command_id(p),
-            label: p.title().into(),
+            label: panel_menu_label(p).into(),
             path: vec!["Window".into()],
             shortcut: session.shortcuts.primary(&panel_command_id(p)),
             enabled: true,
@@ -1265,7 +1416,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     let mut v: Vec<CommandInfo> =
         UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
     for p in PanelKind::ALL {
-        v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
+        v.push(CommandInfo::new(&panel_command_id(p), panel_menu_label(p), &["Window"], p.window_shortcut()));
     }
     v
 }
@@ -1610,8 +1761,11 @@ mod tests {
         assert!(items.iter().all(|it| it.path.first().is_some_and(|top| MENUS.contains(&top.as_str()))));
         let ws: Vec<&MenuItem> = items.iter().filter(|it| it.path == ["Window", "Workspaces"]).collect();
         for name in crate::dock::WORKSPACES {
-            assert!(ws.iter().any(|it| it.label == name && it.checked.is_none()), "no workspace {name}");
+            let id = format!("window.workspace.{}", crate::dock::slug(name));
+            assert!(ws.iter().any(|it| it.id == id && it.checked.is_none()), "no workspace {name}");
         }
+        assert!(ws.iter().any(|it| it.id == "window.workspace.script" && it.label == "Lined Script"));
+        assert!(items.iter().any(|it| it.id == "window.panel.Script" && it.path == ["Window"] && it.label == "Lined Script"));
         let editing = ws.iter().position(|it| it.label == "Editing");
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");

@@ -1,4 +1,5 @@
 use super::*;
+use std::io::{BufRead, BufReader};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -262,6 +263,8 @@ fn a_refused_bind_is_reported_and_leaves_the_listener_closed() {
     assert!(matches!(w, DisabledWhy::Bind { .. }));
     let reason = w.reason();
     assert!(reason.contains("could not bind") && reason.contains(&port.to_string()), "{reason}");
+    // A held port names the collision in plain words (#3313).
+    assert!(reason.contains("in use"), "{reason}");
 }
 
 #[test]

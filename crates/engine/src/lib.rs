@@ -51,12 +51,15 @@ pub mod relink;
 pub mod remix;
 pub mod scene_detect;
 pub mod scopes;
+pub mod script_commands;
 pub mod sequence_extras;
 pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod slip;
 pub mod source_monitor;
+pub mod still_migration;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
@@ -510,6 +513,8 @@ pub enum Event {
     },
     OpenSequence(ItemId),
     OpenSource(ItemId),
+    /// Show the source monitor while retaining the panel that requested the cue.
+    CueSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
 }
@@ -763,7 +768,7 @@ impl Session {
             return;
         }
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            p.send_dirty(self.project.clone(), self.media.clone(), self.revision, self.path.clone());
         } else {
             p.send_clean();
         }
@@ -1400,7 +1405,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
                 id = *parent;
                 continue;
             }
-            filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
+            filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } | filmcraft_project::ItemKind::Script(_) => None,
         };
     }
     None
@@ -1518,7 +1523,11 @@ mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod slip_tests;
+#[cfg(test)]
 mod split_edit_ripple_trim_tests;
+#[cfg(test)]
+mod still_migration_tests;
 #[cfg(test)]
 mod stored_paths_tests;
 #[cfg(test)]

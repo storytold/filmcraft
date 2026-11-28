@@ -367,6 +367,7 @@
 
 # Sequence: the Delete Work Area Render Files confirmation.
 	Delete preview files that overlap the work area?	Видалити файли попереднього перегляду, що перетинають робочу область?
+	Set Playhead	Установити курсор відтворення
 # Marker editing and shared custom colors
 	A range marker needs a positive duration	Тривалість маркера діапазону має бути додатною
 	Add Custom Color	Додати власний колір

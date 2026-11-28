@@ -277,13 +277,14 @@ fn row<R>(ui: &mut egui::Ui, label_w: f32, label: &str, enabled: bool, add: impl
 }
 
 /// A greyed-out list showing `value`, with the "not supported yet" hint (or `hint`).
-fn fixed_combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, value: &str, width: f32, hint: &str) {
+fn fixed_combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &str, width: f32, hint: &str) {
     let r = ui
         .add_enabled_ui(false, |ui| {
-            craft_ui::ComboBox::from_id_salt(("seq-settings-fixed", id)).selected_text(t(value)).width(width).show_ui(ui, |_| {}).response
+            crate::legacy_dropdown::Dropdown::from_id_salt(("seq-settings-fixed", id)).selected_text(t(value)).width(width).show_ui(ui, |_| {}).response
         })
         .inner
         .on_disabled_hover_text(t(hint));
+    let r = crate::widgets::accessible_name(r, t(label));
     elems.push((format!("sequenceSettings.{id}"), r.rect, value.to_string()));
 }
 
@@ -313,7 +314,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
         let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(list_w)), "Sequence Name");
         elems.push(("sequenceSettings.name".into(), r.rect, d.name.clone()));
     });
-    row(ui, label_w, "Editing Mode:", false, |ui| fixed_combo(ui, elems, "editingMode", "Custom", list_w, NOT_YET));
+    row(ui, label_w, "Editing Mode:", false, |ui| fixed_combo(ui, elems, "editingMode", "Editing Mode:", "Custom", list_w, NOT_YET));
     row(ui, label_w, "Timebase:", true, |ui| {
         let r = rate(d);
         let mut choices: Vec<(i64, i64)> = TIMEBASES.to_vec();
@@ -324,21 +325,25 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
         // no row limit of our own: the list grows to egui's popup limit (`Spacing::default_area_size`,
         // 400 px), so every rate up to 119.88 shows without scrolling (the default 200 px stopped
         // before 29.97)
-        let resp = craft_ui::ComboBox::from_id_salt("seq-settings-timebase").selected_text(&shown).width(list_w).height(f32::INFINITY).show_ui(ui, |ui| {
-            for (num, den) in choices {
-                let label = timebase_label(FrameRate { num, den });
-                let o = ui.selectable_label((d.fps_num, d.fps_den) == (num, den), &label);
-                // a new timebase starts on its usual timecode (drop-frame for the NTSC rates);
-                // picking the current one again keeps the Display Format chosen for it
-                if o.clicked() && (d.fps_num, d.fps_den) != (num, den) {
-                    d.fps_num = num;
-                    d.fps_den = den;
-                    d.drop_frame = FrameRate { num, den }.supports_drop_frame();
+        let resp = crate::legacy_dropdown::Dropdown::from_id_salt("seq-settings-timebase").selected_text(&shown).width(list_w).height(f32::INFINITY).show_ui(
+            ui,
+            |ui| {
+                for (num, den) in choices {
+                    let label = timebase_label(FrameRate { num, den });
+                    let o = ui.selectable_label((d.fps_num, d.fps_den) == (num, den), &label);
+                    // a new timebase starts on its usual timecode (drop-frame for the NTSC rates);
+                    // picking the current one again keeps the Display Format chosen for it
+                    if o.clicked() && (d.fps_num, d.fps_den) != (num, den) {
+                        d.fps_num = num;
+                        d.fps_den = den;
+                        d.drop_frame = FrameRate { num, den }.supports_drop_frame();
+                    }
+                    elems.push((format!("sequenceSettings.timebase.option.{num}/{den}"), o.rect, label));
                 }
-                elems.push((format!("sequenceSettings.timebase.option.{num}/{den}"), o.rect, label));
-            }
-        });
-        elems.push(("sequenceSettings.timebase".into(), resp.response.rect, shown));
+            },
+        );
+        let resp = crate::widgets::accessible_name(resp.response, t("Timebase:"));
+        elems.push(("sequenceSettings.timebase".into(), resp.rect, shown));
     });
     section(ui, "Video", |ui| {
         row(ui, label_w, "Frame Size:", true, |ui| {
@@ -355,8 +360,8 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
         });
         let r = ui.checkbox(&mut d.scale_motion, tl!("Scale motion effects proportionally when changing frame size"));
         elems.push(("sequenceSettings.scaleMotion".into(), r.rect, d.scale_motion.to_string()));
-        row(ui, label_w, "Pixel Aspect Ratio:", false, |ui| fixed_combo(ui, elems, "par", &par_label(cur.par), list_w, NOT_YET));
-        row(ui, label_w, "Fields:", false, |ui| fixed_combo(ui, elems, "fields", "No Fields (Progressive Scan)", list_w, NOT_YET));
+        row(ui, label_w, "Pixel Aspect Ratio:", false, |ui| fixed_combo(ui, elems, "par", "Pixel Aspect Ratio:", &par_label(cur.par), list_w, NOT_YET));
+        row(ui, label_w, "Fields:", false, |ui| fixed_combo(ui, elems, "fields", "Fields:", "No Fields (Progressive Scan)", list_w, NOT_YET));
         row(ui, label_w, "Display Format:", true, |ui| {
             let r = rate(d);
             let formats = timecode_formats(r);
@@ -364,7 +369,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let chosen = if r.supports_drop_frame() { if d.drop_frame { "df" } else { "ndf" } } else { "tc" };
             let shown =
                 if film { t(d.display.label()).to_string() } else { formats.iter().find(|(id, _)| *id == chosen).map(|(_, l)| l.clone()).unwrap_or_default() };
-            let resp = craft_ui::ComboBox::from_id_salt("seq-settings-video-display").selected_text(&shown).width(list_w).show_ui(ui, |ui| {
+            let resp = crate::legacy_dropdown::Dropdown::from_id_salt("seq-settings-video-display").selected_text(&shown).width(list_w).show_ui(ui, |ui| {
                 for (id, label) in &formats {
                     let o = ui.selectable_label(!film && *id == chosen, label);
                     if o.clicked() {
@@ -382,19 +387,21 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
                     elems.push((format!("sequenceSettings.videoDisplay.option.{}", display.id()), o.rect, label));
                 }
             });
-            elems.push(("sequenceSettings.videoDisplay".into(), resp.response.rect, shown));
+            let resp = crate::widgets::accessible_name(resp.response, t("Display Format:"));
+            elems.push(("sequenceSettings.videoDisplay".into(), resp.rect, shown));
         });
     });
     section(ui, "Audio", |ui| {
         row(ui, label_w, "Channel Format:", true, |ui| {
             let shown = d.mix.clone();
-            let resp = craft_ui::ComboBox::from_id_salt("seq-settings-mix").selected_text(t(&shown)).width(120.0).show_ui(ui, |ui| {
+            let resp = crate::legacy_dropdown::Dropdown::from_id_salt("seq-settings-mix").selected_text(t(&shown)).width(120.0).show_ui(ui, |ui| {
                 for m in MIXES {
                     let o = ui.selectable_value(&mut d.mix, m.to_string(), t(m));
                     elems.push((format!("sequenceSettings.channelFormat.option.{m}"), o.rect, m.to_string()));
                 }
             });
-            elems.push(("sequenceSettings.channelFormat".into(), resp.response.rect, shown));
+            let resp = crate::widgets::accessible_name(resp.response, t("Channel Format:"));
+            elems.push(("sequenceSettings.channelFormat".into(), resp.rect, shown));
             ui.add_enabled(false, egui::Label::new(tl!("Number of Channels:")));
             let n = match d.mix.as_str() {
                 "Mono" => "1",
@@ -402,7 +409,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
                 "Adaptive" => "—",
                 _ => "2",
             };
-            fixed_combo(ui, elems, "channels", n, 60.0, NOT_YET);
+            fixed_combo(ui, elems, "channels", "Number of Channels:", n, 60.0, NOT_YET);
         });
         row(ui, label_w, "Sample Rate:", true, |ui| {
             let mut rates = SAMPLE_RATES.to_vec();
@@ -410,24 +417,25 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
                 rates.insert(0, d.sample_rate);
             }
             let shown = format!("{} Hz", d.sample_rate);
-            let resp = craft_ui::ComboBox::from_id_salt("seq-settings-sample-rate").selected_text(&shown).width(list_w).show_ui(ui, |ui| {
+            let resp = crate::legacy_dropdown::Dropdown::from_id_salt("seq-settings-sample-rate").selected_text(&shown).width(list_w).show_ui(ui, |ui| {
                 for hz in rates {
                     let label = format!("{hz} Hz");
                     let o = ui.selectable_value(&mut d.sample_rate, hz, &label);
                     elems.push((format!("sequenceSettings.sampleRate.option.{hz}"), o.rect, label));
                 }
             });
-            elems.push(("sequenceSettings.sampleRate".into(), resp.response.rect, shown));
+            let resp = crate::widgets::accessible_name(resp.response, t("Sample Rate:"));
+            elems.push(("sequenceSettings.sampleRate".into(), resp.rect, shown));
         });
         let shown = if audio_samples { "Audio Samples" } else { "Milliseconds" };
-        row(ui, label_w, "Display Format:", false, |ui| fixed_combo(ui, elems, "audioDisplay", shown, list_w, NOT_YET));
+        row(ui, label_w, "Display Format:", false, |ui| fixed_combo(ui, elems, "audioDisplay", "Display Format:", shown, list_w, NOT_YET));
     });
     section(ui, "Video Previews", |ui| {
         row(ui, label_w, "Preview File Format:", false, |ui| {
-            fixed_combo(ui, elems, "previewFormat", "QuickTime", list_w, NOT_YET);
+            fixed_combo(ui, elems, "previewFormat", "Preview File Format:", "QuickTime", list_w, NOT_YET);
             ui.add_enabled(false, egui::Button::new(tl!("Configure…"))).on_disabled_hover_text(t(NOT_YET));
         });
-        row(ui, label_w, "Codec:", false, |ui| fixed_combo(ui, elems, "previewCodec", &cur.preview_codec, list_w, NOT_YET));
+        row(ui, label_w, "Codec:", false, |ui| fixed_combo(ui, elems, "previewCodec", "Codec:", &cur.preview_codec, list_w, NOT_YET));
         row(ui, label_w, "Width:", false, |ui| fixed_value(ui, elems, "previewWidth", &d.width.to_string()));
         row(ui, label_w, "Height:", false, |ui| {
             fixed_value(ui, elems, "previewHeight", &d.height.to_string());
@@ -451,13 +459,14 @@ fn color(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
     let label_w = ui.painter().layout_no_wrap(tl!("Working Color Space:").to_string(), font, egui::Color32::WHITE).size().x;
     row(ui, label_w, "Working Color Space:", true, |ui| {
         let shown = WorkingSpace::parse(&d.working_space).map_or(d.working_space.clone(), |w| t(w.label()).to_string());
-        let resp = craft_ui::ComboBox::from_id_salt("seq-settings-working-space").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
+        let resp = crate::legacy_dropdown::Dropdown::from_id_salt("seq-settings-working-space").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
             for w in WorkingSpace::ALL {
                 let o = ui.selectable_value(&mut d.working_space, w.id().to_string(), t(w.label()));
                 elems.push((format!("sequenceSettings.workingSpace.option.{}", w.id()), o.rect, w.label().to_string()));
             }
         });
-        elems.push(("sequenceSettings.workingSpace".into(), resp.response.rect, shown));
+        let resp = crate::widgets::accessible_name(resp.response, t("Working Color Space:"));
+        elems.push(("sequenceSettings.workingSpace".into(), resp.rect, shown));
     });
     ui.add_space(4.0);
     let r = ui.checkbox(&mut d.wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
@@ -469,8 +478,8 @@ fn color(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
 fn vr(ui: &mut egui::Ui, elems: &mut Elems) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let label_w = ui.painter().layout_no_wrap(tl!("Captured View:").to_string(), font, egui::Color32::WHITE).size().x;
-    row(ui, label_w, "Projection:", false, |ui| fixed_combo(ui, elems, "vr.projection", "None", 200.0, NOT_YET));
-    row(ui, label_w, "Layout:", false, |ui| fixed_combo(ui, elems, "vr.layout", "Monoscopic", 200.0, NOT_YET));
+    row(ui, label_w, "Projection:", false, |ui| fixed_combo(ui, elems, "vr.projection", "Projection:", "None", 200.0, NOT_YET));
+    row(ui, label_w, "Layout:", false, |ui| fixed_combo(ui, elems, "vr.layout", "Layout:", "Monoscopic", 200.0, NOT_YET));
     row(ui, label_w, "Captured View:", false, |ui| {
         fixed_value(ui, elems, "vr.horizontal", "0°");
         ui.add_enabled(false, egui::Label::new(tl!("Horizontal")));

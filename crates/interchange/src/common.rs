@@ -174,6 +174,7 @@ fn split_root(p: &str) -> (&str, bool, &str) {
 /// Resolve a media URL from a document (FCPXML `src`, FCP7 `pathurl`, OTIO `target_url`): like
 /// [`resolve_path`], with a relative URL percent-decoded as a `file://` URL is (`Clip%20A.mov` is
 /// `Clip A.mov`, #2195). Plain file names (EDL, AAF) go through [`resolve_path`] untouched.
+#[cfg(test)]
 pub fn resolve_url(reference: &str, base_dir: Option<&str>) -> String {
     let r = reference.trim();
     let is_file_url = r.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("file:"));
@@ -181,6 +182,7 @@ pub fn resolve_url(reference: &str, base_dir: Option<&str>) -> String {
 }
 
 /// A relative path written as a URL (the inverse of [`resolve_url`]'s decoding).
+#[cfg(test)]
 pub(crate) fn relative_url(path: &str) -> String {
     percent_encode_path(path)
 }
@@ -228,12 +230,14 @@ pub(crate) fn file_stem(path: &str) -> &str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn extension(path: &str) -> String {
     let n = file_name(path);
     n.rfind('.').map(|i| n[i + 1..].to_ascii_lowercase()).unwrap_or_default()
 }
 
 /// Media kind guess from a file extension.
+#[cfg(test)]
 pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
     match extension(path).as_str() {
         "wav" | "aif" | "aiff" | "mp3" | "aac" | "m4a" | "flac" | "ogg" | "opus" | "bwf" => MediaKind::AudioOnly,
@@ -259,6 +263,7 @@ pub(crate) fn on_frame(rate: FrameRate, t: Tick) -> bool {
 }
 
 /// FCP7-style `(timebase, ntsc)` for a rate.
+#[cfg(test)]
 pub(crate) fn timebase(rate: FrameRate) -> (i64, bool) {
     (rate.timecode_base(), rate.is_ntsc())
 }
@@ -274,12 +279,14 @@ pub(crate) fn plausible_rate(rate: FrameRate) -> bool {
 }
 
 /// Rate from FCP7-style `(timebase, ntsc)`; the timebase is limited to `1..=MAX_RATE`.
+#[cfg(test)]
 pub(crate) fn rate_from_timebase(timebase: i64, ntsc: bool) -> FrameRate {
     let tb = timebase.clamp(1, MAX_RATE);
     if ntsc { FrameRate::new(tb * 1000, 1001) } else { FrameRate::new(tb, 1) }
 }
 
 /// Snap a floating rate (OTIO) to an exact rate.
+#[cfg(test)]
 pub(crate) fn rate_from_f64(r: f64) -> FrameRate {
     if r <= 0.0 || !r.is_finite() || r > MAX_RATE as f64 {
         return FrameRate::FPS_24;
@@ -430,6 +437,7 @@ impl Builder {
         self.media.get(key).copied()
     }
 
+    #[cfg(test)]
     pub fn register_media(&mut self, key: &str, id: ItemId) {
         self.media.insert(key.to_string(), id);
     }
@@ -445,6 +453,7 @@ impl Builder {
         id
     }
 
+    #[cfg(test)]
     pub fn generator_media(&mut self, key: &str, name: &str, g: Generator, spec: &MediaSpec, bin: Option<BinId>) -> ItemId {
         if let Some(id) = self.media.get(key) {
             return *id;
@@ -544,6 +553,7 @@ impl Builder {
 
     /// Place `item` on the first track at or after `preferred` where it does not overlap anything,
     /// creating tracks as needed. Returns the track index.
+    #[cfg(test)]
     pub fn place(&mut self, seq: &mut Sequence, kind: TrackKind, preferred: usize, item: TrackItem) -> Option<usize> {
         let mut i = preferred;
         loop {
@@ -629,6 +639,7 @@ pub(crate) fn scaled(d: Tick, speed: f64) -> Tick {
 }
 
 /// Timeline duration of a source duration at `speed`.
+#[cfg(test)]
 pub(crate) fn unscaled(d: Tick, speed: f64) -> Tick {
     let s = speed.abs();
     if s == 0.0 {
@@ -686,6 +697,7 @@ pub(crate) fn set_param(ti: &mut TrackItem, effect: &str, param: &str, value: Pa
 }
 
 /// Whether a parameter differs from its definition default or is animated.
+#[cfg(test)]
 pub(crate) fn param_modified(ti: &TrackItem, effect: &str, param_id: &str) -> bool {
     let Some(p) = param(ti, effect, param_id) else { return false };
     if p.is_animated() {
@@ -745,6 +757,7 @@ pub(crate) fn transition_name(e: &EffectInstance) -> String {
 }
 
 /// Label from a document label name (Premiere label names; FCP7 names like "Good Take" ignored).
+#[cfg(test)]
 pub(crate) fn label_from(s: &str) -> Option<Label> {
     Label::from_name(s.trim())
 }
