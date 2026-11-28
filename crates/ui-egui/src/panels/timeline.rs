@@ -29,6 +29,8 @@ use super::timeline_hit::{
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 mod clips;
+mod playhead_scissors;
+use playhead_scissors::playhead_scissors;
 mod headers;
 mod interact;
 mod layout;
@@ -484,6 +486,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if cap_n > 0 {
         super::timeline_captions::interact(app, ui, seq, caption_area, &layout);
     }
+    playhead_scissors(app, ui, seq, &layout, &t);
     let _ = TICKS_PER_SECOND;
 }
 
