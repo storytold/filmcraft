@@ -5,7 +5,9 @@
 //!   codings (JPEG 2000, DV, MPEG-4 visual…) are identified and reported as unsupported; the file
 //!   still opens so its audio can be used.
 //! - Presentation order: the index table's temporal offsets; for AVC whose index marks B pictures
-//!   but carries no temporal offsets, the picture order counts of the slice headers (8.2.1).
+//!   but carries no temporal offsets, the picture order counts of the slice headers (8.2.1); for
+//!   MPEG-2 whose index offsets are missing or inconsistent, the picture headers' temporal
+//!   references.
 //! - Audio: every PCM sound track (Broadcast Wave / AES3, ST 382; ST 331 AES3 elements in D-10)
 //!   is presented as one multichannel stream, sample-exact.
 //! - Start timecode: the material package's timecode track.
@@ -211,6 +213,168 @@ fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[craft_
 const AVC_ORDER_HEAD: usize = 2 << 10;
 const AVC_ORDER_HEAD_MAX: usize = 16 << 10;
 
+/// Presentation positions of MPEG-2 access units in stored order, from the picture headers:
+/// a picture's `temporal_reference` counts display order within its GOP, and GOPs present in
+/// the order their first pictures are stored. A GOP opens at its GOP header, or, in a stream
+/// that omits them, at an I picture whose reference restarts the count. Pictures that share
+/// a reference (the two fields of one frame) keep their stored order between themselves.
+///
+/// `heads` is consumed one access unit at a time, as in [`avc_presentation_order`]. `None`
+/// when some head carries no picture header at all.
+pub fn mpeg2_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>) -> Option<Vec<i64>> {
+    let mut keys: Vec<(i64, i64)> = Vec::new();
+    let mut gop = 0i64;
+    let mut prev_reference: Option<i64> = None;
+    for h in heads {
+        let au = craft_video::mpeg2::scan_access_unit(h.as_ref());
+        let first = au.pictures.first()?;
+        let reference = first.0.temporal_reference as i64;
+        let opens = if au.gop.is_some() { !keys.is_empty() } else { au.is_intra() && prev_reference.is_some_and(|p| reference <= p) };
+        if opens {
+            gop += 1;
+        }
+        prev_reference = Some(reference);
+        keys.push((gop, reference));
+    }
+    let mut stored_by_key: Vec<usize> = (0..keys.len()).collect();
+    stored_by_key.sort_by_key(|&s| keys[s]);
+    let mut pts = vec![0i64; keys.len()];
+    for (d, s) in stored_by_key.into_iter().enumerate() {
+        pts[s] = d as i64;
+    }
+    Some(pts)
+}
+
+/// [`mpeg2_presentation_order`] over the first `cap` bytes of every picture, read lazily one
+/// at a time. A failed read is an error; `Ok(None)` means only that a picture header was
+/// unreadable.
+fn mpeg2_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[craft_media::mxf::Sample], cap: usize) -> crate::Result<Option<Vec<i64>>> {
+    let mut failed = None;
+    let heads = samples.iter().map_while(|s| match filmcraft_media::reader::read_range(r, s.offset, (s.size as usize).min(cap)) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            failed = Some(CodecError::Container(format!("MXF: reading the picture at offset {}: {e}", s.offset)));
+            None
+        }
+    });
+    let order = mpeg2_presentation_order(heads);
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(order),
+    }
+}
+
+/// Bytes read from the front of every picture to find its picture header when the index has
+/// no usable temporal offsets (`mpeg2_presentation_order`), and the longer read for pictures
+/// where that is not enough.
+const MPEG2_ORDER_HEAD: usize = 2 << 10;
+const MPEG2_ORDER_HEAD_MAX: usize = 16 << 10;
+
+/// Presentation positions for an MPEG-2 track whose index carries no usable
+/// temporal offsets, from the picture headers' temporal references
+/// ([`mpeg2_presentation_order`]). `Ok(None)` when the headers cannot be read:
+/// the caller keeps stored order. The short head is tried first, the long one
+/// only when some picture header does not fit in it.
+fn mpeg2_bitstream_order(r: &dyn filmcraft_media::ByteReader, samples: &[craft_media::mxf::Sample]) -> crate::Result<Option<Vec<i64>>> {
+    match mpeg2_order_from_samples(r, samples, MPEG2_ORDER_HEAD)? {
+        Some(o) => Ok(Some(o)),
+        None if samples.iter().all(|s| s.size as usize <= MPEG2_ORDER_HEAD) => Ok(None),
+        None => mpeg2_order_from_samples(r, samples, MPEG2_ORDER_HEAD_MAX),
+    }
+}
+
+/// Apply [`mpeg2_bitstream_order`] to a track being opened: when its index
+/// carries no usable temporal offsets, the presentation order comes from the
+/// picture headers instead (#5004). An excerpt cut with `ffmpeg -c copy`
+/// keeps offsets that reach past the cut; the demuxer counts the table
+/// inconsistent and hands back stored order. Updates `vorder`/`vpts` in
+/// place and returns whether the order now comes from the bitstream.
+fn apply_mpeg2_bitstream_order(
+    name: &str,
+    reader: &dyn filmcraft_media::ByteReader,
+    track: &craft_media::mxf::EssenceTrack,
+    vorder: &mut Vec<usize>,
+    vpts: &mut Vec<i64>,
+) -> crate::Result<bool> {
+    if track.temporal_offsets || !matches!(track.codec, Codec::Mpeg2) {
+        return Ok(false);
+    }
+    match mpeg2_bitstream_order(reader, &track.samples)? {
+        Some(pts) => {
+            *vorder = vec![0; pts.len()];
+            for (s, &d) in pts.iter().enumerate() {
+                vorder[d as usize] = s;
+            }
+            *vpts = pts;
+            Ok(true)
+        }
+        None => {
+            log::warn!("{name}: no usable temporal offsets and unreadable temporal references: using stored order");
+            Ok(false)
+        }
+    }
+}
+
+/// Whether the first random-access picture's GOP is closed, read from the GOP
+/// header in front of that picture. `None` when the header is absent or the
+/// read fails: the caller floors as before.
+fn first_gop_closed(r: &dyn filmcraft_media::ByteReader, samples: &[craft_media::mxf::Sample]) -> Option<bool> {
+    let key = samples.iter().find(|s| s.key)?;
+    let head = filmcraft_media::reader::read_range(r, key.offset, (key.size as usize).min(MPEG2_ORDER_HEAD)).ok()?;
+    match first_gop_closed_in(&head) {
+        // The ordering pass retries with the long cap when a picture header
+        // lies past the short head; the GOP header in front of it can sit
+        // past it too (large sequence-level user data), so retry the same way.
+        Some(closed) => Some(closed),
+        None if (key.size as usize) <= MPEG2_ORDER_HEAD => None,
+        None => {
+            let head = filmcraft_media::reader::read_range(r, key.offset, (key.size as usize).min(MPEG2_ORDER_HEAD_MAX)).ok()?;
+            first_gop_closed_in(&head)
+        }
+    }
+}
+
+/// The closed-GOP flag in one access-unit head: `Some(true)` only for a clean
+/// closed GOP. A broken link means the leading B pictures' forward reference
+/// is gone, so they stay floored even when the GOP is closed.
+fn first_gop_closed_in(head: &[u8]) -> Option<bool> {
+    let g = craft_video::mpeg2::scan_access_unit(head).gop?;
+    Some(g.closed_gop && !g.broken_link)
+}
+
+/// Presentation start for a track whose order came from the bitstream: the
+/// pictures presenting before the first random-access picture are its GOP's
+/// leading B pictures, predicted from the previous GOP. A file that starts at
+/// that GOP (an excerpt, a cut) does not contain the previous GOP, so no
+/// decoder can produce them: presentation starts at the key picture. A closed
+/// GOP is the exception: its leading B pictures predict only from the key
+/// picture, so they stay (`first_gop_closed` is `Some(true)`); when the flag
+/// is unknown the floor stays conservative. Returns `(vfirst, vcount)`,
+/// unchanged when the order did not come from the bitstream or nothing
+/// presents before the key picture.
+fn floor_at_first_key(
+    vfirst: i64,
+    vcount: i64,
+    samples: &[craft_media::mxf::Sample],
+    vpts: &[i64],
+    bitstream_order: bool,
+    first_gop_closed: Option<bool>,
+) -> (i64, i64) {
+    if !bitstream_order || first_gop_closed == Some(true) {
+        return (vfirst, vcount);
+    }
+    let Some(key) = samples.iter().position(|s| s.key) else {
+        return (vfirst, vcount);
+    };
+    let Some(&floor) = vpts.get(key) else {
+        return (vfirst, vcount);
+    };
+    if floor <= vfirst {
+        return (vfirst, vcount);
+    }
+    (floor, (vcount - (floor - vfirst)).max(0))
+}
+
 impl MxfSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -248,6 +412,7 @@ impl MxfSource {
             let p = t.picture.clone().unwrap_or_default();
             vpts = t.samples.iter().map(|s| s.pts).collect();
             vorder = t.display_order.clone();
+            let mut bitstream_order = false;
             if t.needs_reorder && matches!(t.codec, Codec::Avc { .. }) {
                 // Only the slice headers are needed. The first picture of a stream has its
                 // parameter sets and SEI in front of the slice, so read a short head of every
@@ -264,13 +429,18 @@ impl MxfSource {
                             vorder[d as usize] = s;
                         }
                         vpts = pts;
+                        bitstream_order = true;
                     }
                     None => log::warn!("{name}: B pictures without temporal offsets and unreadable picture order: using stored order"),
                 }
             }
+            let mpeg2_order = apply_mpeg2_bitstream_order(name, &*bytes.0, t, &mut vorder, &mut vpts)?;
+            bitstream_order |= mpeg2_order;
             vfirst = t.first_edit_unit().min(vorder.len() as i64);
             let avail = vorder.len() as i64 - vfirst;
             vcount = t.duration.map_or(avail, |d| d.min(avail)).max(0);
+            let closed_first_gop = mpeg2_order.then(|| first_gop_closed(&*bytes.0, &t.samples)).flatten();
+            (vfirst, vcount) = floor_at_first_key(vfirst, vcount, &t.samples, &vpts, bitstream_order, closed_first_gop);
             let rate = if t.edit_rate.is_valid() { FrameRate::new(t.edit_rate.num as i64, t.edit_rate.den as i64) } else { FrameRate::FPS_25 };
             // MPEG-2 (D-10 / IMX, XDCAM): the sequence header of the first picture
             let mpeg = (t.codec == Codec::Mpeg2)
@@ -576,6 +746,87 @@ mod tests {
         let samples = [craft_media::mxf::Sample { offset: 0, size: 100, pts: 0, key: true, b_picture: false }];
         let e = avc_order_from_samples(&Failing, &samples, AVC_ORDER_HEAD).unwrap_err();
         assert!(matches!(e, CodecError::Container(ref m) if m.contains("disk gone")), "{e}");
+    }
+
+    /// One access-unit head: an optional GOP header, then one picture header.
+    /// `coding_type` is the MPEG-2 picture_coding_type (1 I, 2 P, 3 B).
+    fn mpeg2_head(closed_gop: Option<bool>, temporal_reference: u16, coding_type: u8) -> Vec<u8> {
+        let mut head = Vec::new();
+        if let Some(closed) = closed_gop {
+            head.extend_from_slice(&[0, 0, 1, 0xB8, 0, 0, 0, if closed { 0x40 } else { 0 }]);
+        }
+        let word = ((temporal_reference as u32) << 22) | ((coding_type as u32) << 19);
+        head.extend_from_slice(&[0, 0, 1, 0x00]);
+        head.extend_from_slice(&word.to_be_bytes());
+        head.extend_from_slice(&[0; 4]);
+        head
+    }
+
+    #[test]
+    fn closed_gop_flag_reads_from_the_head() {
+        assert_eq!(first_gop_closed_in(&mpeg2_head(Some(true), 2, 1)), Some(true));
+        assert_eq!(first_gop_closed_in(&mpeg2_head(Some(false), 2, 1)), Some(false));
+        assert_eq!(first_gop_closed_in(&mpeg2_head(None, 2, 1)), None);
+        assert_eq!(first_gop_closed_in(&[]), None);
+        // a broken link floors even a closed GOP: the leading B pictures'
+        // forward reference is gone
+        let mut broken = mpeg2_head(Some(true), 2, 1);
+        broken[7] |= 0x20;
+        assert_eq!(first_gop_closed_in(&broken), Some(false));
+    }
+
+    #[test]
+    fn closed_gop_flag_reads_from_the_key_sample() {
+        // the key sample is the second stored sample: the flag must come from
+        // it, not from the first stored sample
+        let closed = mpeg2_head(Some(true), 2, 1);
+        let open = mpeg2_head(Some(false), 2, 1);
+        let mut bytes = open.clone();
+        bytes.extend_from_slice(&closed);
+        let reader = filmcraft_media::reader::MemReader(bytes.into());
+        let samples = [
+            craft_media::mxf::Sample { offset: 0, size: open.len() as u32, pts: 0, key: false, b_picture: true },
+            craft_media::mxf::Sample { offset: open.len() as u64, size: closed.len() as u32, pts: 0, key: true, b_picture: false },
+        ];
+        assert_eq!(first_gop_closed(&reader, &samples), Some(true));
+        assert_eq!(first_gop_closed(&Failing, &samples), None);
+        let no_key: Vec<craft_media::mxf::Sample> = samples.iter().map(|s| craft_media::mxf::Sample { key: false, ..*s }).collect();
+        assert_eq!(first_gop_closed(&reader, &no_key), None);
+    }
+
+    #[test]
+    fn closed_gop_flag_reads_past_the_short_head() {
+        // a closed GOP header behind more than MPEG2_ORDER_HEAD bytes of
+        // sequence-level user data: the short head alone sees no GOP header,
+        // so without the long-cap retry the flag reads as unknown and the
+        // closed GOP's leading B pictures would be floored
+        let mut bytes = vec![0u8; MPEG2_ORDER_HEAD + 1024];
+        bytes.extend_from_slice(&mpeg2_head(Some(true), 2, 1));
+        let size = bytes.len() as u32;
+        let reader = filmcraft_media::reader::MemReader(bytes.into());
+        let samples = [craft_media::mxf::Sample { offset: 0, size, pts: 0, key: true, b_picture: false }];
+        assert_eq!(first_gop_closed(&reader, &samples), Some(true));
+    }
+
+    #[test]
+    fn closed_gop_keeps_its_leading_b_pictures() {
+        // stored I(2), B(0), B(1): the B pictures present before the key
+        // picture, as in the #5004 excerpt, but this GOP is closed, so they
+        // predict only from the key picture and stay
+        let vpts = mpeg2_presentation_order([mpeg2_head(Some(true), 2, 1), mpeg2_head(None, 0, 3), mpeg2_head(None, 1, 3)])
+            .expect("synthetic heads carry picture headers");
+        assert_eq!(vpts, [2, 0, 1]);
+        let samples = [
+            craft_media::mxf::Sample { offset: 0, size: 100, pts: 0, key: true, b_picture: false },
+            craft_media::mxf::Sample { offset: 100, size: 100, pts: 0, key: false, b_picture: true },
+            craft_media::mxf::Sample { offset: 200, size: 100, pts: 0, key: false, b_picture: true },
+        ];
+        assert_eq!(floor_at_first_key(0, 3, &samples, &vpts, true, Some(true)), (0, 3));
+        // open or unknown: the floor stays, as before
+        assert_eq!(floor_at_first_key(0, 3, &samples, &vpts, true, Some(false)), (2, 1));
+        assert_eq!(floor_at_first_key(0, 3, &samples, &vpts, true, None), (2, 1));
+        // no bitstream order, no floor either way
+        assert_eq!(floor_at_first_key(0, 3, &samples, &vpts, false, Some(true)), (0, 3));
     }
 }
 

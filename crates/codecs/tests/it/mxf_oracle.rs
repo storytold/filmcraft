@@ -41,6 +41,33 @@ fn spec(name: &str) -> Vec<String> {
         }
         "mxf_prores.mxf" => cat(&[V25, TONE, &["-t", "1", "-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-c:a", "pcm_s16le"]]),
         "mxf_mpeg2.mxf" => cat(&[V25, NOISE, &["-t", "1", "-c:v", "mpeg2video", "-bf", "2", "-c:a", "pcm_s16le"]]),
+        // camera-style MPEG-2: long GOP, open, 4:2:2 (the source of the #5004 excerpt below)
+        "mxf_mpeg2_camera.mxf" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24000/1001:duration=20"],
+            &["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=20"],
+            &[
+                "-c:v",
+                "mpeg2video",
+                "-pix_fmt",
+                "yuv422p",
+                "-profile:v",
+                "0",
+                "-level:v",
+                "2",
+                "-b:v",
+                "4M",
+                "-g",
+                "12",
+                "-bf",
+                "2",
+                "-flags",
+                "-cgop",
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                "48000",
+            ],
+        ]),
         // XDCAM HD422 style: 1080i 4:2:2 long GOP
         "mxf_xdcam_hd422.mxf" => cat(&[
             &["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=50,tinterlace=mode=interleave_top,setfield=tff"],
@@ -123,6 +150,7 @@ pub const ALL: &[&str] = &[
     "mxf_dnxhr_lb.mxf",
     "mxf_prores.mxf",
     "mxf_mpeg2.mxf",
+    "mxf_mpeg2_camera.mxf",
     "mxf_xdcam_hd422.mxf",
     "mxf_atom_dnxhr.mxf",
     "mxf_atom_pcm.mxf",
@@ -321,6 +349,56 @@ fn mpeg2_long_gop_decodes() {
     assert!(t.temporal_offsets);
     check_video(&ff, &f, "yuv420p", (2, 2), 1, MPEG2_TOL, 12);
     check_audio_exact(&ff, &f, &[]);
+}
+
+/// #5004: an excerpt cut from a camera file with `ffmpeg -c copy` carries index temporal
+/// offsets that reach past the cut, the demuxer counts the table inconsistent and hands
+/// back stored order, and the frames come back I B B instead of B B I. Presentation order
+/// must come from the MPEG-2 picture headers instead, as it does for AVC.
+#[test]
+fn mpeg2_rewrapped_excerpt_keeps_display_order() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let cam = make(&ff, "mxf_mpeg2_camera.mxf");
+    check_video(&ff, &cam, "yuv422p", (2, 1), 1, MPEG2_TOL, 6);
+    let out = filmcraft_testkit::fixtures::generate(&common::dir().join("mxf_mpeg2_rewrapped.mxf"), |tmp| {
+        std::process::Command::new(&ff)
+            .args(["-y", "-v", "error", "-ss", "5", "-i"])
+            .arg(&cam)
+            .args(["-t", "10", "-c", "copy"])
+            .arg(tmp)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+    .expect("could not cut the excerpt");
+    let src = open(&out);
+    let t = &src.file().tracks[src.file().track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
+    assert!(!t.temporal_offsets, "the excerpt's index offsets do not survive the cut");
+    // The excerpt starts at the keyframe ffmpeg finds for 5 s: the camera file's stored
+    // frame 118, an I picture whose GOP presents from the camera file's frame 120 (its
+    // two leading B pictures present at 118 and 119). Read through an index whose
+    // offsets are consistent, the two reads must agree frame for frame. The leading B
+    // pictures are predicted from the GOP before them, which the excerpt does not
+    // contain, so the excerpt presents from its I picture: 240 frames, the camera
+    // file's frames 120..360.
+    let rate = FrameRate::new(24_000, 1_001);
+    assert_eq!(src.info().duration, rate.tick_of(240));
+    let cam_src = open(&cam);
+    let mut rng = Rng(0x5004);
+    let mut positions: Vec<i64> = (0..240).collect();
+    for _ in 0..12 {
+        positions.push(rng.below(240) as i64);
+    }
+    for i in positions {
+        // The cut also drops one picture at the tail: the B picture that would present
+        // at the camera file's frame 359 is stored past the excerpt's last packet, so
+        // the excerpt's last frame is the next GOP's I picture, the camera's frame 360.
+        let want = if i == 239 { 360 } else { 120 + i };
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(i))).unwrap();
+        let c = cam_src.video_frame(FrameRequest::full(rate.tick_of(want))).unwrap();
+        let d = max_diff(&planes(&f), &planes(&c));
+        assert!(d <= MPEG2_TOL, "excerpt frame {i} differs from camera frame {want} by {d}");
+    }
 }
 
 #[test]
