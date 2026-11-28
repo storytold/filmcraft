@@ -164,13 +164,18 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let by1 = (top + block_h + grow).ceil();
     // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
     // only the visible intersection; `draw` receives the original coordinates and clips into it.
-    let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
-    let (right, bottom) = (bx1.clamp(0.0, w as f32), by1.clamp(0.0, h as f32));
-    if right <= left || bottom <= top {
+    // The overlay's edges keep their own names: they used to shadow `left`/`top` above, and the
+    // lines were then laid out from `top - grow`, which raised the text and the box by the outline
+    // grow and left the bottom margin short by that much (#3363).
+    let ov_left = bx0.clamp(0.0, w as f32);
+    let ov_top = by0.clamp(0.0, h as f32);
+    let ov_right = bx1.clamp(0.0, w as f32);
+    let ov_bottom = by1.clamp(0.0, h as f32);
+    if ov_right <= ov_left || ov_bottom <= ov_top {
         return None;
     }
-    let (ox, oy) = (left as i32, top as i32);
-    let (ow, oh) = ((right - left) as usize, (bottom - top) as usize);
+    let (ox, oy) = (ov_left as i32, ov_top as i32);
+    let (ow, oh) = ((ov_right - ov_left) as usize, (ov_bottom - ov_top) as usize);
     if ow.checked_mul(oh).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
         return None;
     }
@@ -350,6 +355,32 @@ mod tests {
         }
     }
 
+    /// #3363: the box sits on the margin whatever the outline. The overlay's clipped edge used to
+    /// shadow the computed `top`, so the lines were laid out from `top - grow` and both the text and
+    /// the box rose by the outline grow. Both the text and the outline colour are transparent here,
+    /// so the box is the only thing that paints and the lowest painted row is its bottom edge.
+    #[test]
+    fn the_box_sits_on_the_margin_whatever_the_outline() {
+        for outline in [0.0f32, 2.0, 6.0] {
+            let st = CaptionStyle {
+                anchor: CaptionAnchor::Bottom,
+                margin: 0.08,
+                size: 54.0,
+                outline,
+                color: [255, 255, 255, 0],
+                outline_color: [0, 0, 0, 0],
+                background: true,
+                background_color: [0, 0, 0, 255],
+                ..Default::default()
+            };
+            let o = render_caption(&cap("Hello box"), &st, 960, 540).unwrap();
+            let last = (0..o.h).rev().find(|&row| (0..o.w).any(|col| o.px[(row * o.w + col) * 4 + 3] > 0.0)).expect("the box is painted");
+            let bottom = (o.y + last as i32) as f32 + 1.0;
+            let want = 540.0 - 0.08 * 540.0;
+            assert!((bottom - want).abs() <= 0.5, "outline {outline}: the box ends at {bottom}, the margin says {want}");
+        }
+    }
+
     #[test]
     fn wraps_and_composites() {
         let long = "word ".repeat(60);
@@ -458,9 +489,11 @@ mod tests {
         }
     }
 
-    /// `render_caption` as it was before the caption box settings (#3354-#3358), kept verbatim
-    /// (with the SemiBold face inlined) so every new style field can prove its default leaves
-    /// existing projects pixel-identical.
+    /// A second copy of `render_caption` with the SemiBold face inlined, so an edit to the real one
+    /// that nobody mirrors breaks the identity test and has to be explained. It is not a stored
+    /// golden: both copies are code, so a defect they share is invisible here, which is how #3363
+    /// survived 240 cases. Mirrored for the caption box settings (#3354-#3358) and for the margin fix
+    /// (#3363), each time with a note saying that the difference is intended.
     #[allow(clippy::needless_range_loop)]
     fn reference_render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
         if w == 0 || h == 0 {
@@ -514,13 +547,18 @@ mod tests {
         let by1 = (top + block_h + grow).ceil();
         // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
         // only the visible intersection; `draw` receives the original coordinates and clips into it.
-        let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
-        let (right, bottom) = (bx1.clamp(0.0, w as f32), by1.clamp(0.0, h as f32));
-        if right <= left || bottom <= top {
+        // Mirrored at #3363: the lines used to be laid out from this shadowed `top`, which raised
+        // the text and the box by the outline grow. That shift is the intended change of that fix,
+        // and this copy is here so the next edit to `render_caption` has to say so out loud.
+        let ov_left = bx0.clamp(0.0, w as f32);
+        let ov_top = by0.clamp(0.0, h as f32);
+        let ov_right = bx1.clamp(0.0, w as f32);
+        let ov_bottom = by1.clamp(0.0, h as f32);
+        if ov_right <= ov_left || ov_bottom <= ov_top {
             return None;
         }
-        let (ox, oy) = (left as i32, top as i32);
-        let (ow, oh) = ((right - left) as usize, (bottom - top) as usize);
+        let (ox, oy) = (ov_left as i32, ov_top as i32);
+        let (ow, oh) = ((ov_right - ov_left) as usize, (ov_bottom - ov_top) as usize);
         if ow.checked_mul(oh).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
             return None;
         }
