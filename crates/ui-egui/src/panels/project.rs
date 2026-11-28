@@ -436,16 +436,17 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
     let search_rect = Rect::from_min_size(row.min, vec2(sw, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(search_rect).id_salt((&pre, "search")));
     let mut q = app.ui.project_search.clone();
-    crate::widgets::search_field(&mut child, &mut q, tl!("Search"), search_rect.width(), &t);
+    crate::widgets::search_field(&mut child, &mut q, "", search_rect.width(), &t);
     app.ui.project_search = q;
     app.auto.add(&format!("{pre}.search"), search_rect, "Search");
     let find = Rect::from_min_size(pos2(search_rect.max.x + 8.0, row.min.y), vec2(24.0, 22.0));
     let fr = ui.interact(find, egui::Id::unique((&pre, "find")), Sense::click()).on_hover_text(tl!("Find…"));
+    fr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tl!("Find…")));
     app.auto.add(&format!("{pre}.find"), find, "Find…");
     if fr.hovered() {
         ui.painter().rect_filled(find, 3.0, t.hover);
     }
-    icons::paint(ui.painter(), find.shrink(4.0), Icon::Search, t.icon);
+    icons::paint(ui.painter(), find.shrink(4.0), Icon::Adjust, t.icon);
     if fr.clicked() {
         actions.push(("edit.find".into(), json!({})));
     }

@@ -468,12 +468,11 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
     resp
 }
 
-/// Search field with a magnifier icon.
+/// Compact search field with a magnifier and an optional hint.
 pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &Tokens) -> Response {
-    let h = 22.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
-    ui.painter().rect_filled(rect, h / 2.0, t.field_bg);
-    ui.painter().rect_stroke(rect, h / 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    let radius = 3.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 22.0), Sense::hover());
+    ui.painter().rect_filled(rect, radius, t.field_bg);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::Search, t.text_dim);
     let inner = Rect::from_min_max(pos2(rect.min.x + 22.0, rect.min.y + 2.0), pos2(rect.max.x - 8.0, rect.max.y - 2.0));
     // centred across the field: a text edit aligns its text to the top unless told otherwise
@@ -487,10 +486,18 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
                 .font(Tokens::ui(12.0))
                 .align(egui::Align2::LEFT_CENTER),
         ),
-        hint,
+        if hint.is_empty() { tl!("Search") } else { hint },
     );
     // Select Find Box (Shift+F) / Open Search (Cmd+Shift+F)
     crate::panels::keyboard::take_search_focus(ui, rect, &resp);
+    let border = if holds_focus(&resp) {
+        t.accent
+    } else if ui.rect_contains_pointer(rect) {
+        t.text_faint
+    } else {
+        t.field_border
+    };
+    ui.painter().rect_stroke(rect, radius, Stroke::new(1.0, border), StrokeKind::Inside);
     resp
 }
 
@@ -656,6 +663,35 @@ pub fn tabular_label(ui: &mut egui::Ui, text: &str, font: &egui::FontId, color: 
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    #[test]
+    fn search_field_uses_a_compact_outline_and_highlights_hover_and_focus() {
+        let ctx = egui::Context::default();
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let id = std::cell::Cell::new(None);
+        let draw = |events| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 200.0))), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let field = search_field(ui, &mut String::new(), "", 200.0, &t);
+                id.set(Some(field.id));
+            });
+            out.textures_delta.clear();
+            out.shapes
+                .into_iter()
+                .find_map(|shape| match shape.shape {
+                    egui::Shape::Rect(rect) if rect.rect.size() == vec2(200.0, 22.0) && rect.stroke.width > 0.0 => {
+                        Some((rect.corner_radius, rect.stroke.color))
+                    }
+                    _ => None,
+                })
+                .expect("search outline")
+        };
+
+        assert_eq!(draw(Vec::new()), (egui::CornerRadius::same(3), t.field_border));
+        assert_eq!(draw(vec![egui::Event::PointerMoved(pos2(30.0, 11.0))]).1, t.text_faint);
+        ctx.memory_mut(|memory| memory.request_focus(id.get().unwrap()));
+        assert_eq!(draw(Vec::new()).1, t.accent);
+    }
 
     /// The vertical centres of the text shapes `search_field` draws, for a field 22 points tall
     /// drawn at the top of the Ui (its centre is at y = 11).
