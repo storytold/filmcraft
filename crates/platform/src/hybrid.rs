@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use filmcraft_codecs::hw::StreamInfo;
+use filmcraft_codecs::hw::{NalStreamInfo, StreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 use filmcraft_isobmff::SampleEntry;
 
@@ -24,6 +24,10 @@ const EMITTED_MAX: usize = 4096;
 /// Pictures held while software replays a hardware run.  The replay log is bounded by bytes and
 /// samples, but an invalid stream can still make one sample produce many decoded pictures.
 const REPLAY_OUTPUT_MAX: usize = 4096;
+/// Bound queued pictures even if a stream asks to restart on every access unit.
+const RESTART_OUTPUT_MAX: usize = 32;
+
+type RestartH264 = fn(NalStreamInfo) -> Result<Box<dyn VideoDecoder>>;
 
 /// A hardware decoder with a transparent software fallback.
 pub struct HybridDecoder {
@@ -31,6 +35,11 @@ pub struct HybridDecoder {
     sw: Option<Box<dyn VideoDecoder>>,
     entry: SampleEntry,
     info: StreamInfo,
+    restart_h264: Option<RestartH264>,
+    /// The entry describing the active hardware session after a parameter change.
+    active_entry: Option<SampleEntry>,
+    /// A seek can land in a GOP that uses only the container configuration.
+    restore_entry: bool,
     draft: bool,
     /// Samples (and pts) since the last restart point; `None` once the bound was passed.
     log: Option<Vec<(Vec<u8>, i64)>>,
@@ -53,6 +62,9 @@ impl HybridDecoder {
             sw: None,
             entry,
             info,
+            restart_h264: None,
+            active_entry: None,
+            restore_entry: false,
             draft: false,
             log: Some(Vec::new()),
             log_bytes: 0,
@@ -112,15 +124,52 @@ impl HybridDecoder {
         Ok(())
     }
 
-    /// In-band parameter sets (sequence header, key frame format) that differ from the sample
-    /// entry's (the hardware session was set up from those).
-    fn parameter_sets_changed(&self, sample: &[u8]) -> bool {
-        self.info.parameters_changed(sample)
+    #[cfg(target_os = "macos")]
+    pub(crate) fn enable_h264_restart(&mut self, restart: RestartH264) {
+        self.restart_h264 = Some(restart);
     }
 
-    /// Software output after a fallback: pictures already returned are dropped, carried hardware
-    /// pictures are merged in presentation order (a software picture replaces the carried one with
-    /// the same pts).
+    fn prepare_hardware(&mut self, sample: &[u8]) -> Result<()> {
+        let mismatch = || CodecError::Decode("in-band parameter sets differ from the sample entry".into());
+        let restore = self.restore_entry;
+        let original = if restore { NalStreamInfo::from_entry(&self.entry).transpose()?.map(StreamInfo::Nal) } else { None };
+        let config = original.as_ref().unwrap_or(&self.info);
+        let changed = config.parameters_changed(sample);
+        if !changed && !restore {
+            return Ok(());
+        }
+        let (Some(restart), StreamInfo::Nal(nal)) = (self.restart_h264, config) else {
+            return Err(mismatch());
+        };
+        let entry = if changed { crate::h264_restart::entry(nal, sample, &self.entry).ok_or_else(mismatch)? } else { self.entry.clone() };
+        if self.active_entry.as_ref().unwrap_or(&self.entry) == &entry {
+            // Some samples repeat an older SPS before the active SPS of the same ID.
+            self.restore_entry = false;
+            return Ok(());
+        }
+        let info = NalStreamInfo::from_entry(&entry).ok_or_else(mismatch)??;
+        let mut next = restart(info.clone())?;
+        next.set_draft(self.draft);
+        if let Some(old) = self.hw.as_mut() {
+            let drained = old.flush();
+            filmcraft_codecs::hw::note_hw_frames(drained.len());
+            for frame in drained {
+                self.carry.insert(frame.pts, frame);
+            }
+            if self.carry.len() > RESTART_OUTPUT_MAX {
+                return Err(CodecError::Decode("too many pictures pending across H.264 parameter changes".into()));
+            }
+        }
+        self.hw = Some(next);
+        self.info = info.into();
+        self.active_entry = (entry != self.entry).then_some(entry);
+        self.restore_entry = false;
+        Ok(())
+    }
+
+    /// Merge drained hardware pictures with output from the new session or software replay.
+    /// Pictures already returned are dropped, and a new picture replaces a carried one at the
+    /// same pts.
     fn merge(&mut self, frames: Vec<DecodedFrame>) -> Vec<DecodedFrame> {
         let mut out = Vec::with_capacity(frames.len());
         for f in frames {
@@ -156,7 +205,11 @@ impl HybridDecoder {
             }
         }
         drop(hw);
-        let mut sw = filmcraft_codecs::software_video_decoder(&self.entry).map_err(|e| CodecError::Decode(format!("{err}; no software decoder: {e}")))?;
+        if std::mem::take(&mut self.restore_entry) {
+            self.active_entry = None;
+        }
+        let entry = self.active_entry.as_ref().unwrap_or(&self.entry);
+        let mut sw = filmcraft_codecs::software_video_decoder(entry).map_err(|e| CodecError::Decode(format!("{err}; no software decoder: {e}")))?;
         sw.set_draft(self.draft);
         self.sw = Some(sw);
         let Some(log) = self.log.take() else {
@@ -192,13 +245,20 @@ impl HybridDecoder {
 
 impl VideoDecoder for HybridDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        if self.sw.is_some() && self.restore_entry {
+            let mut sw = filmcraft_codecs::software_video_decoder(&self.entry)?;
+            sw.set_draft(self.draft);
+            self.sw = Some(sw);
+            self.restore_entry = false;
+            self.active_entry = None;
+        }
         if let Some(sw) = self.sw.as_mut() {
             let frames = sw.decode(sample, pts)?;
             return Ok(self.merge(frames));
         }
         self.remember(sample, pts);
-        if self.parameter_sets_changed(sample) {
-            return self.fall_back(CodecError::Decode("in-band parameter sets differ from the sample entry".into()));
+        if let Err(err) = self.prepare_hardware(sample) {
+            return self.fall_back(err);
         }
         let Some(hw) = self.hw.as_mut() else {
             return Err(CodecError::Decode("no decoder".into()));
@@ -206,8 +266,12 @@ impl VideoDecoder for HybridDecoder {
         match hw.decode(sample, pts) {
             Ok(out) => {
                 filmcraft_codecs::hw::note_hw_frames(out.len());
-                self.note_emitted(&out);
-                Ok(out)
+                if self.carry.is_empty() {
+                    self.note_emitted(&out);
+                    Ok(out)
+                } else {
+                    Ok(self.merge(out))
+                }
             }
             Err(e) => self.fall_back(e),
         }
@@ -217,7 +281,12 @@ impl VideoDecoder for HybridDecoder {
         if let Some(hw) = self.hw.as_mut() {
             let out = hw.flush();
             filmcraft_codecs::hw::note_hw_frames(out.len());
-            self.note_emitted(&out);
+            if self.carry.is_empty() {
+                self.note_emitted(&out);
+                return out;
+            }
+            let mut out = self.merge(out);
+            out.extend(std::mem::take(&mut self.carry).into_values());
             return out;
         }
         let frames = self.sw.as_mut().map(|d| d.flush()).unwrap_or_default();
@@ -233,6 +302,7 @@ impl VideoDecoder for HybridDecoder {
         if let Some(sw) = self.sw.as_mut() {
             sw.reset();
         }
+        self.restore_entry = self.active_entry.is_some();
         self.log = Some(Vec::new());
         self.log_bytes = 0;
         self.last_irap = 0;

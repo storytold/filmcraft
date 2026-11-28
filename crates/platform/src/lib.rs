@@ -35,6 +35,7 @@ mod annexb;
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 mod biplanar;
 pub mod cursor;
+mod h264_restart;
 #[cfg(target_os = "macos")]
 pub mod hardware_encode;
 pub mod hybrid;
@@ -208,7 +209,17 @@ pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<fi
     }
     let info = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry)?.ok()?;
     match videotoolbox::VtDecoder::new(info.clone()) {
-        Ok(vt) => Some(Ok(Box::new(HybridDecoder::new(Box::new(vt), entry.clone(), info)))),
+        Ok(vt) => {
+            let mut hybrid = HybridDecoder::new(Box::new(vt), entry.clone(), info);
+            if matches!(&entry.codec, filmcraft_isobmff::CodecConfig::Avc(_)) {
+                hybrid.enable_h264_restart(|info| {
+                    videotoolbox::VtDecoder::new(info)
+                        .map(|decoder| Box::new(decoder) as Box<dyn filmcraft_codecs::VideoDecoder>)
+                        .map_err(filmcraft_codecs::CodecError::Decode)
+                });
+            }
+            Some(Ok(Box::new(hybrid)))
+        }
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
             filmcraft_codecs::hw::note_hw_declined();

@@ -75,6 +75,64 @@ fn bit_exact_with_the_software_decoders() {
 }
 
 #[test]
+fn h264_idr_parameter_change_keeps_hardware_and_preserves_pictures() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(first) = named(&ff, "h264_high.mp4") else { return };
+    // Both inputs are generated here from testsrc2. The second starts a new
+    // coding sequence with different PPS and colour metadata and repeats its sets.
+    let Some(second) = fixture(
+        &ff,
+        "h264_restart_parameters.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=640x360:r=24:d=2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-x264-params",
+            "bframes=0:keyint=24:scenecut=0:repeat-headers=1",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_primaries",
+            "bt470bg",
+            "-colorspace",
+            "bt470bg",
+            "-color_trc",
+            "bt709",
+        ],
+    ) else {
+        return;
+    };
+    let mut first = read_stream(&first);
+    first.entry.format = filmcraft_isobmff::FourCc(*b"avc3");
+    let second = read_stream(&second);
+    let Some(mut hw) = hardware(&first) else { return };
+    let reference = decode_all(software(&first).as_mut(), &first.samples);
+    let mut samples = first.samples.clone();
+    let step = reference[1].pts - reference[0].pts;
+    let offset = reference.last().unwrap().pts + step - second.samples[0].1;
+    samples.extend(second.samples.iter().map(|(data, pts)| (data.clone(), pts + offset)));
+    let mut next = decode_all(software(&second).as_mut(), &second.samples);
+    for frame in &mut next {
+        frame.pts += offset;
+    }
+    let actual = decode_all(hw.as_mut(), &samples);
+    assert!(hw.name().starts_with("VideoToolbox"), "changed IDR fell back to {}", hw.name());
+    assert_eq!(actual.len(), reference.len() + next.len());
+    let (before, after) = actual.split_at(reference.len());
+    assert_same("before the H.264 IDR parameter change", before, &reference);
+    assert_same("after the H.264 IDR parameter change", after, &next);
+
+    // Seek back to a GOP carrying only the container's original parameters.
+    hw.reset();
+    assert_same("seek back to original parameters", &decode_all(hw.as_mut(), &first.samples), &reference);
+    assert!(hw.name().starts_with("VideoToolbox"));
+}
+
+#[test]
 fn mid_stream_failure_continues_in_software() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     for (name, _) in FIXTURES {
