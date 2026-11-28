@@ -2,8 +2,9 @@
 //! layout). Each row has a header (C1…, name, format, output eye, lock) and caption blocks in a
 //! distinct colour showing their text. Click selects (Cmd/Shift adds), dragging the body moves
 //! the selection (Option-drag copies it), dragging an edge trims, the Razor tool splits (Shift:
-//! every caption track), double-click opens the Text panel's Captions tab. Every gesture ends in
-//! one `captions.*` command; every element registers an automation id (`timeline.caption.*`,
+//! every unlocked track, clips too), double-click opens the Text panel's Captions tab. Every
+//! gesture ends in one command (`captions.*`, or `sequence.addEditAllTracks` for a Shift+Razor
+//! click); every element registers an automation id (`timeline.caption.*`,
 //! `timeline.captionTrack.C1.*`).
 
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -219,7 +220,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area:
 }
 
 /// The Razor tool over a caption: a white line where it would cut, and a click splits the caption
-/// there (Shift: every caption on an unlocked caption track at that time), as it cuts clips.
+/// there (Shift: every unlocked track at that time, clips and captions), as it cuts clips.
 #[allow(clippy::too_many_arguments)]
 fn razor_block(
     app: &mut FilmcraftApp,
@@ -250,7 +251,8 @@ fn razor_block(
     {
         let t = at(app, p.x);
         if ctx.input(|i| i.modifiers.shift) {
-            actions.push(("captions.split".into(), json!({"time": t.0})));
+            // every unlocked track, clips included, as Shift+click on a clip does (Premiere Pro)
+            actions.push(("sequence.addEditAllTracks".into(), json!({"time": t.0})));
         } else if c.start < t && t < c.end() {
             actions.push(("captions.split".into(), json!({"caption": c.id.0, "time": t.0})));
         }

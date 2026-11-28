@@ -464,8 +464,10 @@ fn start_drag(
         (Tool::Razor, Grab::Other(Hit::Clip { clip, .. })) => {
             if resp.clicked() || resp.drag_started() {
                 let tt = snap(app, seq, layout, rate.snap_nearest(t), &[]);
+                // Shift: every unlocked track, caption tracks included, as in Premiere Pro (Add
+                // Edit to All Tracks at that time)
                 let r = if mods.shift {
-                    app.session.execute("timeline.razor", json!({"time": tt.0}))
+                    app.session.execute("sequence.addEditAllTracks", json!({"time": tt.0}))
                 } else {
                     app.session.execute("timeline.razor", json!({"time": tt.0, "clip": clip.0}))
                 };
