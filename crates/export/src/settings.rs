@@ -634,14 +634,9 @@ impl ExportSettings {
             Format::H264 | Format::Hevc | Format::Av1 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
-                // nominal 1080p29.97 data rates of the DNxHR profiles (Mb/s)
-                let mbps = match self.dnx_profile.to_ascii_lowercase().as_str() {
-                    "lb" => 45.0,
-                    "sq" => 145.0,
-                    "hqx" => 220.0,
-                    _ => 220.0,
-                };
-                mbps * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97
+                // DNxHR has a fixed encoded size for each frame, including raster padding.
+                let profile = crate::dnx_profile(&self.dnx_profile);
+                craft_video::dnx::Encoder::new(profile, r.width, r.height).map_or(0.0, |encoder| f64::from(encoder.frame_size()) * 8.0 * fps)
             }
             Format::Apv => {
                 let bpp = match crate::apv_profile(&self.apv_profile) {
