@@ -248,6 +248,21 @@ fn effect_controls_ruler_moves_the_playhead() {
     d.frames(2);
     assert!((d.playhead() - at(0.75)).abs() <= frame, "dragging the handle: {} vs {}", d.playhead(), at(0.75));
 
+    // the right edge is the clip's last frame, not the next clip's first (#4922)
+    let last = {
+        let rate = d.harness.state().session.sequence_rate();
+        rate.tick_of(rate.frame_at(Tick(clip.start + clip.duration - 1))).0
+    };
+    d.ok("ui.click", json!({"x": x + w - 1.0, "y": y + h * 0.3}));
+    d.frames(2);
+    assert_eq!(d.playhead(), last, "a click at the right edge");
+    d.ok("ui.drag", json!({"from": {"x": x + w * 0.5, "y": y + h * 0.3}, "to": {"x": x + w + 40.0, "y": y + h * 0.3}, "steps": 6}));
+    d.frames(2);
+    assert_eq!(d.playhead(), last, "a drag past the right edge");
+    assert!(d.find("effectControls.playhead").is_some());
+    d.exec("playhead.set", json!({"time": clip.start + clip.duration}));
+    assert!(d.find("effectControls.playhead").is_none(), "no handle on the clip's end, the next clip's first frame");
+
     // the playhead is drawn only on the clip
     d.exec("playhead.set", json!({"time": clip.start + clip.duration * 2}));
     assert!(d.find("effectControls.playhead").is_none(), "no handle while the playhead is past the clip");
