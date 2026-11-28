@@ -694,6 +694,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
     child.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+        caption_style_actions_menu(app, ui, tr.id.0, actions);
         let r =
             crate::legacy_dropdown::Dropdown::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
                 if !filmcraft_text::fonts::system_scanned() {
@@ -778,7 +779,99 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             }
         }
     });
+    caption_style_preset_save_dialog(app, child.ctx(), actions);
     child.min_rect().height()
+}
+
+fn caption_style_actions_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: u64, actions: &mut Vec<(String, Value)>) {
+    let menu = ui.button(tl!("Style")).on_hover_text(tl!("Caption style actions and presets"));
+    app.auto.add("text.captions.style.menu", menu.rect, "Caption style actions and presets");
+    egui::Popup::menu(&menu).show(|ui| {
+        let copy = ui.button(tl!("Copy Track Style"));
+        app.auto.add("text.captions.style.copy", copy.rect, "Copy caption track style");
+        if copy.clicked() {
+            actions.push(("captions.copyStyle".into(), json!({"track": track})));
+        }
+        let can_paste = app.session.caption_style_clipboard.is_some();
+        let paste = ui.add_enabled(can_paste, egui::Button::new(tl!("Paste Track Style")));
+        app.auto.add("text.captions.style.paste", paste.rect, "Paste caption track style");
+        if paste.clicked() {
+            actions.push(("captions.pasteStyle".into(), json!({"track": track})));
+        }
+        ui.separator();
+        let save_as = ui.button(tl!("Save Current Style as Preset…"));
+        app.auto.add("text.captions.style.preset.openSave", save_as.rect, "Save current caption style as a preset");
+        if save_as.clicked() {
+            ui.ctx().data_mut(|d| {
+                // the track and document it was opened for: Save keeps that track's style
+                d.insert_temp(egui::Id::unique("caption-style-preset-save-open"), Some((track, app.session.document_epoch)));
+                d.insert_temp(egui::Id::unique("caption-style-preset-name"), String::new());
+            });
+        }
+        let presets = app.session.caption_style_presets.all().to_vec();
+        if !presets.is_empty() {
+            ui.separator();
+            for (index, preset) in presets.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let apply = ui.selectable_label(false, &preset.name);
+                    app.auto.add(&format!("text.captions.style.preset.{index}.apply"), apply.rect, &preset.name);
+                    if apply.clicked() {
+                        actions.push(("captions.stylePreset.apply".into(), json!({"track": track, "name": preset.name})));
+                    }
+                    let delete = ui.small_button("×").on_hover_text(tl!("Delete preset"));
+                    app.auto.add(&format!("text.captions.style.preset.{index}.delete"), delete.rect, "Delete caption style preset");
+                    if delete.clicked() {
+                        actions.push(("captions.stylePreset.delete".into(), json!({"name": preset.name})));
+                    }
+                });
+            }
+        }
+    });
+}
+
+/// The Save Caption Style Preset dialog, bound to the track (and document) it was opened for: picking
+/// another track meanwhile doesn't change what it saves, and a replaced document closes it.
+fn caption_style_preset_save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, actions: &mut Vec<(String, Value)>) {
+    let open_id = egui::Id::unique("caption-style-preset-save-open");
+    let name_id = egui::Id::unique("caption-style-preset-name");
+    let Some((track, epoch)) = ctx.data(|d| d.get_temp::<Option<(u64, u64)>>(open_id)).flatten() else { return };
+    if epoch != app.session.document_epoch {
+        ctx.data_mut(|d| d.insert_temp(open_id, None::<(u64, u64)>));
+        return;
+    }
+    let mut open = true;
+    let mut name = ctx.data(|d| d.get_temp::<String>(name_id)).unwrap_or_default();
+    let mut close = false;
+    egui::Window::new(tl!("Save Caption Style Preset"))
+        .id(egui::Id::unique("caption-style-preset-save-window"))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let edit = ui.add(egui::TextEdit::singleline(&mut name).hint_text(tl!("Preset name")).desired_width(240.0));
+            app.auto.add("text.captions.style.preset.name", edit.rect, "Caption style preset name");
+            ui.horizontal(|ui| {
+                let save = ui.add_enabled(!name.trim().is_empty(), egui::Button::new(tl!("Save")));
+                app.auto.add("text.captions.style.preset.save", save.rect, "Save caption style preset");
+                if save.clicked() {
+                    actions.push(("captions.stylePreset.save".into(), json!({"track": track, "name": name.trim()})));
+                    close = true;
+                    name.clear();
+                }
+                let cancel = ui.button(tl!("Cancel"));
+                app.auto.add("text.captions.style.preset.cancel", cancel.rect, "Cancel saving caption style preset");
+                if cancel.clicked() {
+                    close = true;
+                }
+            });
+        });
+    if close {
+        open = false;
+    }
+    ctx.data_mut(|d| {
+        d.insert_temp(open_id, open.then_some((track, epoch)));
+        d.insert_temp(name_id, name);
+    });
 }
 
 fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
