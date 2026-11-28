@@ -1471,3 +1471,21 @@ fn rename_takes_several_clips() {
     s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// Insert Frame Hold Segment's `seconds` sets the segment's length; with no `time` the segment
+/// still goes at the playhead. The time parser also reads `seconds` as a time, which put a 1 s
+/// segment at 0:00:01 instead.
+#[test]
+fn insert_frame_hold_segment_seconds_is_a_length_not_a_time() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    let c = v1(&s)[0].clone();
+    let t = c.start + rate.tick_of(12);
+    assert_ne!(t, Tick(TICKS_PER_SECOND), "the playhead is not where `seconds` would put it");
+    s.execute("playhead.set", json!({"time": t.0})).unwrap();
+    select(&mut s, &[c.id.0]);
+    let r = s.execute("clip.insertFrameHoldSegment", json!({"seconds": 1.0})).unwrap();
+    let seg = clip(&s, r["clip"].as_u64().unwrap());
+    assert_eq!(seg.start, t, "the segment starts at the playhead");
+    assert_eq!(seg.duration, rate.snap_nearest(Tick(TICKS_PER_SECOND)), "and lasts the `seconds` asked for");
+}
