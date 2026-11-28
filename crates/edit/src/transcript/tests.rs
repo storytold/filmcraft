@@ -231,6 +231,104 @@ fn fillers_are_found_with_phrases_and_removed() {
     assert_eq!(q.audio_tracks[0].items.len(), 3);
 }
 
+/// A filler word that spans no frame once snapped, such as a zero-length word from Whisper
+/// (#4622), takes the time from the frame it starts in up to the next word's start in its clip,
+/// as a filler with real length takes its own span; with no later word in its clip, one frame.
+/// One that the word before it ends inside the frame of, or whose next word starts in that frame,
+/// has no time of its own to remove.
+#[test]
+fn a_filler_too_short_for_a_frame_takes_the_time_to_the_next_word() {
+    let w = sequence_words(&whole(), &transcripts());
+    let um = find_fillers(&w, &["um".to_string()]);
+    assert_eq!(um, vec![4..5]);
+    let next = R.snap(w[5].start);
+    let frame = R.frame_duration().0;
+    let base = R.snap(w[4].start);
+    // zero length at its own time, zero length late in a frame (nearest would be the next
+    // frame), and a quarter of a frame whose ends round to the same frame
+    for (start, end) in
+        [(w[4].start, w[4].start), (base + Tick(frame * 7 / 8), base + Tick(frame * 7 / 8)), (base + Tick(frame / 8), base + Tick(frame * 3 / 8))]
+    {
+        let mut v = w.clone();
+        (v[4].start, v[4].end) = (start, end);
+        let ranges = filler_ranges(&v, &um, R);
+        assert_eq!(ranges.iter().map(|r| (r.start, r.end())).collect::<Vec<_>>(), vec![(base, next)], "Um at {start:?}..{end:?}");
+    }
+    // the last word, with nothing after it: one frame
+    let mut v = w.clone();
+    let last = v.len() - 1;
+    (v[last].start, v[last].end) = (v[last - 1].end + Tick(frame), v[last - 1].end + Tick(frame));
+    let hit = last..last + 1;
+    let ranges = filler_ranges(&v, std::slice::from_ref(&hit), R);
+    assert_eq!(ranges.iter().map(|r| (r.start, r.duration)).collect::<Vec<_>>(), vec![(R.snap(v[last].start), R.frame_duration())]);
+    // the word before ends inside the filler's frame: the cut would start past the filler
+    let mut v = w.clone();
+    let mid = base + Tick(frame / 2);
+    v[3].end = mid;
+    (v[4].start, v[4].end) = (mid, mid);
+    assert!(filler_ranges(&v, &um, R).is_empty());
+    // the next word starts in the filler's frame: nothing of its own to remove
+    let mut v = w.clone();
+    v[4].end = v[4].start;
+    v[5].start = v[4].start + Tick(frame / 4);
+    assert!(filler_ranges(&v, &um, R).is_empty());
+}
+
+/// A zero-length filler at the end of its clip takes one frame, not the time up to the next word
+/// in another clip (the material between them isn't the filler's).
+#[test]
+fn a_filler_too_short_for_a_frame_stays_in_its_clip() {
+    let mut q = seq();
+    // media 0 – 4 s at 0 s, then media 4 – 8 s at 6 s, with something else between
+    q.audio_tracks[0].items.push(clip(100, 0.0, 4.0, 0.0));
+    q.audio_tracks[0].items.push(clip(101, 6.0, 4.0, 4.0));
+    let w = sequence_words(&q, &transcripts());
+    let um = find_fillers(&w, &["um".to_string()]);
+    assert_eq!(um, vec![4..5]);
+    assert_ne!(w[4].clip, w[5].clip, "the next word is in the other clip");
+    let mut v = w.clone();
+    v[4].end = v[4].start;
+    let ranges = filler_ranges(&v, &um, R);
+    assert_eq!(ranges.iter().map(|r| (r.start, r.duration)).collect::<Vec<_>>(), vec![(R.snap(v[4].start), R.frame_duration())]);
+}
+
+/// A clip edge can fall inside a frame (a recorded take ends on a sample). A zero-length filler
+/// takes only whole frames of its own clip, so the ripple keeps later clips on the frame grid: next
+/// to such an edge, it has a whole frame or is left.
+#[test]
+fn a_filler_too_short_for_a_frame_keeps_to_whole_frames_of_its_clip() {
+    let words_of = |q: &Sequence| {
+        let w = sequence_words(q, &transcripts());
+        assert_eq!(find_fillers(&w, &["um".to_string()]), vec![4..5]);
+        w
+    };
+    let hit = 4..5;
+    let cut = |v: &[SeqWord]| filler_ranges(v, std::slice::from_ref(&hit), R).iter().map(|r| (r.start, r.end())).collect::<Vec<_>>();
+    let on_frames = |r: &[(Tick, Tick)]| r.iter().all(|&(a, b)| R.snap(a) == a && R.snap(b) == b);
+    // its clip ends at 4.02 s, inside the frame from 4.00 s; the next word is in the clip after it
+    let mut q = seq();
+    q.audio_tracks[0].items.push(clip(100, 0.0, 4.02, 0.0));
+    q.audio_tracks[0].items.push(clip(101, 4.02, 5.98, 4.02));
+    let mut v = words_of(&q);
+    assert_ne!(v[4].clip, v[5].clip);
+    (v[4].start, v[4].end) = (s(4.01), s(4.01));
+    assert!(cut(&v).is_empty(), "the frame from 4.00 s is partly the next clip's");
+    (v[4].start, v[4].end) = (s(3.97), s(3.97));
+    assert_eq!(cut(&v), vec![(s(3.96), s(4.00))], "a whole frame inside its clip");
+    // its clip starts at 3.62 s, inside the frame from 3.60 s
+    let mut q = seq();
+    q.audio_tracks[0].items.push(clip(100, 0.0, 3.62, 0.0));
+    q.audio_tracks[0].items.push(clip(101, 3.62, 6.38, 3.62));
+    let mut v = words_of(&q);
+    assert_eq!(v[4].clip, v[5].clip);
+    (v[4].start, v[4].end) = (s(3.63), s(3.63));
+    assert!(cut(&v).is_empty(), "the frame from 3.60 s is partly the clip before");
+    (v[4].start, v[4].end) = (s(3.65), s(3.65));
+    let r = cut(&v);
+    assert_eq!(r, vec![(s(3.64), R.snap(v[5].start))], "from its clip's first whole frame");
+    assert!(on_frames(&r));
+}
+
 #[test]
 fn merge_ranges_joins_overlaps() {
     let r = |a: f64, b: f64| TimeRange::from_bounds(s(a), s(b));
@@ -287,6 +385,7 @@ fn captions_never_overlap_with_dense_words() {
             start: R.tick_of(i),
             end: R.tick_of(i + 1),
             clip: ClipId(1),
+            clip_range: TimeRange::from_bounds(Tick::ZERO, R.tick_of(30)),
             item: MEDIA,
             index: i as usize,
             track: 0,
@@ -320,6 +419,7 @@ fn sw(text: &str, i: usize) -> SeqWord {
         start: Tick(i as i64),
         end: Tick(i as i64 + 1),
         clip: ClipId(1),
+        clip_range: TimeRange::from_bounds(Tick::ZERO, Tick(1000)),
         item: MEDIA,
         index: i,
         track: 0,
