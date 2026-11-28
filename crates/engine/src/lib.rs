@@ -629,6 +629,7 @@ impl Job {
             "progress": self.progress.fraction(),
             // seconds left at the job's recent speed; null until it can tell
             "etaSeconds": self.progress.eta().map(|d| d.as_secs_f64()),
+            "renderFps": self.progress.render_fps(),
             "done": self.progress.done.load(Ordering::Relaxed),
             "total": self.progress.total.load(Ordering::Relaxed),
             "status": self.progress.status.lock().unwrap_or_else(|e| e.into_inner()).clone(),

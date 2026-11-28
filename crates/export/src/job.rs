@@ -299,7 +299,7 @@ impl Exporter {
         let (f0, f1) = frame_span(pipe.rate, range);
         let nframes = (f1 - f0) as u64;
         if !settings.part_of_batch {
-            progress.total.store(nframes * if two_pass { 2 } else { 1 }, Ordering::Relaxed);
+            progress.track_video_frames(nframes * if two_pass { 2 } else { 1 });
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let (venc, declined) = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;

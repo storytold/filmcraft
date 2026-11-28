@@ -110,6 +110,8 @@ pub struct Progress {
     pub error: Mutex<Option<String>>,
     /// What loudness normalization measured (when it ran).
     pub loudness: Mutex<Option<LoudnessReport>>,
+    /// Whether a unit in this job's progress counter is one rendered video frame.
+    video_export: AtomicBool,
     /// Readings of `done` over time, for [`Progress::eta`].
     pace: Mutex<pace::Pace>,
 }
@@ -137,8 +139,53 @@ impl Progress {
         }
         pace.eta(total - done)
     }
+
+    /// The current video export's frame rate over its trailing progress window.
+    pub fn render_fps(&self) -> Option<f64> {
+        self.render_fps_at(web_time::Instant::now())
+    }
+
+    /// Track video frames as the unit of work for a standalone export.
+    pub fn track_video_frames(&self, total: u64) {
+        self.total.store(total, Ordering::Relaxed);
+        self.video_export.store(true, Ordering::Relaxed);
+    }
+
+    fn render_fps_at(&self, now: web_time::Instant) -> Option<f64> {
+        let done = self.done.load(Ordering::Relaxed);
+        if !self.video_export.load(Ordering::Relaxed) || self.finished.load(Ordering::Relaxed) || done >= self.total.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut pace = self.pace.lock().unwrap_or_else(PoisonError::into_inner);
+        pace.observe(now, done);
+        pace.rate()
+    }
     fn set_status(&self, s: impl Into<String>) {
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = s.into();
+    }
+}
+
+#[cfg(test)]
+mod render_rate_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn render_fps_follows_video_frame_progress_only() {
+        let progress = Progress::default();
+        let start = web_time::Instant::now();
+        progress.total.store(120, Ordering::Relaxed);
+        assert_eq!(progress.render_fps_at(start), None);
+
+        progress.track_video_frames(120);
+        assert_eq!(progress.render_fps_at(start), None);
+        progress.done.store(15, Ordering::Relaxed);
+        assert_eq!(progress.render_fps_at(start + Duration::from_millis(500)), None);
+        progress.done.store(45, Ordering::Relaxed);
+        assert_eq!(progress.render_fps_at(start + Duration::from_millis(1500)), Some(30.0));
+
+        progress.finished.store(true, Ordering::Relaxed);
+        assert_eq!(progress.render_fps_at(start + Duration::from_secs(2)), None);
     }
 }
 

@@ -189,6 +189,30 @@ fn the_status_bar_and_the_queue_show_the_time_left() {
 }
 
 #[test]
+fn live_render_speed_is_available_to_accessibility() {
+    use egui_kittest::kittest::Queryable;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let mut d = Driver::new("live-fps");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let job = filmcraft_engine::Job { id: 901, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.track_video_frames(1000);
+    let start = web_time::Instant::now() + Duration::from_secs(60);
+    for i in 0..=50u64 {
+        job.progress.done.store(i * 5, Ordering::Relaxed);
+        job.progress.eta_at(start + Duration::from_millis(i * 100));
+    }
+    d.app().session.jobs.push(job);
+    d.frames(4);
+
+    let elements = d.ok("ui.elements", json!({"prefix": "status.job.progress"}));
+    let label = elements[0]["label"].as_str().unwrap();
+    assert!(label.contains("50.0 fps"), "{label}");
+    assert!(d.harness.query_by_label(&format!("Exporting… {label}")).is_some(), "the status text is in the accessibility tree");
+}
+
+#[test]
 fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
     use filmcraft_engine::export::{ExportSettings, Format};
     let mut d = Driver::new("h265");

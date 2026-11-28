@@ -211,7 +211,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
             let count = (f1 - f0) as u64;
             let (w, h) = (pipe.w, pipe.h);
             if !settings.part_of_batch {
-                progress.total.store(count, Ordering::Relaxed);
+                progress.track_video_frames(count);
                 progress.set_status(format!("Exporting {count} frames ({})", settings.format.label()));
             }
             let mut total = 0u64;
