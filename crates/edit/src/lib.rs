@@ -101,10 +101,16 @@ pub fn split_track_at(track: &mut Track, t: Tick, ctx: &mut EditCtx, links: &mut
     let new_id = ClipId(ctx.alloc());
     right.id = new_id;
     right.start = t;
-    right.duration -= cut;
     if !right.reverse && right.frame_hold.is_none() {
-        right.source_in += Tick((cut.0 as f64 * right.speed.abs()).round() as i64);
-    } else if right.reverse {
+        // the right piece keeps the clip's source Out, as the pieces of a reversed clip keep both
+        // of its media ends; the media may then jump by a tick at the cut, within the through-edit
+        // slack
+        let rest = right.duration - cut;
+        resize_keeping_source_out(&mut right, rest);
+    } else {
+        right.duration -= cut;
+    }
+    if right.reverse {
         // reversed: the left piece now shows the later media; keep content continuous
         let left_ref = &mut track.items[idx];
         let consumed = Tick((cut.0 as f64 * left_ref.speed.abs()).round() as i64);
@@ -716,6 +722,18 @@ fn src_of(dur: Tick, speed: f64) -> Tick {
     Tick((dur.0 as f64 * speed.abs()).round() as i64)
 }
 
+/// Give an item a new length at the edge where its source In sits (the In edge of a forward clip,
+/// the Out edge of a reversed one) and keep its source Out where it was. Adding a separately
+/// rounded share of the change to the source In let the Out drift by a tick at speeds other than
+/// 100%, past the end of the media after a few edits. The media limits stay met: each edit's limit
+/// is the head divided by the speed and rounded down, so the new span fits between the media start
+/// and the old Out.
+fn resize_keeping_source_out(it: &mut TrackItem, duration: Tick) {
+    let out = it.source_out();
+    it.duration = duration;
+    it.source_in = out - src_of(duration, it.speed);
+}
+
 /// Neighbours on the same track: (previous end, next start).
 fn neighbours(track: &Track, id: ClipId) -> (Tick, Tick) {
     let idx = track.items.iter().position(|i| i.id == id).unwrap_or(0);
@@ -774,22 +792,25 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
 /// move), and, for the In edge with `move_start`, where it starts. The trims and the timeline's
 /// live trim preview share it, so the preview shows the media the edit will keep (#374).
 pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
-    let speed = it.speed.abs();
     match edge {
         Edge::In => {
             if !it.reverse && it.frame_hold.is_none() {
-                it.source_in += src_of(d, speed);
+                let duration = it.duration - d;
+                resize_keeping_source_out(it, duration);
+            } else {
+                it.duration -= d;
             }
-            it.duration -= d;
             if move_start {
                 it.start += d;
             }
         }
         Edge::Out => {
             if it.reverse {
-                it.source_in -= src_of(d, speed);
+                let duration = it.duration + d;
+                resize_keeping_source_out(it, duration);
+            } else {
+                it.duration += d;
             }
-            it.duration += d;
         }
     }
 }
@@ -993,21 +1014,24 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     if d == Tick::ZERO {
         return Ok(d);
     }
-    let (ls, rs) = (l.speed.abs(), r.speed.abs());
     let before = seq.clone();
     {
         let (_, l) = seq.find_item_mut(left).ok_or(EditError::NoItem(left))?;
         if l.reverse {
-            l.source_in -= src_of(d, ls);
+            let duration = l.duration + d;
+            resize_keeping_source_out(l, duration);
+        } else {
+            l.duration += d;
         }
-        l.duration += d;
     }
     {
         let (_, r) = seq.find_item_mut(right).ok_or(EditError::NoItem(right))?;
         r.start += d;
-        r.duration -= d;
-        if !r.reverse {
-            r.source_in += src_of(d, rs);
+        if r.reverse {
+            r.duration -= d;
+        } else {
+            let duration = r.duration - d;
+            resize_keeping_source_out(r, duration);
         }
     }
     transitions_follow_cuts(&before, seq);
@@ -1077,17 +1101,21 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     let t = seq.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
     if let Some(p) = prev {
         let pi = t.item_mut(p.id).ok_or(EditError::NoItem(p.id))?;
-        pi.duration += d;
         if p.reverse {
-            pi.source_in -= src_of(d, p.speed);
+            let duration = pi.duration + d;
+            resize_keeping_source_out(pi, duration);
+        } else {
+            pi.duration += d;
         }
     }
     if let Some(n) = next {
         let ni = t.item_mut(n.id).ok_or(EditError::NoItem(n.id))?;
         ni.start += d;
-        ni.duration -= d;
-        if !n.reverse {
-            ni.source_in += src_of(d, n.speed);
+        if n.reverse {
+            ni.duration -= d;
+        } else {
+            let duration = ni.duration - d;
+            resize_keeping_source_out(ni, duration);
         }
     }
     let me = t.item_mut(clip).ok_or(EditError::NoItem(clip))?;
