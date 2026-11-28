@@ -1506,22 +1506,12 @@ fn paint_swatch(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
 }
 
-/// Where a menu item's hover hint opens, from the point the pointer entered the item: +x right,
-/// +y down, in points. The hint's top-left corner goes there, so 0, 18 puts it just below the
-/// arrow cursor, lined up with its tip.
-const HINT_NUDGE: egui::Vec2 = egui::vec2(0.0, 18.0);
-
-/// A hover hint that opens like a menu: below the pointer, where the hover began, and stays put
-/// while the pointer moves within the same item.
-fn hint_at_pointer(ui: &egui::Ui, r: &egui::Response, hint: String) {
-    let key = r.id.with("hint-at");
-    let Some(pointer) = r.hover_pos().filter(|_| r.hovered()) else {
-        ui.data_mut(|d| d.remove::<egui::Pos2>(key));
-        return;
-    };
-    let at = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(key, || pointer));
+/// Align a hover hint with its row, outside the menu's content width.
+fn hint_beside_menu(ui: &egui::Ui, r: &egui::Response, hint: String) {
+    let menu = ui.min_rect().union(r.rect);
+    let anchor = egui::Rect::from_min_max(egui::pos2(menu.min.x, r.rect.min.y), egui::pos2(menu.max.x, r.rect.max.y));
     let mut tip = egui::Tooltip::for_enabled(r);
-    tip.popup = tip.popup.at_position(at + HINT_NUDGE).align(egui::RectAlign::BOTTOM_START).gap(0.0);
+    tip.popup = tip.popup.anchor(anchor).align(egui::RectAlign::RIGHT_START).align_alternatives(&[egui::RectAlign::LEFT_START]);
     tip.show(|ui| {
         ui.set_max_width(ui.spacing().tooltip_width);
         ui.label(hint);
@@ -1539,7 +1529,7 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Re
     let r = ui.add_enabled(it.enabled, b);
     // Help items show the address they open, or say what they do inside FilmCraft
     if let Some(hint) = crate::links::menu_hint(&it.id) {
-        hint_at_pointer(ui, &r, hint);
+        hint_beside_menu(ui, &r, hint);
     }
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if let Some(color) = swatch {
@@ -1729,6 +1719,49 @@ mod tests {
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");
         assert!(items.iter().any(|it| it.id == "file.save" && it.path == ["File"]));
+    }
+
+    #[test]
+    fn help_link_hint_does_not_cover_the_next_menu_item() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 700.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
+        crate::theme::install(&harness.ctx, &harness.state().tokens);
+        harness.ctx.global_style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        harness.run_steps(3);
+        harness.get_by_label("Help").click();
+        harness.run_steps(3);
+        let [x, y, _, h] = harness.state().auto.find_current("menu.help.discord").expect("the Discord menu item").rect;
+        harness.event(egui::Event::PointerMoved(egui::pos2(x + 4.0, y + h / 2.0)));
+        harness.run_steps(6);
+
+        let [x, y, w, h] = harness.state().auto.find_current("menu.help.website").expect("the next Help menu item").rect;
+        let next = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let hint = harness
+            .output()
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == crate::links::DISCORD => Some(text.visual_bounding_rect()),
+                _ => None,
+            })
+            .expect("the Discord URL hint is visible");
+        let popup = harness
+            .output()
+            .shapes
+            .iter()
+            .flat_map(|shape| match &shape.shape {
+                egui::Shape::Vec(children) => children.as_slice(),
+                shape => std::slice::from_ref(shape),
+            })
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(rect) if rect.fill != egui::Color32::TRANSPARENT && rect.rect.contains_rect(hint) => Some(rect.rect),
+                _ => None,
+            })
+            .min_by(|a, b| a.area().total_cmp(&b.area()))
+            .expect("the frame around the Discord URL");
+        assert!(!popup.intersects(next), "the tooltip {popup:?} must not cover the next menu item {next:?}");
     }
 
     /// #1500: like a native menu bar, while one menu is open hovering another title opens it.
