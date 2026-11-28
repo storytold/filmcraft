@@ -486,3 +486,163 @@ fn trim_delta_stops_at_the_end_of_the_media() {
     let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).unwrap();
     assert_eq!(back, -small, "a trim within the media is not clamped");
 }
+
+/// #1926: `clips` trims a whole multi-selection by the same delta, in one undo step.
+#[test]
+fn timeline_trim_clips_trims_the_whole_selection() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Multi trim", "video": 2, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    for track in ["V1", "V2"] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": track, "frame": 0, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let (v1, v2) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].items[0].id, q.video_tracks[1].items[0].id)
+    };
+    let undo = s.history.undo.len();
+    s.execute("timeline.trim", json!({"clip": v1.0, "clips": [v1.0, v2.0], "edge": "out", "mode": "regular", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    for clip in [v1, v2] {
+        assert_eq!(q.find_item(clip).unwrap().1.end(), rate.tick_of(38), "every listed clip trims by the same delta");
+    }
+    assert_eq!(s.history.undo.len(), undo + 1, "the whole selection is one undo step");
+}
+
+/// Without `clips` the trim still stays on the grabbed clip, as before #1926.
+#[test]
+fn timeline_trim_without_clips_stays_on_one_clip() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Single trim", "video": 2, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    for track in ["V1", "V2"] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": track, "frame": 0, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let (v1, v2) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].items[0].id, q.video_tracks[1].items[0].id)
+    };
+    s.execute("timeline.trim", json!({"clip": v1.0, "edge": "out", "mode": "regular", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(v1).unwrap().1.end(), rate.tick_of(38));
+    assert_eq!(q.find_item(v2).unwrap().1.end(), rate.tick_of(48), "an unlisted clip is left alone");
+}
+
+/// #1926: with clips of different lengths the group stops where the first one runs out, so the
+/// relative timing survives and no clip goes below a frame.
+#[test]
+fn timeline_trim_clips_stops_at_the_clip_that_runs_out_first() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Multi trim limit", "video": 2, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    for (track, frames) in [("V1", 48), ("V2", 96)] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": track, "frame": 0, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(frames).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let (short, long) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].items[0].id, q.video_tracks[1].items[0].id)
+    };
+    let before = s.active_sequence().unwrap().find_item(long).unwrap().1.end();
+    // ask for far more than the shorter clip has
+    s.execute("timeline.trim", json!({"clip": short.0, "clips": [short.0, long.0], "edge": "out", "mode": "regular", "deltaFrames": -90})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let short_now = q.find_item(short).unwrap().1;
+    let long_now = q.find_item(long).unwrap().1;
+    assert_eq!(short_now.duration, rate.frame_duration(), "the short clip stops at one frame");
+    assert_eq!(before - long_now.end(), rate.tick_of(47), "the long clip moves by the same delta the short one could take");
+}
+
+/// #1926 review: a repeated id in `clips` trims that clip once, not once per entry.
+#[test]
+fn timeline_trim_clips_ignores_a_repeated_id() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Repeat", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    s.execute(
+        "timeline.place",
+        json!({"item": item.0, "track": "V1", "frame": 0, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0, "audio": false}),
+    )
+    .unwrap();
+    let v1 = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.execute("timeline.trim", json!({"clip": v1.0, "clips": [v1.0, v1.0], "edge": "out", "mode": "regular", "deltaFrames": -10})).unwrap();
+    let now = s.active_sequence().unwrap().find_item(v1).unwrap().1;
+    assert_eq!(now.duration, rate.tick_of(38), "the repeated id must not trim the clip twice");
+}
+
+/// #1926 review: a ripple trim closes the cut, so a selected neighbour on the same track cannot
+/// ride along. Trimming it by the same delta would keep its start, end it at the new cut and leave
+/// a gap, and everything after it would shift by one trim length instead of the total.
+#[test]
+fn timeline_ripple_trim_clips_leaves_no_gap_behind_the_cut() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Ripple multi", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    // A on 0..48 frames and B butted against it on 48..96
+    for frame in [0, 48] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": "V1", "frame": frame, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let ids: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id).collect();
+    assert_eq!(ids.len(), 2, "two clips, one butted against the other");
+    let (a, b) = (ids[0], ids[1]);
+    // both selected, and A's Out edge is the one being dragged
+    s.execute("timeline.trim", json!({"clip": a.0, "clips": [a.0, b.0], "edge": "out", "mode": "ripple", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let (qa, qb) = (q.find_item(a).unwrap().1, q.find_item(b).unwrap().1);
+    assert_eq!(qa.end(), rate.tick_of(38), "the grabbed clip is the one that trims");
+    assert_eq!(qb.duration, rate.tick_of(48), "the selected neighbour is not trimmed by the ripple");
+    assert_eq!(qb.start, qa.end(), "no gap: the neighbour follows the cut");
+}
+
+/// #1926 review (H4): a ripple trim clamps over the clips it actually moves, not over the whole
+/// selection, so what the Timeline's preview promised is what the command applies. The short
+/// selected neighbour here would cap a regular multi-selection trim to three frames, and the
+/// ripple has no business asking it: it moves with the cut instead of being trimmed.
+#[test]
+fn timeline_ripple_trim_clamps_like_the_preview_not_like_the_selection() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Ripple clamp", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    // A on 0..48 frames, B butted against it with only 4 frames of material
+    for (frame, frames) in [(0i64, 48i64), (48, 4)] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": "V1", "frame": frame, "sourceIn": rate.tick_of(frames).0, "duration": rate.tick_of(frames).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let ids: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id).collect();
+    assert_eq!(ids.len(), 2, "two clips, one butted against the other");
+    let (a, b) = (ids[0], ids[1]);
+    let minus_ten = Tick(rate.frame_duration().0 * -10);
+    // what the Timeline's preview computes for this drag, with links on
+    let preview = crate::commands::trim_delta_linked(&s, a, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Ripple, minus_ten, true).unwrap();
+    assert_eq!(preview, minus_ten, "a ripple on A can take the whole 10 frames: B follows the cut");
+    s.execute("timeline.trim", json!({"clip": a.0, "clips": [a.0, b.0], "edge": "out", "mode": "ripple", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let (qa, qb) = (q.find_item(a).unwrap().1, q.find_item(b).unwrap().1);
+    assert_eq!(qa.end(), rate.tick_of(38), "the command applied what the preview promised, not the neighbour's limit");
+    assert_eq!(qb.duration, rate.tick_of(4), "a ripple does not trim the selected neighbour");
+    assert_eq!(qb.start, qa.end(), "no gap: the neighbour follows the cut");
+}
