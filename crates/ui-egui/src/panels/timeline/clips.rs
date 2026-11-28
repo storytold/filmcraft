@@ -266,8 +266,21 @@ pub(super) fn draw_clip(
         let speed = format!("[{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
         label = if label.is_empty() { speed } else { format!("{label} {speed}") };
     }
-    if w > 24.0 && !label.is_empty() {
-        clip_p.text(
+    let mut name_clip = clip_p.clip_rect();
+    // The right-aligned fx badge and the name share this header.
+    if (it.has_standard_effects() || it.has_modified_intrinsics()) && w > 40.0 {
+        let col = if it.has_standard_effects() { Color32::from_rgb(0xe8, 0xc5, 0x4a) } else { Color32::from_rgb(0x91, 0xa2, 0xac) };
+        let badge = clip_p.text(
+            pos2(body.max.x - 6.0, body.min.y + 8.5),
+            Align2::RIGHT_CENTER,
+            "fx",
+            egui::FontId::new(11.0, egui::FontFamily::Name("semibold".into())),
+            col,
+        );
+        name_clip.max.x = name_clip.max.x.min(badge.min.x - 4.0);
+    }
+    if w > 24.0 && !label.is_empty() && name_clip.is_positive() {
+        clip_p.with_clip_rect(name_clip).text(
             pos2(body.min.x + 6.0, body.min.y + 8.5),
             Align2::LEFT_CENTER,
             label,
@@ -279,17 +292,6 @@ pub(super) fn draw_clip(
             } else {
                 t.text_faint
             },
-        );
-    }
-    // fx badge right-aligned in the header (italic-ish "fx")
-    if (it.has_standard_effects() || it.has_modified_intrinsics()) && w > 40.0 {
-        let col = if it.has_standard_effects() { Color32::from_rgb(0xe8, 0xc5, 0x4a) } else { Color32::from_rgb(0x91, 0xa2, 0xac) };
-        clip_p.text(
-            pos2(body.max.x - 6.0, body.min.y + 8.5),
-            Align2::RIGHT_CENTER,
-            "fx",
-            egui::FontId::new(11.0, egui::FontFamily::Name("semibold".into())),
-            col,
         );
     }
     // corner triangles where the clip reaches the media's first/last frame (no handles)
