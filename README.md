@@ -337,7 +337,6 @@ Nothing below the front ends depends on a UI toolkit or OS API. `cargo xtask ci`
 |---|---|---|
 | x64 (64-bit Intel/AMD) | `filmcraft-<ver>-windows-x64.msi` | `filmcraft-<ver>-windows-x64-portable.zip` |
 | arm64 (Snapdragon and other ARM PCs) | `filmcraft-<ver>-windows-arm64.msi` | `filmcraft-<ver>-windows-arm64-portable.zip` |
-| x86 (32-bit) | `filmcraft-<ver>-windows-x86.msi` | `filmcraft-<ver>-windows-x86-portable.zip` |
 
 Installers and executables are code-signed.
 
