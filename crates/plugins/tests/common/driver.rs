@@ -37,7 +37,10 @@ impl Driver {
         app.hooks.open_path = Some(Box::new(|_, _| Ok(())));
         let per_frame_host = Arc::clone(&host);
         app.hooks.per_frame = Some(Box::new(move |ctx, session| filmcraft_plugins::ui::frame(&per_frame_host, ctx, session)));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx, host };
         d.frames(4);
         d
