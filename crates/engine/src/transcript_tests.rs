@@ -128,6 +128,26 @@ fn remove_fillers_pauses_and_create_captions() {
     q.check().unwrap();
 }
 
+/// A minimum caption duration longer than the maximum is an error naming both, and no caption
+/// track is added; with equal limits no caption runs past them.
+#[test]
+fn create_captions_refuses_a_minimum_longer_than_the_maximum() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+    let tracks = s.active_sequence().unwrap().caption_tracks.len();
+    let e = s.execute("transcript.createCaptions", json!({"minSeconds": 3, "maxSeconds": 2})).unwrap_err().to_string();
+    assert!(e.contains("`minSeconds` (3 s)") && e.contains("`maxSeconds` (2 s)"), "{e}");
+    // against the default 7 s maximum
+    assert!(s.execute("transcript.createCaptions", json!({"minSeconds": 8})).is_err());
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.len(), tracks, "nothing added");
+
+    s.execute("transcript.createCaptions", json!({"minSeconds": 2, "maxSeconds": 2})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let caps = &q.caption_tracks[0].captions;
+    assert!(!caps.is_empty());
+    assert!(caps.iter().all(|c| c.duration <= Tick::from_seconds_f64(2.0)), "{caps:?}");
+}
+
 #[test]
 fn set_delete_and_models() {
     let (mut s, item, _) = session();

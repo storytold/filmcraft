@@ -416,6 +416,10 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
         gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
     };
+    if rules.min_duration > rules.max_duration {
+        let msg = format!("`minSeconds` ({} s) is longer than `maxSeconds` ({} s)", rules.min_duration.seconds(), rules.max_duration.seconds());
+        return Err(bad("transcript.createCaptions", msg));
+    }
     let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();

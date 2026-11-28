@@ -324,9 +324,11 @@ pub struct CaptionRules {
     /// Lines per caption (1 = single, 2 = double).
     pub lines: usize,
     /// Minimum caption duration; a short caption is extended into the silence after it, never
-    /// over the next one.
+    /// over the next one and never past `max_duration`.
     pub min_duration: Tick,
-    /// Longest caption.
+    /// Longest caption, measured on its frame-snapped times. A single word whose frame-snapped span
+    /// is longer gets a caption of its own, which can last longer; every caption lasts at least one
+    /// frame.
     pub max_duration: Tick,
     /// Frames left empty between consecutive captions.
     pub gap_frames: i64,
@@ -361,13 +363,15 @@ pub struct CaptionBlock {
 
 /// Lay words out as caption blocks: words fill lines of at most `max_chars` (a longer single word
 /// gets a line of its own) and blocks of `lines` lines; a new block starts at a speaker change,
-/// at a pause of `break_pause`, after `max_duration`, or after sentence-ending punctuation once the
-/// block is past half full. Times are snapped to frames, blocks never overlap and keep
-/// `gap_frames` between them.
+/// at a pause of `break_pause`, where the next word would take the block past `max_duration` once
+/// its times are snapped to frames, or after sentence-ending punctuation once the block is past
+/// half full. Times are snapped to frames, blocks never overlap and keep `gap_frames` between
+/// them.
 pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) -> Vec<CaptionBlock> {
     let max_chars = rules.max_chars.max(1);
     let max_lines = rules.lines.max(1);
     let cap_chars = max_chars * max_lines;
+    let fd = rate.frame_duration();
     let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
     let mut a = 0;
     let mut lines: Vec<usize> = vec![0];
@@ -381,8 +385,9 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             let fits = fits_line || lines.len() < max_lines;
             let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
             let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
-            let brk =
-                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
+            // the block's span as it will be once snapped: start down, end up to a frame
+            let too_long = snap_up(rate, w.end) - rate.snap(words[a].start) > rules.max_duration;
+            let brk = !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || too_long || sentence_end;
             if brk {
                 groups.push(a..i);
                 a = i;
@@ -404,7 +409,6 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
         groups.push(a..words.len());
     }
     // text, frame-snapped times
-    let fd = rate.frame_duration();
     let gap = Tick(fd.0 * rules.gap_frames.max(0));
     let mut out: Vec<CaptionBlock> = Vec::new();
     for g in groups {
@@ -421,13 +425,11 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             }
         }
         let start = rate.snap(words[g.start].start);
-        let mut end = rate.snap(words[g.end - 1].end);
-        if end < words[g.end - 1].end {
-            end += fd;
-        }
+        let end = snap_up(rate, words[g.end - 1].end);
         out.push(CaptionBlock { start, end: end.max(start + fd), text: text_lines.join("\n"), speaker: words[g.start].speaker.clone(), words: g });
     }
-    // no overlaps, minimum duration (into the silence after a block, never over the next one)
+    // no overlaps, minimum duration (into the silence after a block, never over the next one, never
+    // past the maximum)
     for i in 0..out.len() {
         if i > 0 {
             let min_start = out[i - 1].end + gap;
@@ -439,18 +441,20 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
         let next = out.get(i + 1).map(|n| n.start);
         let b = &mut out[i];
         if b.end - b.start < rules.min_duration {
-            let want = b.start + rules.min_duration;
-            let mut e = rate.snap(want);
-            if e < want {
-                e += fd;
-            }
-            b.end = e;
+            let longest = rate.snap(b.start + rules.max_duration);
+            b.end = b.end.max(snap_up(rate, b.start + rules.min_duration).min(longest));
         }
         if let Some(n) = next {
             b.end = b.end.min(n - gap).max(b.start + fd);
         }
     }
     out
+}
+
+/// `t` rounded up to a frame boundary.
+fn snap_up(rate: FrameRate, t: Tick) -> Tick {
+    let s = rate.snap(t);
+    if s < t { rate.tick_of(rate.frame_at(t).saturating_add(1)) } else { s }
 }
 
 /// Caption blocks as captions (ids from `ctx`).
