@@ -657,6 +657,30 @@ fn a_dragged_bin_nests_in_another_and_back_out() {
     assert_eq!(parent(&mut d, inner), Some(root));
 }
 
+/// #5219: an item dragged from the Project panel and dropped on the Source monitor opens there.
+#[test]
+fn an_item_dropped_on_the_source_monitor_opens_in_it() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.panel.show", json!({"panel": "Source"}));
+    d.frames(3);
+    let (bin, items) = d.footage();
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    let item = items[0];
+    d.wait_for(&format!("project.item.{item}"));
+    assert_ne!(d.app().session.state.source_item, Some(ItemId(item)), "the item starts out not in the Source monitor");
+    let (from, to) = (centre(d.rect(&format!("project.item.{item}"))), centre(d.rect("source.dropTarget")));
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": to.0, "y": to.1}, "steps": 12}));
+    d.frames(3);
+    assert_eq!(d.app().session.state.source_item, Some(ItemId(item)), "dropping the item on the Source monitor opens it");
+    // a drop somewhere else does not
+    d.exec("source.close", json!({}));
+    let elsewhere = centre(d.rect("program.picture"));
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": elsewhere.0, "y": elsewhere.1}, "steps": 12}));
+    d.frames(3);
+    assert_ne!(d.app().session.state.source_item, Some(ItemId(item)), "a drop on the Program monitor leaves the Source monitor alone");
+}
+
 #[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();

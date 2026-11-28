@@ -211,6 +211,27 @@ fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which
     }
 }
 
+/// A project item dragged from the Project panel over the Source monitor: the panel is outlined
+/// while the pointer is over it, and letting go opens the item there to mark In and Out and drag
+/// from (#5219). A Source monitor drag (the range already marked) is not an item to open.
+fn source_drop(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, which: Which, t: &Tokens) {
+    if which != Which::Source {
+        return;
+    }
+    app.auto.add("source.dropTarget", area, "Drop an item here to open it in the Source monitor");
+    let Some(item) = crate::panels::dragged_panel_item(ui) else { return };
+    if !ui.ctx().pointer_hover_pos().is_some_and(|p| area.contains(p)) {
+        return;
+    }
+    ui.painter().rect_stroke(area.shrink(1.0), 0.0, egui::Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+    if ui.ctx().input(|i| i.pointer.any_released()) {
+        if let Err(e) = app.session.execute("source.open", json!({"item": item.0})) {
+            app.ui.status = e.to_string();
+        }
+        crate::panels::clear_drag(ui);
+    }
+}
+
 /// The monitor's settings as drawn: cinema mode shows the finished picture, and the saved settings
 /// are back when it ends.
 fn shown_view(saved: &crate::state::MonitorView, cinema: bool) -> crate::state::MonitorView {
@@ -229,6 +250,7 @@ fn shown_view(saved: &crate::state::MonitorView, cinema: bool) -> crate::state::
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
+    source_drop(app, ui, rect, which, &t);
     let stacked_controls = rect.width() < 540.0;
     let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
     let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
