@@ -217,6 +217,11 @@ pub enum FxOp {
         vround: f32,
         vfeather: f32,
         aspect: f32,
+        /// Color Wheels: the shadow, midtone and highlight offsets ([`crate::effects::wheel_rgb`])
+        /// and the three lightness sliders; None when the wheels change nothing.
+        wheels: Option<[[f32; 3]; 4]>,
+        /// Creative ▸ Sharpen: the box radii of its blur and the amount; None when off.
+        sharpen: Option<(Vec<u32>, Vec<u32>, f32)>,
         gpu_capable: bool,
     },
 }
@@ -603,17 +608,23 @@ impl FxOp {
                             .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
                 };
 
-                let wheels_on = on(e, "wheels_on");
-                let has_wheels = wheels_on && {
-                    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
-                    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
-                    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
-                    ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || (ls.abs() + lm.abs() + lh.abs() > 1e-5)
-                };
+                // as `effects::lumetri_advanced` and the end of `effects::lumetri`
+                let wheels = on(e, "wheels_on")
+                    .then(|| {
+                        let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+                        let l = [f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0];
+                        [wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")), l]
+                    })
+                    .filter(|wl| wl[..3].iter().flatten().any(|v| v.abs() > 1e-5) || wl[3].iter().map(|v| v.abs()).sum::<f32>() > 1e-5);
+                let sharpen = (sharpen.abs() > 1e-3).then(|| {
+                    let r = 1.2 * cx.px_scale.max(0.35);
+                    let (rx, ry) = gaussian_boxes(w, h, r, r);
+                    (rx, ry, sharpen.max(-1.0))
+                });
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && !has_curves && !hsl_on;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
@@ -656,6 +667,8 @@ impl FxOp {
                     vround,
                     vfeather,
                     aspect,
+                    wheels,
+                    sharpen,
                     gpu_capable,
                 }
             }
@@ -706,8 +719,32 @@ impl FxOp {
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
-            FxOp::Lumetri { gains, exposure, contrast, hl, sh, wh, bl, sat, faded, vib, st, ht, va, vmid, vround, vfeather, aspect, gpu_capable, .. } => {
+            FxOp::Lumetri {
+                gains,
+                exposure,
+                contrast,
+                hl,
+                sh,
+                wh,
+                bl,
+                sat,
+                faded,
+                vib,
+                st,
+                ht,
+                va,
+                vmid,
+                vround,
+                vfeather,
+                aspect,
+                wheels,
+                sharpen,
+                gpu_capable,
+                ..
+            } => {
                 *gpu_capable
+                    && wheels.as_ref().is_none_or(|wl| wl.iter().all(|v| fin(v)))
+                    && sharpen.as_ref().is_none_or(|s| s.2.is_finite())
                     && fin(gains)
                     && fin(&[*exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *faded, *vib])
                     && fin(st)
@@ -1062,6 +1099,8 @@ impl FxOp {
                 vround,
                 vfeather,
                 aspect,
+                wheels,
+                sharpen,
                 ..
             } => {
                 let gains = *gains;
@@ -1122,6 +1161,25 @@ impl FxOp {
                     }
                     dec(v)
                 });
+                if let Some([ws, wm, wh, [ls, lm, lh]]) = *wheels {
+                    // `effects::lumetri_advanced`: lift (shadows), gamma-ish (midtones), gain (highlights)
+                    img.map_rgb(|c, _, _| {
+                        let mut v = enc(c);
+                        let l = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                        let wsh = (1.0 - l).powi(2);
+                        let whi = l * l;
+                        let wmid = (1.0 - wsh - whi).max(0.0);
+                        for k in 0..3 {
+                            v[k] += (ws[k] * 0.3 + ls * 0.3) * wsh;
+                            v[k] += (wm[k] * 0.3 + lm * 0.3) * wmid;
+                            v[k] *= 1.0 + (wh[k] * 0.5 + lh * 0.5) * whi;
+                        }
+                        dec(v)
+                    });
+                }
+                if let Some((rx, ry, amount)) = sharpen {
+                    crate::effects::unsharp_boxes(img, rx, ry, *amount, 0.0);
+                }
             }
         }
     }
