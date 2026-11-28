@@ -60,8 +60,10 @@ fn duration_follows_the_edit_list() {
     // a one-frame empty edit, then all four frames: five frames, and the last one is there
     let delayed = vec![Edit { segment_duration: 40, media_time: -1, media_rate: 0x10000 }, Edit { segment_duration: 160, media_time: 0, media_rate: 0x10000 }];
     let s = Mp4Source::open("delayed.mov", mov_with_edits(delayed)).expect("open");
-    assert_eq!(frames(&s), 5);
-    assert!(s.video_frame(FrameRequest::full(Tick::from_rational(4, 1, 25))).is_ok());
+    // the edit list spans five frames, but the presentation is rebased to the first picture,
+    // so four frames play and the last one is there (review on #1289)
+    assert_eq!(frames(&s), 4);
+    assert!(s.video_frame(FrameRequest::full(Tick::from_rational(3, 1, 25))).is_ok());
     // hostile segment durations fall back to the media duration instead of wrapping
     let huge = vec![Edit { segment_duration: u64::MAX, media_time: 0, media_rate: 0x10000 }];
     assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
