@@ -169,6 +169,9 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 app.ui.focused = PanelKind::Program;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             } else {
+                // a take's view is given back through here too, but it clears the flag first; any other
+                // exit is the user's, and a view entered again later is theirs
+                app.ui.voiceover_cinema = None;
                 let restore = app.ui.cinema_was_fullscreen;
                 if let Some(prev) = app.ui.cinema_prev_focus.take() {
                     app.ui.focused = prev;

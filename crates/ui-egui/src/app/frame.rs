@@ -57,6 +57,9 @@ impl FilmcraftApp {
             ui.painter().rect_filled(full, 0.0, egui::Color32::BLACK);
             panels::monitor::show(self, ui, full, panels::monitor::Which::Program);
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+            // the dialogs below are not drawn here, but a voice-over take still counts down, stops
+            // after its post-roll and gives the layout back from this frame
+            panels::voiceover::tick(self, &ctx);
             return;
         }
         let header_h = if self.ui.show_header { header::HEIGHT } else { 0.0 };

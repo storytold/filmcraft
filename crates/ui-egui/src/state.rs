@@ -500,6 +500,12 @@ pub struct UiState {
     /// The panel that had focus before cinema mode started.
     #[serde(skip)]
     pub cinema_prev_focus: Option<PanelKind>,
+    /// The voice-over take (`VoiceOver::take`) that entered the cinema mode now on (Voice-Over
+    /// Record Settings ▸ Full-screen Program while recording), so that take's end, and no later
+    /// take's, gives the layout back. Cleared when the take has ended, and when the user leaves the
+    /// view by hand, so what the user entered by hand, or left by hand, is never touched.
+    #[serde(skip)]
+    pub voiceover_cinema: Option<u64>,
     /// Transient status line shown in the footer.
     pub status: String,
     /// A link the web browser couldn't open, shown with its address until closed
@@ -1088,6 +1094,7 @@ impl Default for UiState {
             fullscreen_program: false,
             cinema_was_fullscreen: false,
             cinema_prev_focus: None,
+            voiceover_cinema: None,
         }
     }
 }

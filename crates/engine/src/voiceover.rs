@@ -17,6 +17,12 @@
 //! sessions (CLI, MCP, tests) use [`SyntheticInput`], a deterministic generated signal that produces
 //! exactly as many samples as the timeline asks for, so a recording lands sample-accurately.
 //!
+//! The preference `fullScreenProgram` (Voice-Over Record Settings ▸ Full-screen Program while
+//! recording, off by default) is stored here and read by the UI: with it on, a take started from
+//! the UI (`voiceover.recordToggle`, the track header's microphone) enters the full-screen Program
+//! view and the layout comes back when that take ends, however it ends. A bare
+//! `audio.voiceover.start` changes no layout.
+//!
 //! Files are named `<Name> <n>.wav` (Voice-over Record Settings ▸ Name, default `Voice-over`, `n`
 //! the first number not used by a project item or an existing file) and saved in Project Settings ▸
 //! Scratch Disks ▸ Captured Audio and Video, else next to the project file, else (unsaved project)
@@ -149,11 +155,23 @@ pub struct VoiceOverPrefs {
     pub preroll_seconds: f64,
     /// Playback continues this long after the punch-out (Out) point (seconds).
     pub postroll_seconds: f64,
+    /// Show the Program monitor full screen (`view.fullScreenProgram`) while a take is recording;
+    /// the layout that was there comes back when the take ends. The engine only stores the choice:
+    /// the view is a UI state, entered and left by the UI around each take.
+    pub full_screen_program: bool,
 }
 
 impl Default for VoiceOverPrefs {
     fn default() -> Self {
-        Self { source: String::new(), input_channel: 0, name: "Voice-over".into(), countdown_sound_cues: true, preroll_seconds: 2.0, postroll_seconds: 2.0 }
+        Self {
+            source: String::new(),
+            input_channel: 0,
+            name: "Voice-over".into(),
+            countdown_sound_cues: true,
+            preroll_seconds: 2.0,
+            postroll_seconds: 2.0,
+            full_screen_program: false,
+        }
     }
 }
 
@@ -187,11 +205,22 @@ pub struct VoiceOver {
     captured: Vec<f32>,
     /// A stopped take awaiting a successful save; retries keep its original end point.
     pending_stop: Option<Tick>,
+    /// Takes started in this session: tells the take in `rec` from the ones before it.
+    takes: u64,
 }
 
 impl VoiceOver {
     pub fn recording(&self) -> bool {
         self.rec.is_some()
+    }
+    /// The take's capture has stopped and its file is not saved yet (a failed save keeps the take
+    /// for another `audio.voiceover.stop`).
+    pub fn awaiting_save(&self) -> bool {
+        self.rec.is_some() && self.pending_stop.is_some()
+    }
+    /// Identifies the take in progress; every started take gets a new one.
+    pub fn take(&self) -> Option<u64> {
+        self.rec.is_some().then_some(self.takes)
     }
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
@@ -335,6 +364,9 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(v) = bool_p(p, "countdownSoundCues") {
         vo.countdown_sound_cues = v;
     }
+    if let Some(v) = bool_p(p, "fullScreenProgram") {
+        vo.full_screen_program = v;
+    }
     if let Some(v) = f64_p(p, "prerollSeconds") {
         vo.preroll_seconds = v.clamp(0.0, 60.0);
     }
@@ -372,6 +404,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let channel = vo.input_channel.min(format.channels.saturating_sub(1) as u32);
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
+    s.voiceover.takes = s.voiceover.takes.wrapping_add(1);
     s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -581,7 +614,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "audio.voiceover.settings",
             "Voice-Over Record Settings",
-            r#"{"source":str?,"inputChannel":n?,"name":str?,"countdownSoundCues":bool?,"prerollSeconds":f64?,"postrollSeconds":f64?}"#,
+            r#"{"source":str?,"inputChannel":n?,"name":str?,"countdownSoundCues":bool?,"prerollSeconds":f64?,"postrollSeconds":f64?,"fullScreenProgram":bool?}"#,
             crate::commands::always,
             settings,
             true,
