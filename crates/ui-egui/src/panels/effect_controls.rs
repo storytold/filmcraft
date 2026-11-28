@@ -196,6 +196,33 @@ fn drop_effect(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, clips: &[(
     crate::panels::clear_drag(ui);
 }
 
+/// Edit ▸ Cut / Copy with Effect Controls focused act on the effect selected there, as in Premiere,
+/// never on the Timeline clip. With none selected they do nothing and say so. Paste needs no
+/// routing: `edit.paste` puts copied effects on the selected clips wherever focus is. Calls with
+/// parameters (agents naming their targets) are left alone, and so is a panel showing a transition.
+pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    if app.ui.focused != crate::dock::PanelKind::EffectControls || !matches!(id, "edit.cut" | "edit.copy") || !params.as_object().is_none_or(|m| m.is_empty()) {
+        return None;
+    }
+    let shown = selected_clips(app);
+    if shown.is_empty() && crate::panels::transition_controls::selected(app).is_some() {
+        return None;
+    }
+    let selected = app.session.state.selected_effect.clone();
+    let target = selected.and_then(|e| {
+        let (clip, it, _) = shown.iter().find(|(c, ..)| *c == e.clip)?;
+        Some(json!({"clip": clip.0, "effect": e.index(&it.effects)?}))
+    });
+    let r = match target {
+        Some(target) => app.session.execute(if id == "edit.cut" { "effects.cut" } else { "effects.copy" }, target).map_err(|e| e.to_string()),
+        None => Err("select an effect in Effect Controls first".into()),
+    };
+    if let Err(e) = &r {
+        app.ui.status = e.clone();
+    }
+    Some(r)
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
