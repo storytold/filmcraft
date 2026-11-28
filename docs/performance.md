@@ -1163,3 +1163,206 @@ Test: `crates/ui-egui/tests/it/scrub_stop_ui.rs` — a press that only moves the
 stream, and a press while playing still stops the transport. `apps/filmcraft` (`audio::tests`) —
 the device default rate needs no configuration search.
 
+## 4K60 Source preview on Apple Silicon (#2058)
+
+The Source monitor used the CPU image path even with GPU rendering enabled. For portrait phone
+video this rotated full-size YUV planes, converted them into linear RGBA floats, then converted
+those floats back to sRGB bytes. Lowering playback resolution still paid for the full-size
+rotation. Source now plans decoded planes through `plan::plan_item`; the GPU handles rotation
+and supported SDR/HDR input transforms. Source and Program have separate compositors and output
+textures, so seeking one does not overwrite the other's picture. Channel views, transparency
+grids, unavailable GPUs and unsupported colour transforms retain their CPU paths.
+
+Measured on an Apple M4 Pro (14 CPU cores, 48 GiB RAM), release build, starting from `fdcac71e`:
+a locally supplied 3840×2160 HEVC Main clip, 60 fps, full range, displayed with a quarter turn.
+The clip stays local and is not a repository fixture. Six seconds per play, two runs at each
+resolution, through the actual frame scheduler and compositor with VideoToolbox registered.
+
+| Source playback | Before: dropped / 360 | After: dropped / 360 | CPU ms per due frame, before → after |
+|---|---|---|---|
+| Full | 38, 174 | 0, 0 | 86–135 → 5.4–6.0 |
+| Half | 0, 0 | 0, 0 | 89 → 5.8 |
+| Quarter | 2, 0 | 0, 0 | 79–81 → 5.9 |
+
+These are wall-clock playback measurements on one Mac, without the desktop chrome or audio
+output. Full Program playback already showed all 360 frames in both comparison runs; its
+render path is unchanged. The GPU's existing reduced-resolution filter differs from the CPU
+box filter, as it does for Program preview. Export rendering is unchanged.
+
+Reproduce with a local clip (its path is not included in the JSON report):
+
+```sh
+cargo run --release -p filmcraft-ui-egui --example bench_playback -- \
+  --media /path/to/clip.mp4 --source --res full,half,quarter --seconds 6 --repeat 2 --json target/source-preview.json
+```
+
+Omit `--source` for Program; add `--cpu` for the original CPU Source path. `--hw off` disables
+hardware decoding. The generated `--scenario hevc60-2160` case exercises 4K60 Main 10 without
+camera footage, and reports count hardware-decoded frames to distinguish decode fallback from
+compositing costs. Existing scenarios are retained.
+
+Validation: renderer tests, the GPU monitor-independence test (including `ui.screenshot` and
+AccessKit-tree inspection), formatting, Clippy for `filmcraft-render` and `filmcraft-ui-egui`
+(`--all-targets -- -D warnings`, stable toolchain), `cargo xtask assets` and the 30-crate
+`cargo xtask wasm` check pass. The full UI run has 385 passing unit tests (one existing ignored)
+and 816 passing integration tests (eight existing ignored). Three integration failures also
+reproduce individually on the untouched `fdcac71e` snapshot with identical assertions:
+`clip_dialogs_ui::quitting_with_unsaved_changes_asks_to_save`,
+`clip_dialogs_ui::quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_ask`,
+and `multicam_ui::create_multicam_dialog_view_and_live_switching`.
+
+## 4K60 ProRes 422 HQ baseline on Apple Silicon
+
+Measured after the Source GPU change above, before the packed-plane upload fix below, on the
+same M4 Pro (14 CPU cores, 48 GiB RAM).
+The generated `prores60-2160` case is a moving `testsrc2` pattern with temporal noise, encoded
+by an external ffmpeg process as ProRes 422 HQ (`apch`), 3840×2160, 10-bit 4:2:2. ffprobe confirms
+720 frames in 12 seconds at exactly 60/1 fps, about 1.85 Gbit/s. Its recipe is in
+`crates/ui-egui/examples/bench/fixtures.rs`; no camera clip is needed or shipped.
+
+Release build, six frame workers, 60 Hz simulated refresh, no effects, eight seconds (480 due
+frames) per play, three plays per resolution and monitor. Source and Program were measured in
+separate processes, serially, after fixture generation and compilation finished. These are
+headless scheduler/compositor measurements, including GPU completion, without desktop chrome
+or audio output.
+
+| Playback resolution | Source: displayed fps range | Program: displayed fps range | Source dropped / 480 | Program dropped / 480 |
+|---|---|---|---|---|
+| Full | 51.8–57.2 | 54.5–56.3 | 22, 65, 22 | 37, 44, 29 |
+| Half | 57.7–58.6 | 56.9–59.5 | 18, 10, 17 | 22, 3, 24 |
+| Quarter | 55.3–57.7 | 53.4–58.5 | 21, 18, 37 | 53, 14, 11 |
+
+All 18 baseline plays dropped frames: this path was **not consistently 60 fps**. Two additional Full plays
+per monitor at 120 Hz refresh also dropped frames: Source 49.1–50.3 fps (87 and 77 dropped),
+Program 50.6–51.2 fps (75 and 70 dropped). The input itself is constant-rate; these are preview
+drops, not missing encoded pictures.
+
+Hardware-decoded frames remained zero: the current ProRes factory uses FilmCraft's software
+decoder. Decoder time averaged 8.5–11.3 ms per sample in the 60 Hz runs. Upload/draw completion
+on the display thread was usually 8–10 ms (median); full-size 10-bit planes were converted
+for upload and uploaded even at Half and Quarter. Process CPU cost was about 114–131 ms per due
+frame, roughly seven to eight CPU cores at 60 fps. These measurements point to remaining decode,
+conversion/upload and scheduling costs; lowering the output resolution alone does not remove
+enough work. This check does not establish results for other ProRes profiles, camera-specific
+colour metadata or effect-heavy timelines.
+
+```sh
+cargo run --release -p filmcraft-ui-egui --example bench_playback -- \
+  --scenario prores60-2160 --source --res full,half,quarter --seconds 8 --repeat 3 --refresh 60 --json target/prores60-source.json
+```
+
+Omit `--source` for Program. For the refresh cross-check, use `--res full --repeat 2 --refresh 120`.
+
+
+## ProRes 422 packed-plane upload
+
+The GPU uploader previously converted every 10-bit decoded sample to a half float and retained
+both the decoded and converted planes. A single 3840×2160 4:2:2 frame occupied about 66 MB in
+the plan cache, enough to crowd the 1 GiB cache with the playback lookahead and active workers.
+Cache eviction could then cause repeat decode/conversion work. The display thread also created
+new plane textures for every new frame.
+
+Up to 10-bit YUV now uploads the original little-endian words through portable `Rg8Unorm`
+textures. The shader reconstructs each code from its low and high bytes. Reconstruction is linear,
+so bilinear filtering remains correct across byte carries; colour range, alpha and HDR transforms
+still run at the original precision. Little-endian systems retain only the original planes (about
+33 MB per 4K 4:2:2 frame); big-endian systems prepare little-endian upload bytes. Higher bit depths
+retain the half-float path. Evicted upload textures enter a pool capped at 64 MiB and become reusable
+at the next preview composite, after the previous draws have been submitted.
+
+The benchmark adds both generated ProRes 422 (`prores42260-2160`, `apcn`) and ProRes 422 HQ
+(`prores60-2160`, `apch`) 4K60 cases. Both contain 720 frames in 12 seconds at 60/1 fps and use
+10-bit 4:2:2. Standard is about 1.24 Gbit/s and HQ about 1.85 Gbit/s. Procedural generation and
+fixture provenance are recorded alongside the recipe; no captured media is included.
+
+Measured on the same M4 Pro with the same six-worker, eight-second, three-play-per-resolution
+method as the baseline. All measurement processes ran serially after compilation finished.
+
+| Profile | Resolution | Source dropped / 480 | Program dropped / 480 |
+|---|---|---|---|
+| 422 | Full | 0, 0, 0 | 0, 0, 0 |
+| 422 | Half | 0, 0, 0 | 0, 0, 0 |
+| 422 | Quarter | 0, 0, 0 | 0, 0, 0 |
+| 422 HQ | Full | 0, 0, 0 | 1, 5, 0 |
+| 422 HQ | Half | 1, 0, 1 | 0, 0, 3 |
+| 422 HQ | Quarter | 0, 0, 2 | 0, 0, 0 |
+
+Standard 422 displayed all 8,640 frames across 18 plays. HQ displayed 8,627 of 8,640 frames
+(99.85%); its worst play dropped five frames, compared with 65 in the baseline. Standard was
+consistently 60 fps in these trials; HQ is much improved but still has occasional missed frames.
+This is a headless scheduler/GPU measurement, not a desktop/audio or camera-metadata qualification.
+Hardware decode remains zero: these improvements use the existing software decoder.
+
+CPU cost was 70–78 ms per due frame for Standard and 90–95 ms for HQ, compared with 114–131 ms
+for the HQ baseline. Display-thread upload/draw medians were 7.0–9.3 ms for Standard and 7.3–8.6 ms
+for HQ. All final trials decoded 494 samples for 480 due frames plus lookahead, without cancelled
+jobs, rather than repeatedly decoding evicted plans. Raw uploaded bytes per displayed frame are
+unchanged; the savings come from removing conversion, duplicate retention and texture churn.
+
+```sh
+cargo run --release -p filmcraft-ui-egui --example bench_playback -- \
+  --scenario prores42260-2160 --source --res full,half,quarter --seconds 8 --repeat 3 --refresh 60 --json target/prores422-source.json
+```
+
+Use `prores60-2160` for HQ and omit `--source` for Program.
+
+
+At 120 Hz refresh, two additional Full plays per monitor also displayed all 1,920 Standard
+frames. HQ Source missed one frame across its two plays (1, 0); HQ Program missed none (0, 0),
+compared with 70–87 drops per play in the baseline. The supplied 4K60 HEVC clip and the generated
+10-bit `hevc60-2160` Source case each displayed all 960 frames in two Full eight-second plays.
+
+Validation: 66 GPU unit tests and the GPU integration test pass (four pre-existing ignored tests
+remain ignored). The new regressions cover packed-word byte carries, filtering, alpha, HDR,
+removal of duplicate prepared planes, and texture reuse without stale pixels. The Source/Program
+GPU independence integration check passes; its screenshot and AccessKit tree were inspected.
+Formatting, stable Clippy for `filmcraft-gpu` and `filmcraft-ui-egui` with all targets and warnings
+denied, `cargo xtask layers`, `cargo xtask assets` and `cargo xtask wasm` (30 crates) pass.
+The full UI suite's three baseline failures are documented in the Source GPU section above;
+that suite was not rerun for this GPU upload change.
+
+## Apple Log preview on the GPU
+
+Interpreting the same 4K60 ProRes 422 HQ media as Apple Log / Rec. 2020 previously left the
+GPU preview path. `InputTransform::gpu_params` refused log curves, so every frame was converted
+to a working-space image on the CPU before upload. The log decode now samples the CPU's existing
+decode table in the compositor shader and keeps that table's gamut compression. RGB frames and
+other pipelines still convert on the CPU. The local clip used for measurement is 3840×2160
+10-bit 4:2:2 ProRes 422 HQ at nominal 60 fps; it is not shipped.
+
+Release build, six frame workers, eight seconds per play, two plays per resolution and monitor.
+Source and Program ran in separate processes, serially. These are headless scheduler/compositor
+measurements, including GPU completion, without desktop chrome or audio output. Hardware-decoded
+frames stayed at zero: ProRes still uses the software decoder.
+
+Before the shader change, at 60 Hz, every play fell behind. Shown frames out of about 480:
+
+| Playback resolution | Source shown | Program shown |
+|---|---|---|
+| Full | 3, 6 | 5, 7 |
+| Half | 12, 8 | 9, 12 |
+| Quarter | 17, 22 | 13, 13 |
+
+Full plays spent about 25–34 ms in upload/draw (median) and about 1.1 s of queue-to-ready latency
+(median). Process CPU was about 209–235 ms per due frame. Source fetch wall time was about
+72–151 ms per sample, and running jobs were cancelled as the play fell behind.
+
+After the change, at 60 Hz, eleven of twelve plays (Full, Half and Quarter, both monitors)
+displayed all 480 frames. One Quarter Source play showed 479 and dropped 1. Display-thread
+upload/draw medians were 8.1–9.3 ms, queue-to-ready latency about 7.1–7.4 ms, and process CPU
+about 83–89 ms per due frame. Source fetch wall time was about 7.2–7.7 ms. Each play decoded
+493 samples with no cancelled jobs. Two further Full plays per monitor at 120 Hz, and one Full
+play per monitor with no interpretation override, also displayed every frame.
+
+Colour checks compare the shader against the CPU conversion for Apple Log on 10-bit 4:2:2 in
+limited and full range. `filmcraft-color`, `filmcraft-render` and `filmcraft-gpu` tests passed,
+as did formatting, stable Clippy for those crates plus `filmcraft-ui-egui` (`--all-targets`,
+warnings denied), `cargo xtask layers`, `cargo xtask assets` and `cargo xtask wasm` (30 crates).
+
+```sh
+cargo run --release -p filmcraft-ui-egui --example bench_playback -- \
+  --media path/to/prores-422hq-4k60.mov --interpret applelog --source \
+  --res full,half,quarter --seconds 8 --repeat 2 --refresh 60 --json target/applelog-source.json
+```
+
+Omit `--source` for Program. Omit `--interpret applelog` for the clip's own metadata.

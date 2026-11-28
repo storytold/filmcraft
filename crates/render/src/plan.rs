@@ -301,6 +301,35 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     layers.finish(w, h)
 }
 
+/// A Source monitor frame. Keep decoded planes and the display rotation for the GPU, as the
+/// Program monitor does: rotating and converting a full 4K phone picture on the CPU can exceed
+/// the entire 60 fps frame budget even when the monitor is small. Colour spaces the shader
+/// cannot handle retain [`crate::render_item`]'s SDR conversion.
+pub fn plan_item(project: &Project, item: ItemId, t: Tick, scale: f32, caps: DeviceCaps, sources: &dyn SourceProvider) -> Option<FramePlan> {
+    if matches!(project.item(item)?.kind, ItemKind::Sequence(_)) {
+        return Some(plan_frame(project, item, t, RenderOptions { scale, ..Default::default() }, caps, sources));
+    }
+    let src = sources.source(item)?;
+    let (frame, turns) = src.video_frame_unturned(FrameRequest { time: t, scale }).ok()?;
+    let (fw, fh) = if turns % 2 == 1 { (frame.height, frame.width) } else { (frame.width, frame.height) };
+    let full_w = src.info().video.as_ref().map_or(fw, |v| v.width);
+    let n = crate::decimation(fw as f32, full_w as f32 * scale);
+    let (w, h) = ((fw as usize / n).max(1), (fh as usize / n).max(1));
+    let pipe = filmcraft_color::ColorPipeline::REC709;
+    let cs = crate::colorman::source_space(project, item, &frame);
+    let input = if crate::colorman::needs_management(&pipe, cs, &frame) {
+        match crate::colorman::gpu_input(project, item, &pipe, cs, &frame) {
+            Some(input) => Some(input),
+            None => return crate::render_item(project, item, t, scale, sources).map(FramePlan::Image),
+        }
+    } else {
+        None
+    };
+    let matrix =
+        Affine::scale(w as f64 / fw.max(1) as f64, h as f64 / fh.max(1) as f64).then_apply(&quarter_turns(turns, frame.width as f64, frame.height as f64));
+    Some(FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer { input, ..PlanLayer::new(frame, matrix, 1.0, Blend::Normal) }] })
+}
+
 /// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]) for
 /// a device that runs `caps`. A GPU renderer gains nothing on such a frame, so a caller with only a
 /// few of them (the export's pool) can render it on the CPU without taking one.

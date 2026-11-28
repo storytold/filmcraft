@@ -9,7 +9,9 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use std::sync::Arc;
+
+use filmcraft_color::{Lut, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
@@ -217,8 +219,284 @@ pub enum FxOp {
         vround: f32,
         vfeather: f32,
         aspect: f32,
+        /// Basic Correction Input LUT. None when the section is off or the reference does not resolve.
+        input_lut: Option<Arc<Lut>>,
+        /// Creative Look LUT. When set, it replaces the procedural `look`.
+        look_lut: Option<Arc<Lut>>,
+        /// Procedural Creative Look (0 = none). Ignored when `look_lut` is set.
+        look: u32,
+        /// Creative Intensity, 1 = the full look.
+        look_k: f32,
+        /// Curves, wheels, HSL Secondary and Creative Sharpen. None when all of those are off.
+        tone: Option<Box<GradeTone>>,
         gpu_capable: bool,
     },
+}
+
+/// One curve table is this many samples over 0…1, matching `effects::lumetri_advanced`.
+pub const GRADE_CURVE_N: usize = 1024;
+
+/// Colour-wheel offsets already in the shader's units (the `wheel_rgb` direction and the lightness sliders).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeWheels {
+    pub sh: [f32; 3],
+    pub md: [f32; 3],
+    pub hi: [f32; 3],
+    pub ls: f32,
+    pub lm: f32,
+    pub lh: f32,
+}
+
+/// Present curves, bit 0 = luma through bit 8 = sat vs sat. `samples` is each present table
+/// concatenated, [`GRADE_CURVE_N`] entries each.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeCurves {
+    pub mask: u32,
+    pub samples: Arc<[f32]>,
+}
+
+/// HSL Secondary key and correction, with Denoise and Blur at zero.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeHsl {
+    pub hc: f32,
+    pub hr: f32,
+    pub smin: f32,
+    pub lmin: f32,
+    pub lmax: f32,
+    pub soft: f32,
+    pub show: u32,
+    pub temp: f32,
+    pub tint: f32,
+    pub sat: f32,
+    pub shift: f32,
+}
+
+/// Curves, wheels, HSL Secondary and Creative Sharpen for one grade. Boxed so a plain
+/// correction does not inflate every [`FxOp`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeTone {
+    pub wheels: Option<GradeWheels>,
+    pub curves: Option<GradeCurves>,
+    pub hsl: Option<GradeHsl>,
+    pub sharpen_rx: Vec<u32>,
+    pub sharpen_ry: Vec<u32>,
+    pub sharpen: f32,
+}
+
+/// Largest cube the effect shader samples. A bigger table stays on the CPU path.
+pub const GRADE_LUT_MAX_CUBE: usize = 65;
+/// Largest 1D shaper the effect shader samples.
+pub const GRADE_LUT_MAX_SHAPER: usize = 4096;
+
+fn grade_domain_ok(min: &[f32; 3], max: &[f32; 3]) -> bool {
+    min.iter().zip(max).all(|(lo, hi)| lo.is_finite() && hi.is_finite() && hi > lo)
+}
+
+/// Whether `lut` can be sampled in the effect shader. `None` (no LUT) fits. A table with a
+/// non-finite entry, a domain that does not increase, or a cube / shaper past the caps does not.
+pub fn grade_lut_fits(lut: Option<&Lut>) -> bool {
+    let Some(lut) = lut else { return true };
+    if let Some(c) = &lut.cube {
+        let n = c.size;
+        if !(2..=GRADE_LUT_MAX_CUBE).contains(&n) || c.data.len() != n * n * n || !grade_domain_ok(&c.domain_min, &c.domain_max) {
+            return false;
+        }
+        if c.data.iter().any(|p| p.iter().any(|v| !v.is_finite())) {
+            return false;
+        }
+    }
+    if let Some(s) = &lut.shaper {
+        if !(2..=GRADE_LUT_MAX_SHAPER).contains(&s.data.len()) || !grade_domain_ok(&s.domain_min, &s.domain_max) {
+            return false;
+        }
+        if s.data.iter().any(|p| p.iter().any(|v| !v.is_finite())) {
+            return false;
+        }
+    }
+    true
+}
+
+fn finite3(v: &[f32; 3]) -> bool {
+    v.iter().all(|x| x.is_finite())
+}
+
+fn sample_curve(table: &[f32], x: f32) -> f32 {
+    let n = table.len().max(2);
+    let p = x.clamp(0.0, 1.0) * (n - 1) as f32;
+    let i = (p as usize).min(n - 1);
+    let j = (i + 1).min(n - 1);
+    table[i] + (table[j] - table[i]) * (p - i as f32)
+}
+
+fn curve_table(curves: &GradeCurves, bit: u32) -> Option<&[f32]> {
+    if curves.mask & (1 << bit) == 0 {
+        return None;
+    }
+    let mut before = 0usize;
+    for i in 0..bit {
+        if curves.mask & (1 << i) != 0 {
+            before += 1;
+        }
+    }
+    let start = before * GRADE_CURVE_N;
+    curves.samples.get(start..start + GRADE_CURVE_N)
+}
+
+fn apply_wheels(v: &mut [f32; 3], w: &GradeWheels) {
+    let l = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+    let wsh = (1.0 - l).powi(2);
+    let whi = l * l;
+    let wmid = (1.0 - wsh - whi).max(0.0);
+    for k in 0..3 {
+        v[k] += (w.sh[k] * 0.3 + w.ls * 0.3) * wsh;
+        v[k] += (w.md[k] * 0.3 + w.lm * 0.3) * wmid;
+        v[k] *= 1.0 + (w.hi[k] * 0.5 + w.lh * 0.5) * whi;
+    }
+}
+
+fn apply_curves(v: &mut [f32; 3], curves: &GradeCurves) {
+    if let Some(l) = curve_table(curves, 0) {
+        *v = v.map(|q| sample_curve(l, q));
+    }
+    for (bit, ch) in [(1u32, 0usize), (2, 1), (3, 2)] {
+        if let Some(l) = curve_table(curves, bit) {
+            v[ch] = sample_curve(l, v[ch]);
+        }
+    }
+    if (4..9).any(|bit| curves.mask & (1 << bit) != 0) {
+        let u = v.map(|q| q.clamp(0.0, 1.0));
+        let mut h = rgb_to_hsl(u[0], u[1], u[2]);
+        let (h0, s0, l0) = (h[0], h[1], h[2]);
+        let sample = |bit: u32, x: f32| curve_table(curves, bit).map(|t| sample_curve(t, x));
+        if let Some(d) = sample(5, h0) {
+            h[0] = (h[0] + (d - 0.5)).rem_euclid(1.0);
+        }
+        let mut sm = 1.0;
+        if let Some(d) = sample(4, h0) {
+            sm *= d * 2.0;
+        }
+        if let Some(d) = sample(7, l0) {
+            sm *= d * 2.0;
+        }
+        if let Some(d) = sample(8, s0) {
+            sm *= d * 2.0;
+        }
+        h[1] = (h[1] * sm).clamp(0.0, 1.0);
+        if let Some(d) = sample(6, h0) {
+            h[2] = (h[2] + (d - 0.5) * 0.5).clamp(0.0, 1.0);
+        }
+        *v = hsl_to_rgb(h[0], h[1], h[2]);
+    }
+}
+
+fn apply_hsl(c: [f32; 3], h: &GradeHsl) -> [f32; 3] {
+    let u = enc(c).map(|q| q.clamp(0.0, 1.0));
+    let m = crate::effects::hsl_key(u, h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft);
+    let out = match h.show {
+        1 => {
+            let g = rgb_to_hsl(u[0], u[1], u[2])[2];
+            [g + (u[0] - g) * m, g + (u[1] - g) * m, g + (u[2] - g) * m]
+        }
+        2 => u.map(|q| q * m),
+        3 => [m, m, m],
+        _ => {
+            let mut hh = rgb_to_hsl(u[0], u[1], u[2]);
+            hh[0] = (hh[0] + h.shift).rem_euclid(1.0);
+            hh[1] = (hh[1] * h.sat).clamp(0.0, 1.0);
+            let mut c2 = hsl_to_rgb(hh[0], hh[1], hh[2]);
+            c2[0] *= 1.0 + 0.25 * h.temp;
+            c2[2] *= 1.0 - 0.25 * h.temp;
+            c2[1] *= 1.0 - 0.2 * h.tint;
+            [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
+        }
+    };
+    dec(out)
+}
+
+struct ToneEval {
+    tone: Option<Box<GradeTone>>,
+    gpu: bool,
+}
+
+fn eval_tone(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize, creative_on: bool) -> ToneEval {
+    use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
+    let sharpen = if creative_on { (f(e, "sharpen", cx) / 100.0).max(-1.0) } else { 0.0 };
+    let (sharpen_rx, sharpen_ry) = if sharpen.abs() > 1e-3 {
+        let radius = 1.2 * cx.px_scale.max(0.35);
+        gaussian_boxes(w, h, radius, radius)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let mut curve_mask = 0u32;
+    let mut curve_samples = Vec::new();
+    let mut curves_finite = true;
+    if on(e, "curves_on") {
+        let push = |bit: u32, table: Vec<f32>, mask: &mut u32, samples: &mut Vec<f32>, finite: &mut bool| {
+            if table.len() != GRADE_CURVE_N || table.iter().any(|v| !v.is_finite()) {
+                *finite = false;
+            }
+            *mask |= 1 << bit;
+            samples.extend(table);
+        };
+        for (bit, id) in [(0u32, "curve_luma"), (1, "curve_red"), (2, "curve_green"), (3, "curve_blue")] {
+            if curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)) {
+                push(
+                    bit,
+                    crate::effects::curve_lut(&curve_param(e, id).unwrap_or_default(), GRADE_CURVE_N),
+                    &mut curve_mask,
+                    &mut curve_samples,
+                    &mut curves_finite,
+                );
+            }
+        }
+        for (bit, id) in [(4u32, "hue_vs_sat"), (5, "hue_vs_hue"), (6, "hue_vs_luma")] {
+            if let Some(table) = curve_param(e, id).and_then(|c| crate::effects::hue_lut(&c, GRADE_CURVE_N)) {
+                push(bit, table, &mut curve_mask, &mut curve_samples, &mut curves_finite);
+            }
+        }
+        for (bit, id) in [(7u32, "luma_vs_sat"), (8, "sat_vs_sat")] {
+            if let Some(table) = curve_param(e, id).and_then(|c| crate::effects::vs_sat_lut(&c, GRADE_CURVE_N)) {
+                push(bit, table, &mut curve_mask, &mut curve_samples, &mut curves_finite);
+            }
+        }
+    }
+    let curves = (curve_mask != 0).then(|| GradeCurves { mask: curve_mask, samples: curve_samples.into() });
+
+    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
+    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
+    let wheels = (on(e, "wheels_on") && (ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5))
+        .then_some(GradeWheels { sh: ws, md: wm, hi: wh, ls, lm, lh });
+
+    let denoise = f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0;
+    let blur = f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0;
+    let hsl_refine = b(e, "hsl_on") && (denoise > 0.0 || blur > 0.0);
+    let hsl = if hsl_refine {
+        None
+    } else {
+        b(e, "hsl_on").then(|| GradeHsl {
+            hc: f(e, "hsl_hue", cx) / 360.0,
+            hr: (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3),
+            smin: f(e, "hsl_sat_min", cx) / 100.0,
+            lmin: f(e, "hsl_luma_min", cx) / 100.0,
+            lmax: f(e, "hsl_luma_max", cx) / 100.0,
+            soft: (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01),
+            show: choice(e, "hsl_show_mask"),
+            temp: f(e, "hsl_temp", cx) / 100.0,
+            tint: f(e, "hsl_tint", cx) / 100.0,
+            sat: f(e, "hsl_sat", cx) / 100.0,
+            shift: f(e, "hsl_hue_shift", cx) / 360.0,
+        })
+    };
+    let wheels_ok = wheels.as_ref().is_none_or(|w| finite3(&w.sh) && finite3(&w.md) && finite3(&w.hi) && [w.ls, w.lm, w.lh].iter().all(|v| v.is_finite()));
+    let curves_ok = curves.as_ref().is_none_or(|c| c.samples.len() == c.mask.count_ones() as usize * GRADE_CURVE_N && c.samples.iter().all(|v| v.is_finite()));
+    let hsl_ok = hsl.as_ref().is_none_or(|h| [h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.temp, h.tint, h.sat, h.shift].iter().all(|v| v.is_finite()));
+    let active = wheels.is_some() || curves.is_some() || hsl.is_some() || sharpen.abs() > 1e-3;
+    ToneEval {
+        tone: active.then(|| Box::new(GradeTone { wheels, curves, hsl, sharpen_rx, sharpen_ry, sharpen })),
+        gpu: !hsl_refine && curves_finite && curves_ok && wheels_ok && hsl_ok && sharpen.is_finite(),
+    }
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
@@ -586,34 +864,18 @@ impl FxOp {
                 FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
             }
             "lumetri" => {
-                use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
                 let gs = grade_space(e, cx, "hdr_white");
                 let is_hdr = gs.is_hdr();
-                let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
-                let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
-                let look = if creative_on && !has_look_lut { choice(e, "look") } else { 0 };
-                let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
-
-                let curves_on = on(e, "curves_on");
-                let has_curves = curves_on && {
-                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)))
-                        || ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"]
-                            .iter()
-                            .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
-                };
-
-                let wheels_on = on(e, "wheels_on");
-                let has_wheels = wheels_on && {
-                    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
-                    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
-                    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
-                    ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || (ls.abs() + lm.abs() + lh.abs() > 1e-5)
-                };
-
-                let hsl_on = b(e, "hsl_on");
-
-                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let input_lut = basic_on.then(|| crate::luts::resolve(cx.project, text(e, "input_lut"))).flatten();
+                let look_lut = creative_on.then(|| crate::luts::resolve(cx.project, text(e, "look_lut"))).flatten();
+                let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
+                let look_k = if creative_on { f(e, "look_intensity", cx) / 100.0 } else { 1.0 };
+                // HDR stays on the CPU `lumetri` path, which builds its own curve tables.
+                let tone = if is_hdr { ToneEval { tone: None, gpu: false } } else { eval_tone(e, cx, w, h, creative_on) };
+                let uses_look = look > 0 || look_lut.is_some();
+                let gpu_capable =
+                    !is_hdr && grade_lut_fits(input_lut.as_deref()) && grade_lut_fits(look_lut.as_deref()) && (!uses_look || look_k.is_finite()) && tone.gpu;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
@@ -656,6 +918,11 @@ impl FxOp {
                     vround,
                     vfeather,
                     aspect,
+                    input_lut,
+                    look_lut,
+                    look,
+                    look_k,
+                    tone: tone.tone,
                     gpu_capable,
                 }
             }
@@ -706,8 +973,48 @@ impl FxOp {
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
-            FxOp::Lumetri { gains, exposure, contrast, hl, sh, wh, bl, sat, faded, vib, st, ht, va, vmid, vround, vfeather, aspect, gpu_capable, .. } => {
+            FxOp::Lumetri {
+                gains,
+                exposure,
+                contrast,
+                hl,
+                sh,
+                wh,
+                bl,
+                sat,
+                faded,
+                vib,
+                st,
+                ht,
+                va,
+                vmid,
+                vround,
+                vfeather,
+                aspect,
+                input_lut,
+                look_lut,
+                look,
+                look_k,
+                tone,
+                gpu_capable,
+                ..
+            } => {
                 *gpu_capable
+                    && grade_lut_fits(input_lut.as_deref())
+                    && grade_lut_fits(look_lut.as_deref())
+                    && (*look == 0 && look_lut.is_none() || look_k.is_finite())
+                    && tone.as_ref().is_none_or(|t| {
+                        t.sharpen.is_finite()
+                            && t.wheels
+                                .as_ref()
+                                .is_none_or(|w| finite3(&w.sh) && finite3(&w.md) && finite3(&w.hi) && [w.ls, w.lm, w.lh].iter().all(|v| v.is_finite()))
+                            && t.curves
+                                .as_ref()
+                                .is_none_or(|c| c.samples.len() == c.mask.count_ones() as usize * GRADE_CURVE_N && c.samples.iter().all(|v| v.is_finite()))
+                            && t.hsl
+                                .as_ref()
+                                .is_none_or(|h| [h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.temp, h.tint, h.sat, h.shift].iter().all(|v| v.is_finite()))
+                    })
                     && fin(gains)
                     && fin(&[*exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *faded, *vib])
                     && fin(st)
@@ -1062,14 +1369,25 @@ impl FxOp {
                 vround,
                 vfeather,
                 aspect,
+                input_lut,
+                look_lut,
+                look,
+                look_k,
+                tone,
                 ..
             } => {
                 let gains = *gains;
                 let (exposure, contrast, hl, sh, wh, bl, sat) = (*exposure, *contrast, *hl, *sh, *wh, *bl, *sat);
                 let (creative_on, faded, vib, st, ht) = (*creative_on, *faded, *vib, *st, *ht);
                 let (vignette_on, va, vmid, vround, vfeather, aspect) = (*vignette_on, *va, *vmid, *vround, *vfeather, *aspect);
+                let (look, look_k) = (*look, *look_k);
                 let (w, h) = (img.w as f32, img.h as f32);
                 img.map_rgb(|c, x, y| {
+                    // Input LUT on the display-encoded signal, before white balance (SDR clamps to 0…1).
+                    let c = match &input_lut {
+                        Some(l) => dec(l.apply(enc(c).map(|q| q.clamp(0.0, 1.0)))),
+                        None => c,
+                    };
                     // white balance + exposure in linear light
                     let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
                     let mut v = enc(lin);
@@ -1120,8 +1438,33 @@ impl FxOp {
                         let k = 1.0 + va * 0.2 * e2;
                         v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
                     }
-                    dec(v)
+                    // Look, wheels and curves see the basic grade decoded and encoded again, once.
+                    let wheels = tone.as_ref().and_then(|t| t.wheels.as_ref());
+                    let curves = tone.as_ref().and_then(|t| t.curves.as_ref());
+                    if look_lut.is_some() || look > 0 || wheels.is_some() || curves.is_some() {
+                        v = enc(dec(v));
+                        if look_lut.is_some() || look > 0 {
+                            let lk = if let Some(l) = &look_lut { l.apply(v.map(|q| q.clamp(0.0, 1.0))) } else { crate::effects::apply_look(look, v) };
+                            v = std::array::from_fn(|k| v[k] + (lk[k] - v[k]) * look_k);
+                        }
+                        if let Some(w) = wheels {
+                            apply_wheels(&mut v, w);
+                        }
+                        if let Some(c) = curves {
+                            apply_curves(&mut v, c);
+                        }
+                    }
+                    let linear = dec(v);
+                    match tone.as_ref().and_then(|t| t.hsl.as_ref()) {
+                        Some(h) => apply_hsl(linear, h),
+                        None => linear,
+                    }
                 });
+                if let Some(t) = tone
+                    && t.sharpen.abs() > 1e-3
+                {
+                    crate::effects::unsharp_boxes(img, &t.sharpen_rx, &t.sharpen_ry, t.sharpen, 0.0);
+                }
             }
         }
     }

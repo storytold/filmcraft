@@ -125,6 +125,7 @@ impl FilmcraftApp {
             v_down: false,
             stale_clipboard_media: None,
             gpu: None,
+            source_gpu: None,
             watched_render: None,
             job_text: None,
             steady_texts: Default::default(),

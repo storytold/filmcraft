@@ -87,6 +87,77 @@ fn empty_source_returns_a_useful_error() {
     assert!(!app.source_playback.clock.playing);
 }
 
+#[test]
+fn source_and_program_gpu_pictures_stay_independent() {
+    use eframe::egui_wgpu::{RenderState, RendererOptions, WgpuConfiguration};
+    use filmcraft_ui_egui::frames::Target;
+    use std::time::{Duration, Instant};
+
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let instance = pollster::block_on(setup.new_instance());
+    let config = WgpuConfiguration { wgpu_setup: setup, ..Default::default() };
+    let Ok(rs) = pollster::block_on(RenderState::create(&config, &instance, None, RendererOptions::PREDICTABLE)) else {
+        eprintln!("no GPU adapter for monitor test");
+        return;
+    };
+    if let Some(why) = filmcraft_ui_egui::gpu_compositor_unsupported(&rs.adapter) {
+        eprintln!("no supported GPU compositor: {why}");
+        return;
+    }
+    let renderer = egui_kittest::wgpu::WgpuTestRenderer::from_render_state(rs.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).renderer(renderer).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        let mut app = app(5).with_control(rx);
+        app.set_wgpu(rs);
+        app
+    });
+    let start = Instant::now();
+    loop {
+        crate::support::step_repaint(&mut h);
+        if h.state().source_gpu.as_ref().and_then(|g| g.last_key).is_some() && h.state().gpu.as_ref().and_then(|g| g.last_key).is_some() {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "both monitors should show a GPU picture");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let program_key = h.state().gpu.as_ref().unwrap().last_key;
+    let source = h.state().source_gpu.as_ref().unwrap();
+    let source_key = source.last_key.unwrap();
+    assert!(matches!(source_key.target, Target::ItemPlan(..)), "Source should leave conversion to the GPU");
+    assert_ne!(source.texture, h.state().gpu.as_ref().unwrap().texture, "each monitor owns its displayed texture");
+    let before = h.state_mut().gpu.as_mut().unwrap().compositor.read_output().unwrap();
+    h.state_mut().session.execute("source.setPlayhead", json!({"seconds":4})).unwrap();
+    let start = Instant::now();
+    while h.state().source_gpu.as_ref().unwrap().last_key == Some(source_key) {
+        crate::support::step_repaint(&mut h);
+        assert!(start.elapsed() < Duration::from_secs(30), "the source seek should present a new picture");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.state().gpu.as_ref().unwrap().last_key, program_key, "Source does not move Program");
+    assert_eq!(h.state_mut().gpu.as_mut().unwrap().compositor.read_output().unwrap(), before, "Source does not overwrite Program pixels");
+    assert!(h.state().frames.recent(source_key, 1, 0, 0).is_some(), "a Source GPU frame participates in playback lookback");
+
+    // Exercise the real UI screenshot request and read the AccessKit tree for the same pass.
+    if let Some(dir) = crate::support::shots_dir() {
+        std::fs::create_dir_all(&dir).unwrap();
+        let (request, result) = filmcraft_ui_egui::control::ControlRequest::new("ui.screenshot", json!({"path":dir.join("source-gpu.png")}));
+        tx.send(request).unwrap();
+        let start = Instant::now();
+        let response = loop {
+            crate::support::step_repaint(&mut h);
+            if let Ok(response) = result.try_recv() {
+                break response;
+            }
+            assert!(start.elapsed() < Duration::from_secs(15), "UI screenshot should complete");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(response["ok"], true, "{response}");
+        assert!(dir.join("source-gpu.png").is_file());
+        eprintln!("monitor accessibility tree: {:?}", h.root());
+    }
+}
+
 type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
 struct Out {
     frames: Arc<AtomicU64>,

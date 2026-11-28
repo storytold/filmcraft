@@ -412,6 +412,8 @@ pub struct FilmcraftApp {
     pub(crate) stale_clipboard_media: Option<String>,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
+    /// Source has its own output texture: updating it must not replace Program's picture.
+    pub source_gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
     /// The status bar's running-job text as last shown.

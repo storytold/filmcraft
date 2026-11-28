@@ -110,6 +110,7 @@ pub fn build_sequence_fx(s: &mut Session, w: u32, h: u32, layers: &[(ItemId, f64
 /// and times that work, as `gpu_present` / `texture_for` do in the app.
 pub struct Display {
     gpu: Option<(filmcraft_gpu::GpuCompositor, eframe::wgpu::Device)>,
+    source: Option<ItemId>,
     last: Option<FrameKey>,
     present: Vec<Duration>,
     ui_cpu: Duration,
@@ -129,7 +130,7 @@ impl Display {
         } else {
             None
         };
-        Self { gpu, last: None, present: Vec::new(), ui_cpu: Duration::ZERO, uploaded: 0 }
+        Self { gpu, source: None, last: None, present: Vec::new(), ui_cpu: Duration::ZERO, uploaded: 0 }
     }
 
     pub fn gpu_available(&self) -> bool {
@@ -137,6 +138,12 @@ impl Display {
     }
 
     fn target(&self, seq: ItemId) -> Target {
+        if let Some(item) = self.source {
+            return match &self.gpu {
+                Some((c, _)) => Target::ItemPlan(item, c.caps()),
+                None => Target::Item(item),
+            };
+        }
         match &self.gpu {
             Some((c, _)) => Target::SequencePlan(seq, c.caps()),
             None => Target::Sequence(seq),
@@ -148,7 +155,7 @@ impl Display {
         let (c0, t0) = (thread_cpu_time().unwrap_or_default(), Instant::now());
         let exact;
         let mut presented = false;
-        if let Some((comp, dev)) = self.gpu.as_mut() {
+        if let Some((comp, dev)) = self.gpu.as_mut().filter(|_| matches!(key.target, Target::SequencePlan(..) | Target::ItemPlan(..))) {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
             if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, Lookback::backward(6)))
@@ -211,6 +218,7 @@ pub struct PlayReport {
     pub cancelled_jobs: usize,
     pub preview_jobs: usize,
     pub gop: filmcraft_codecs::GopStats,
+    pub hardware_frames: u64,
     pub uploaded_mb: f64,
     pub load: String,
     pub preroll_ms: f64,
@@ -266,6 +274,7 @@ impl Bench {
         meter.start(1.0);
         self.server.take_records();
         let gop0 = filmcraft_codecs::gop_stats();
+        let hw0 = filmcraft_codecs::hw::hw_stats();
         let (p0, ui0, up0) = (process_cpu_time().unwrap_or_default(), display.ui_cpu, display.uploaded);
         display.present.clear();
         let period = Duration::from_secs_f64(1.0 / self.refresh_hz);
@@ -332,6 +341,7 @@ impl Bench {
             ui_cpu: ms(display.ui_cpu - ui0),
             jobs: recs.len(),
             gop: filmcraft_codecs::gop_stats() - gop0,
+            hardware_frames: filmcraft_codecs::hw::hw_stats().frames.saturating_sub(hw0.frames),
             uploaded_mb: (display.uploaded - up0) as f64 / 1e6,
             load: load_avg(),
             preroll_ms,
@@ -385,6 +395,7 @@ impl Bench {
         let size = (scale * 1000.0) as u32;
         self.server.take_records();
         let gop0 = filmcraft_codecs::gop_stats();
+        let hw0 = filmcraft_codecs::hw::hw_stats();
         let p0 = process_cpu_time().unwrap_or_default();
         let t0 = Instant::now();
         let mut rng = 0x2545_f491_4f6c_dd1du64;
@@ -429,6 +440,7 @@ impl Bench {
         }
         rep.shown = rep.on_time as u64;
         rep.gop = filmcraft_codecs::gop_stats() - gop0;
+        rep.hardware_frames = filmcraft_codecs::hw::hw_stats().frames.saturating_sub(hw0.frames);
         rep.load = load_avg();
         rep
     }
@@ -596,6 +608,7 @@ pub fn to_json(r: &PlayReport, scenario: &str, res: &str, path: &str) -> Value {
         "present_ms": {"p50": pct(&r.present, 0.5), "p95": pct(&r.present, 0.95), "max": pct(&r.present, 1.0)},
         "ui_cpu_ms": r.ui_cpu, "process_cpu_ms": r.process_cpu, "cpu_ms_per_frame": r.process_cpu / frames,
         "jobs": r.jobs, "wasted_jobs": r.wasted_jobs, "cancelled_jobs": r.cancelled_jobs, "preview_jobs": r.preview_jobs, "uploaded_mb": r.uploaded_mb,
+        "hardware_frames": r.hardware_frames,
         "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted, "skipped": r.gop.skipped, "decode_ms": r.gop.decode_ns as f64 / 1e6},
         "loadavg": r.load, "preroll_ms": r.preroll_ms,
     })
@@ -612,6 +625,10 @@ struct Args {
     workers: usize,
     json: Option<String>,
     repeat: usize,
+    hw: bool,
+    media: Option<String>,
+    source: bool,
+    interpret: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -624,6 +641,10 @@ fn parse_args() -> Args {
         workers: FrameServer::default_workers(),
         json: None,
         repeat: 1,
+        hw: true,
+        media: None,
+        source: false,
+        interpret: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -643,6 +664,10 @@ fn parse_args() -> Args {
             }
             "--cpu" => a.gpu = false,
             "--gpu" => a.gpu = true,
+            "--hw" => a.hw = it.next().as_deref() != Some("off"),
+            "--media" => a.media = it.next(),
+            "--source" => a.source = true,
+            "--interpret" => a.interpret = it.next(),
             "--seconds" => a.seconds = it.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--refresh" => a.refresh = it.next().and_then(|v| v.parse().ok()).unwrap_or(60.0),
             "--workers" => a.workers = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.workers),
@@ -650,20 +675,38 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,hevc60-2160,prores60-2160,prores42260-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm | --media FILE] [--source] [--interpret COLOR_SPACE] [--res full,half,quarter] [--cpu|--gpu] [--hw auto|off] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
             other => eprintln!("ignoring argument {other}"),
         }
     }
-    if a.scenarios.is_empty() {
+    if a.media.is_some() {
+        a.scenarios = vec!["media".into()];
+    } else if a.scenarios.is_empty() {
         a.scenarios = ["h264-1080", "stack3", "stack3-blend", "stack3-fx", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"]
             .iter()
             .map(|s| s.to_string())
             .collect();
     }
     a
+}
+
+/// A local clip at its display dimensions and nominal rate. Reports do not include its path.
+fn media_session(path: &Path) -> Option<(Session, ItemId)> {
+    let mut s = Session::default();
+    let item = import(&mut s, path);
+    let (_, media, _) = s.project.resolve_media(item)?;
+    let video = media.info.video.as_ref()?;
+    let (w, h, rate, secs) = (video.width, video.height, video.frame_rate, media.info.duration.seconds());
+    let seq = build_sequence(&mut s, w, h, &[(item, 100.0, None, 0.0, 100.0)], &[], secs);
+    s.edit("media rate", |p, _| {
+        p.sequence_mut(seq).expect("seq").settings.frame_rate = rate;
+        Ok(())
+    })
+    .ok()?;
+    Some((s, seq))
 }
 
 /// Build the session for a scenario (None when its fixtures are unavailable).
@@ -735,6 +778,21 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("hevc2160.mp4")?);
             build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], 10.0)
         }
+        "hevc60-2160" | "prores60-2160" | "prores42260-2160" => {
+            let (name, seconds) = match name {
+                "prores60-2160" => ("prores60_2160.mov", 12.0),
+                "prores42260-2160" => ("prores42260_2160.mov", 12.0),
+                _ => ("hevc60_2160.mp4", 8.0),
+            };
+            let a = import(&mut s, &fixture(name)?);
+            let seq = build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], seconds);
+            s.edit("60 fps", |p, _| {
+                p.sequence_mut(seq).expect("seq").settings.frame_rate = FrameRate::FPS_60;
+                Ok(())
+            })
+            .ok()?;
+            seq
+        }
         "vp9-2160" => {
             let a = import(&mut s, &fixture("vp92160.webm")?);
             build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], 10.0)
@@ -770,6 +828,9 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
 /// `bench_playback` / `cargo xtask bench-playback`.
 pub fn cli_main() {
     let args = parse_args();
+    // Use the same hardware decoder registration as the desktop app, before importing media.
+    filmcraft_platform::register();
+    filmcraft_codecs::hw::set_hardware_decoding(args.hw);
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     println!(
         "FilmCraft playback bench: {} path, {} frame workers, {} cores, refresh {} Hz, {} s per play; load avg {}",
@@ -790,10 +851,21 @@ pub fn cli_main() {
             if name == "seek-storm" && res_name != "full" && args.res.len() > 1 {
                 continue;
             }
-            let Some((mut s, seq)) = scenario_session(name) else {
+            let session = match &args.media {
+                Some(path) => media_session(Path::new(path)),
+                None => scenario_session(name),
+            };
+            let Some((mut s, seq)) = session else {
                 println!("{name}: skipped (fixtures unavailable: is ffmpeg installed?)");
                 continue;
             };
+            if let Some(cs) = &args.interpret {
+                let items: Vec<_> = s.project.items.values().filter(|i| i.as_media().is_some()).map(|i| i.id.0).collect();
+                if let Err(e) = s.execute("clip.interpretFootage", json!({"items":items,"colorSpace":cs})) {
+                    eprintln!("could not interpret footage: {e}");
+                    return;
+                }
+            }
             let fps = s.project.sequence(seq).map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             for rep_i in 0..args.repeat {
                 // A fresh frame server per run so caches start cold, as after opening a project.
@@ -801,10 +873,19 @@ pub fn cli_main() {
                 server.set_profiling(true);
                 let bench = Bench { server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
                 let mut display = Display::new(args.gpu);
+                if args.source {
+                    display.source = s.project.sequence(seq).and_then(|q| q.video_tracks.first()?.items.first().map(|i| i.item));
+                }
                 if args.gpu && display.gpu.is_none() {
                     eprintln!("no GPU adapter; using the CPU path");
                 }
-                let path = if display.gpu.is_some() { "gpu" } else { "cpu" };
+                let path = if args.source {
+                    "source"
+                } else if display.gpu.is_some() {
+                    "gpu"
+                } else {
+                    "cpu"
+                };
                 let tag = |l: &str| if args.repeat > 1 { format!("{name} {res_name} {l} #{}", rep_i + 1) } else { format!("{name} {res_name} {l}") };
                 let mut reports = Vec::new();
                 match name.as_str() {
@@ -838,7 +919,8 @@ pub fn cli_main() {
         }
     }
     if let Some(p) = args.json {
-        let doc = json!({"cores": cores, "workers": args.workers, "refresh_hz": args.refresh, "seconds": args.seconds, "runs": out});
+        let doc =
+            json!({"cores": cores, "workers": args.workers, "refresh_hz": args.refresh, "seconds": args.seconds, "interpret":args.interpret, "runs": out});
         if let Err(e) = std::fs::write(&p, serde_json::to_string_pretty(&doc).unwrap_or_default()) {
             eprintln!("{p}: {e}");
         }

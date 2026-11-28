@@ -19,6 +19,11 @@ struct U {
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
 // Unsharp Mask: the image before blurring.
 @group(0) @binding(3) var aux: texture_2d<f32>;
+// Color Grading header, wheels, curves and HSL. Read only when `u.i1.z != 0`.
+// Header (vec4 slots): sizes, look id and intensity, domains, wheels, curve mask, HSL.
+// Curve samples follow the header. LUT texels are `grade_lut` (input shaper, input cube, look shaper, look cube).
+@group(0) @binding(4) var<storage, read> grade: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> grade_lut: array<vec4<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -552,10 +557,290 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
-fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
+fn grade_at(base: u32, n: u32, r: u32, g: u32, b: u32) -> vec3<f32> {
+    return grade_lut[base + r + g * n + b * n * n].xyz;
+}
+
+fn lut1d(base: u32, size: u32, dmin: vec3<f32>, dmax: vec3<f32>, rgb: vec3<f32>) -> vec3<f32> {
+    let n = size - 1u;
+    let t = clamp((rgb - dmin) / (dmax - dmin), vec3(0.0), vec3(1.0)) * f32(n);
+    let i = min(vec3<u32>(t), vec3(n - 1u));
+    let f = t - vec3<f32>(i);
+    let a0 = grade_lut[base + i.x];
+    let b0 = grade_lut[base + i.x + 1u];
+    let a1 = grade_lut[base + i.y];
+    let b1 = grade_lut[base + i.y + 1u];
+    let a2 = grade_lut[base + i.z];
+    let b2 = grade_lut[base + i.z + 1u];
+    return vec3(a0.x + (b0.x - a0.x) * f.x, a1.y + (b1.y - a1.y) * f.y, a2.z + (b2.z - a2.z) * f.z);
+}
+
+fn tetra(base: u32, n: u32, dmin: vec3<f32>, dmax: vec3<f32>, rgb: vec3<f32>) -> vec3<f32> {
+    let m = f32(n - 1u);
+    let t = clamp((rgb - dmin) / (dmax - dmin), vec3(0.0), vec3(1.0)) * m;
+    let i = min(vec3<u32>(t), vec3(n - 2u));
+    let f = t - vec3<f32>(i);
+    let fr = f.x;
+    let fg = f.y;
+    let fb = f.z;
+    let c000 = grade_at(base, n, i.x, i.y, i.z);
+    let c111 = grade_at(base, n, i.x + 1u, i.y + 1u, i.z + 1u);
+    var ca: vec3<f32>;
+    var cb: vec3<f32>;
+    var w: vec4<f32>;
+    if fr > fg {
+        if fg > fb {
+            ca = grade_at(base, n, i.x + 1u, i.y, i.z);
+            cb = grade_at(base, n, i.x + 1u, i.y + 1u, i.z);
+            w = vec4(1.0 - fr, fr - fg, fg - fb, fb);
+        } else if fr > fb {
+            ca = grade_at(base, n, i.x + 1u, i.y, i.z);
+            cb = grade_at(base, n, i.x + 1u, i.y, i.z + 1u);
+            w = vec4(1.0 - fr, fr - fb, fb - fg, fg);
+        } else {
+            ca = grade_at(base, n, i.x, i.y, i.z + 1u);
+            cb = grade_at(base, n, i.x + 1u, i.y, i.z + 1u);
+            w = vec4(1.0 - fb, fb - fr, fr - fg, fg);
+        }
+    } else if fb > fg {
+        ca = grade_at(base, n, i.x, i.y, i.z + 1u);
+        cb = grade_at(base, n, i.x, i.y + 1u, i.z + 1u);
+        w = vec4(1.0 - fb, fb - fg, fg - fr, fr);
+    } else if fb > fr {
+        ca = grade_at(base, n, i.x, i.y + 1u, i.z);
+        cb = grade_at(base, n, i.x, i.y + 1u, i.z + 1u);
+        w = vec4(1.0 - fg, fg - fb, fb - fr, fr);
+    } else {
+        ca = grade_at(base, n, i.x, i.y + 1u, i.z);
+        cb = grade_at(base, n, i.x + 1u, i.y + 1u, i.z);
+        w = vec4(1.0 - fg, fg - fr, fr - fb, fb);
+    }
+    return w.x * c000 + w.y * ca + w.z * cb + w.w * c111;
+}
+
+fn sample_grade(rgb: vec3<f32>, shaper_n: u32, cube_n: u32, base: u32, smin: vec4<f32>, smax: vec4<f32>, cmin: vec4<f32>, cmax: vec4<f32>) -> vec3<f32> {
+    var c = rgb;
+    if shaper_n >= 2u {
+        c = lut1d(base, shaper_n, smin.xyz, smax.xyz, c);
+    }
+    if cube_n >= 2u {
+        c = tetra(base + shaper_n, cube_n, cmin.xyz, cmax.xyz, c);
+    }
+    return c;
+}
+
+fn s_curve1(v: f32, k: f32) -> f32 {
+    let x = clamp(v, 0.0, 1.0);
+    return x + (x * x * (3.0 - 2.0 * x) - x) * k;
+}
+
+fn s_curve3(v: vec3<f32>, k: f32) -> vec3<f32> {
+    return vec3(s_curve1(v.x, k), s_curve1(v.y, k), s_curve1(v.z, k));
+}
+
+// `effects::apply_look`. `l` is the luma of the colour passed in.
+fn apply_look(look: u32, c: vec3<f32>) -> vec3<f32> {
+    let l = luma709(c);
+    let grey = vec3(l);
+    if look == 1u {
+        let o = c + vec3(0.0, 0.08, 0.1) * (1.0 - l) + vec3(0.1, 0.04, -0.06) * l;
+        return s_curve3(o, 0.35);
+    }
+    if look == 2u {
+        let o = vec3(c.x * 1.06 + 0.02, c.y + 0.01, c.z * 0.9);
+        return (o + (grey - o) * 0.15) * 0.94 + vec3(0.04);
+    }
+    if look == 3u {
+        return s_curve3(vec3(c.x * 0.9, c.y * 0.98, c.z * 1.1 + 0.02), 0.2);
+    }
+    if look == 4u {
+        return s_curve3(c + (grey - c) * 0.55, 0.6);
+    }
+    if look == 5u {
+        return vec3(0.08) + (c + (grey - c) * 0.25) * 0.84;
+    }
+    if look == 6u {
+        return s_curve3(grey, 0.3);
+    }
+    if look == 7u {
+        return s_curve3(vec3(c.x * 1.1 + 0.03, c.y * 1.02 + 0.01, c.z * 0.82), 0.15);
+    }
+    if look == 8u {
+        return vec3(c.x * 0.75, c.y * 0.85, c.z * 1.15) * 0.8;
+    }
+    return c;
+}
+
+fn lut_base() -> u32 {
+    // Texels start at 0 of `grade_lut`. A look LUT skips past the input LUT.
+    return 0u;
+}
+
+fn grade_f(idx: u32) -> f32 {
+    let v = grade[idx / 4u];
+    let k = idx % 4u;
+    if k == 0u {
+        return v.x;
+    }
+    if k == 1u {
+        return v.y;
+    }
+    if k == 2u {
+        return v.z;
+    }
+    return v.w;
+}
+
+fn curve_has(bit: u32) -> bool {
+    return (u32(grade[13].x) & (1u << bit)) != 0u;
+}
+
+fn curve_sample(bit: u32, x: f32) -> f32 {
+    let before = countOneBits(u32(grade[13].x) & ((1u << bit) - 1u));
+    let base = (18u + before * 256u) * 4u;
+    let p = clamp(x, 0.0, 1.0) * 1023.0;
+    let i = min(u32(p), 1023u);
+    let j = min(i + 1u, 1023u);
+    let a = grade_f(base + i);
+    let b = grade_f(base + j);
+    return a + (b - a) * (p - f32(i));
+}
+
+fn grade_input(c: vec3<f32>) -> vec3<f32> {
+    let cube_n = u32(grade[0].x);
+    let shaper_n = u32(grade[0].y);
+    if cube_n < 2u && shaper_n < 2u {
+        return c;
+    }
+    let e = clamp(enc(c), vec3(0.0), vec3(1.0));
+    return dec(sample_grade(e, shaper_n, cube_n, lut_base(), grade[4], grade[5], grade[2], grade[3]));
+}
+
+fn grade_look(v: vec3<f32>) -> vec3<f32> {
+    let look_cube = u32(grade[0].z);
+    let look_shaper = u32(grade[0].w);
+    let look_id = u32(grade[1].x);
+    if look_cube < 2u && look_shaper < 2u && look_id == 0u {
+        return v;
+    }
+    var lk: vec3<f32>;
+    if look_cube >= 2u || look_shaper >= 2u {
+        let input_cube = u32(grade[0].x);
+        let input_shaper = u32(grade[0].y);
+        var skip = 0u;
+        if input_shaper >= 2u {
+            skip += input_shaper;
+        }
+        if input_cube >= 2u {
+            skip += input_cube * input_cube * input_cube;
+        }
+        lk = sample_grade(clamp(v, vec3(0.0), vec3(1.0)), look_shaper, look_cube, lut_base() + skip, grade[8], grade[9], grade[6], grade[7]);
+    } else {
+        lk = apply_look(look_id, v);
+    }
+    return v + (lk - v) * grade[1].y;
+}
+
+fn grade_wheels(v: vec3<f32>) -> vec3<f32> {
+    if grade[17].x == 0.0 {
+        return v;
+    }
+    let l = clamp(luma709(v), 0.0, 1.0);
+    let wsh = (1.0 - l) * (1.0 - l);
+    let whi = l * l;
+    let wmid = max(1.0 - wsh - whi, 0.0);
+    var o = v;
+    o += (grade[10].xyz * 0.3 + vec3(grade[10].w * 0.3)) * wsh;
+    o += (grade[11].xyz * 0.3 + vec3(grade[11].w * 0.3)) * wmid;
+    o *= 1.0 + (grade[12].xyz * 0.5 + vec3(grade[12].w * 0.5)) * whi;
+    return o;
+}
+
+fn grade_curves(v: vec3<f32>) -> vec3<f32> {
+    var o = v;
+    if curve_has(0u) {
+        o = vec3(curve_sample(0u, o.x), curve_sample(0u, o.y), curve_sample(0u, o.z));
+    }
+    if curve_has(1u) {
+        o.x = curve_sample(1u, o.x);
+    }
+    if curve_has(2u) {
+        o.y = curve_sample(2u, o.y);
+    }
+    if curve_has(3u) {
+        o.z = curve_sample(3u, o.z);
+    }
+    if curve_has(4u) || curve_has(5u) || curve_has(6u) || curve_has(7u) || curve_has(8u) {
+        let u = clamp(o, vec3(0.0), vec3(1.0));
+        var h = rgb_to_hsl(u);
+        let h0 = h.x;
+        let s0 = h.y;
+        let l0 = h.z;
+        if curve_has(5u) {
+            h.x = fract_euclid(h.x + (curve_sample(5u, h0) - 0.5));
+        }
+        var sm = 1.0;
+        if curve_has(4u) {
+            sm *= curve_sample(4u, h0) * 2.0;
+        }
+        if curve_has(7u) {
+            sm *= curve_sample(7u, l0) * 2.0;
+        }
+        if curve_has(8u) {
+            sm *= curve_sample(8u, s0) * 2.0;
+        }
+        h.y = clamp(h.y * sm, 0.0, 1.0);
+        if curve_has(6u) {
+            h.z = clamp(h.z + (curve_sample(6u, h0) - 0.5) * 0.5, 0.0, 1.0);
+        }
+        o = hsl_to_rgb(h.x, h.y, h.z);
+    }
+    return o;
+}
+
+fn grade_hsl_key(v: vec3<f32>, hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
+    let h = rgb_to_hsl(v);
+    let d = abs(h.x - hc);
+    let dh = min(d, 1.0 - d);
+    let mh = 1.0 - clamp((dh - hr / 2.0) / soft, 0.0, 1.0);
+    let ms = clamp((h.y - smin) / soft, 0.0, 1.0);
+    let ml = min(clamp((h.z - lmin) / soft, 0.0, 1.0), clamp((lmax - h.z) / soft, 0.0, 1.0));
+    return mh * ms * ml;
+}
+
+fn grade_hsl(c: vec3<f32>) -> vec3<f32> {
+    let u = clamp(enc(c), vec3(0.0), vec3(1.0));
+    let show = u32(grade[13].z);
+    let m = grade_hsl_key(u, grade[14].x, grade[14].y, grade[14].z, grade[14].w, grade[15].x, grade[15].y);
+    var out: vec3<f32>;
+    if show == 1u {
+        let g = rgb_to_hsl(u).z;
+        out = vec3(g) + (u - vec3(g)) * m;
+    } else if show == 2u {
+        out = u * m;
+    } else if show == 3u {
+        out = vec3(m);
+    } else {
+        var hh = rgb_to_hsl(u);
+        hh.x = fract_euclid(hh.x + grade[16].y);
+        hh.y = clamp(hh.y * grade[16].x, 0.0, 1.0);
+        var c2 = hsl_to_rgb(hh.x, hh.y, hh.z);
+        c2.x *= 1.0 + 0.25 * grade[15].z;
+        c2.z *= 1.0 - 0.25 * grade[15].z;
+        c2.y *= 1.0 - 0.2 * grade[15].w;
+        out = u + (c2 - u) * m;
+    }
+    return dec(out);
+}
+
+fn lumetri_op(src_c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let s = size();
     let creative_on = u.i1.x != 0u;
     let vignette_on = u.i1.y != 0u;
+    var c = src_c;
+    if u.i1.z != 0u {
+        c = grade_input(c);
+    }
 
     // white balance + exposure in linear light
     let ge = u.p0.xyz;
@@ -642,7 +927,24 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
         }
     }
 
-    return dec(v);
+    if u.i1.z != 0u {
+        let look_cube = u32(grade[0].z);
+        let look_shaper = u32(grade[0].w);
+        let look_id = u32(grade[1].x);
+        let advanced = look_cube >= 2u || look_shaper >= 2u || look_id != 0u || grade[17].x != 0.0 || u32(grade[13].x) != 0u;
+        if advanced {
+            // The CPU decodes the basic grade, then encodes again before the look, wheels and curves.
+            v = enc(dec(v));
+            v = grade_look(v);
+            v = grade_wheels(v);
+            v = grade_curves(v);
+        }
+    }
+    var linear = dec(v);
+    if u.i1.z != 0u && grade[13].y != 0.0 {
+        linear = grade_hsl(linear);
+    }
+    return linear;
 }
 
 // One output pixel of every op but the running-sum box blur.

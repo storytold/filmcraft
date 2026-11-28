@@ -20,6 +20,12 @@ pub fn stats(app: &FilmcraftApp) -> Value {
         "resolution": app.ui.program.res.label(),
         "draftDecode": app.session.prefs.playback.draft_decode,
     });
+    let (shown, dropped) = app.source_playback.clock.meter.counts();
+    v["sourcePlayback"] = json!({
+        "playing": app.source_playback.clock.playing,
+        "shown": shown, "dropped": dropped,
+        "resolution": app.ui.source.res.label(),
+    });
     #[cfg(not(target_arch = "wasm32"))]
     {
         let sr = app.audio.as_ref().map_or(0, |a| a.sample_rate());
@@ -41,6 +47,7 @@ pub fn stats(app: &FilmcraftApp) -> Value {
             "submitMs": g.last_ms,
         })
     });
+    v["sourceGpu"] = app.source_gpu.as_ref().map_or(Value::Null, |g| json!({"uploadedBytes": g.compositor.uploaded_bytes, "submitMs": g.last_ms}));
     // the Program monitor's picture against what is due: how far a drag or a scrub is ahead of it
     v["monitor"] = json!({
         "frame": app.program_picture().map(|k| k.frame),

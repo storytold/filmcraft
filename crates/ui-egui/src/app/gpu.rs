@@ -19,11 +19,23 @@ impl FilmcraftApp {
             log::error!("GPU error, switching to the CPU compositor: {e}");
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }));
-        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue), filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue))
+        }));
         match made {
-            Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
+            Ok((compositor, source_compositor)) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
                 self.frames.set_raw_16bit(compositor.uploads_raw_16bit());
+                self.source_gpu = Some(GpuState {
+                    render_state: rs.clone(),
+                    compositor: source_compositor,
+                    texture: None,
+                    last_key: None,
+                    size: (0, 0),
+                    last_ms: 0.0,
+                    broken: broken.clone(),
+                    max_texture,
+                });
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
@@ -34,10 +46,10 @@ impl FilmcraftApp {
     fn disable_gpu(&mut self, why: &str) {
         log::error!("GPU compositor disabled: {why}");
         self.frames.set_raw_16bit(false);
-        if let Some(g) = self.gpu.take()
-            && let Some(id) = g.texture
-        {
-            g.render_state.renderer.write().free_texture(&id);
+        for g in [self.gpu.take(), self.source_gpu.take()].into_iter().flatten() {
+            if let Some(id) = g.texture {
+                g.render_state.renderer.write().free_texture(&id);
+            }
         }
         self.ui.status = tl!("Graphics problem: switched to software compositing").into();
     }
@@ -48,7 +60,8 @@ impl FilmcraftApp {
             self.disable_gpu("device error");
             return None;
         }
-        let g = self.gpu.as_mut()?;
+        let source = matches!(key.target, frames::Target::ItemPlan(..));
+        let g = if source { self.source_gpu.as_mut()? } else { self.gpu.as_mut()? };
         if g.last_key == Some(key)
             && let Some(t) = g.texture
         {
@@ -67,7 +80,7 @@ impl FilmcraftApp {
             self.disable_gpu("compositor panicked");
             return None;
         };
-        let g = self.gpu.as_mut()?;
+        let g = if source { self.source_gpu.as_mut()? } else { self.gpu.as_mut()? };
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let mut renderer = g.render_state.renderer.write();
         let id = match g.texture {

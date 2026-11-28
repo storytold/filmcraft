@@ -1442,7 +1442,7 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// The HSL Secondary key of one pixel's grading signal (0…1 per channel).
 #[inline]
-fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
+pub(crate) fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
     let h = rgb_to_hsl(v[0], v[1], v[2]);
     let dh = (h[0] - hc).abs().min(1.0 - (h[0] - hc).abs());
     let mh = 1.0 - ((dh - hr / 2.0) / soft).clamp(0.0, 1.0);
@@ -1754,6 +1754,34 @@ mod lumetri_cpu_parity_tests {
                     ("tint", fl(100.0)),
                     ("whites", fl(100.0)),
                     ("blacks", fl(100.0)),
+                ],
+            ),
+            ("input_lut", vec![("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())), ("exposure", fl(0.4)), ("contrast", fl(10.0))]),
+            ("look", vec![("look", ParamValue::Choice(1)), ("look_intensity", fl(40.0)), ("exposure", fl(0.25))]),
+            ("curves", vec![("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]])), ("contrast", fl(15.0))]),
+            ("hue_curve", vec![("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.2], [0.5, 0.9], [1.0, 0.2]]))]),
+            (
+                "wheels",
+                vec![("wheel_shadows", ParamValue::Vec2(filmcraft_geom::Vec2::new(0.4, -0.2))), ("wheel_highlights_l", fl(25.0)), ("exposure", fl(0.2))],
+            ),
+            (
+                "hsl",
+                vec![
+                    ("hsl_on", ParamValue::Bool(true)),
+                    ("hsl_hue", fl(30.0)),
+                    ("hsl_hue_range", fl(80.0)),
+                    ("hsl_sat", fl(40.0)),
+                    ("hsl_hue_shift", fl(40.0)),
+                ],
+            ),
+            ("sharpen", vec![("sharpen", fl(40.0)), ("contrast", fl(10.0))]),
+            (
+                "look_lut",
+                vec![
+                    ("look", ParamValue::Choice(2)),
+                    ("look_lut", ParamValue::Text("builtin:look-teal-orange".into())),
+                    ("look_intensity", fl(70.0)),
+                    ("saturation", fl(90.0)),
                 ],
             ),
             (
