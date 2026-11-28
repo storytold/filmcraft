@@ -114,6 +114,26 @@ fn embedded_aaf_and_omf_import_leave_existing_media_files_intact() {
         assert_ne!(new_path, first.path, "{extension}: imported audio still points at the existing file");
         assert!(new_path.ends_with(" (2).wav"), "{extension}: {new_path}");
         assert!(std::fs::read(&new_path).unwrap() == first.wav, "{extension}: imported audio was not extracted to the new path");
+
+        // importing the document again uses the file that already holds its audio: it is not
+        // written again, and no further numbered copy appears
+        let written = std::fs::metadata(&new_path).unwrap().modified().unwrap();
+        let repeat = s.execute("file.import", json!({"paths": [path_text]})).unwrap();
+        let repeated = s.project.sequence(imported_seq(&repeat)).unwrap();
+        assert_eq!(path_of(&s, repeated.audio_tracks[0].items[0].item), new_path, "{extension}: a repeated import did not reuse its own audio file");
+        assert_eq!(std::fs::metadata(&new_path).unwrap().modified().unwrap(), written, "{extension}: the reused file was written again");
+        assert!(!std::path::Path::new(&new_path.replace(" (2).wav", " (3).wav")).exists(), "{extension}: a repeated import left a numbered copy");
+        assert!(std::fs::read(&first.path).unwrap().as_slice() == original, "{extension}: existing file was overwritten by the repeated import");
+        // a file of the audio's length with other bytes is not the audio: it is kept, and the audio goes to the next free name
+        let mut other = first.wav.clone();
+        *other.last_mut().unwrap() ^= 0xff;
+        std::fs::write(&new_path, &other).unwrap();
+        let changed = s.execute("file.import", json!({"paths": [path_text]})).unwrap();
+        let changed_seq = s.project.sequence(imported_seq(&changed)).unwrap();
+        let changed_path = path_of(&s, changed_seq.audio_tracks[0].items[0].item);
+        assert!(changed_path.ends_with(" (3).wav"), "{extension}: {changed_path}");
+        assert!(std::fs::read(&new_path).unwrap() == other, "{extension}: a different file of the same length was replaced");
+        assert!(std::fs::read(&changed_path).unwrap() == first.wav, "{extension}: the audio was not extracted beside the different file");
         #[cfg(unix)]
         {
             let protected = dir.join("protected.wav");
@@ -123,9 +143,10 @@ fn embedded_aaf_and_omf_import_leave_existing_media_files_intact() {
             let again = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
             assert!(std::fs::read(&protected).unwrap().as_slice() == original, "{extension}: symlink target was overwritten");
             let imported_again = s.project.sequence(imported_seq(&again)).unwrap();
+            // the symlink and the changed ` (2)` are passed over; ` (3)` already holds the audio
             let third_path = path_of(&s, imported_again.audio_tracks[0].items[0].item);
             assert!(third_path.ends_with(" (3).wav"), "{extension}: {third_path}");
-            assert!(std::fs::read(&third_path).unwrap() == first.wav, "{extension}: the third extraction is not the embedded audio");
+            assert!(std::fs::read(&third_path).unwrap() == first.wav, "{extension}: the audio past the symlink is not the embedded audio");
         }
         let _ = std::fs::remove_dir_all(dir);
     }
