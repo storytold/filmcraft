@@ -3094,12 +3094,15 @@ name = "filmcraft-format"
 version = "0.20.1"
 dependencies = [
  "chrono",
+ "craft-docpath",
  "craft-fcproj-format",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
  "log",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
