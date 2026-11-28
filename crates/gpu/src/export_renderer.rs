@@ -125,7 +125,7 @@ impl ExportRenderer {
                 {
                     adapters.retain(|a| named.contains(a.get_info().backend.into()));
                 }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                let adapter = crate::adapter::pick(&adapters, None, power_preference, false).ok()?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let desc = wgpu::DeviceDescriptor { required_features: crate::optional_features(&adapter), ..Default::default() };
                 let (device, queue) = pollster::block_on(adapter.request_device(&desc)).ok()?;

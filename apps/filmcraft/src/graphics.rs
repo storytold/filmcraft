@@ -556,24 +556,32 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         // at all.
         Mode::Default if windows => {
             create.instance_descriptor.backends = backend_override.unwrap_or(Backends::PRIMARY);
-            // wgpu's own choice of adapter, except for a GPU that Windows lists through two
-            // versions of one driver: the first entry can be a stale one that crashes inside the
-            // driver (`filmcraft_gpu::adapter`). A selector replaces `power_preference`
-            // (`WGPU_POWER_PREF`), so it takes that along.
-            let power = create.power_preference;
-            create.native_adapter_selector =
-                Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| filmcraft_gpu::adapter::pick(adapters, surface, power)));
+            select_adapter(create);
         }
-        Mode::Default => {}
+        Mode::Default => select_adapter(create),
         // Without Vulkan, whose driver is what crashes.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
         // What `WGPU_POWER_PREF=low` does: the integrated GPU, which drives the display.
-        Mode::LowPower => create.power_preference = wgpu::PowerPreference::LowPower,
+        Mode::LowPower => {
+            create.power_preference = wgpu::PowerPreference::LowPower;
+            select_adapter(create);
+        }
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);
             create.native_adapter_selector = Some(Arc::new(pick_software));
         }
     }
+}
+
+/// Pick the adapter with [`filmcraft_gpu::adapter::pick`] rather than wgpu's own first choice: a
+/// software rasterizer (llvmpipe, lavapipe, WARP) composites on the CPU beside the frame workers,
+/// and on a virtual machine the hardware GPU is often listed only through OpenGL (virtio-gpu),
+/// which wgpu's Vulkan-first order would never reach. The selector replaces `power_preference`
+/// (`WGPU_POWER_PREF`), so it takes that along.
+fn select_adapter(create: &mut eframe::egui_wgpu::WgpuSetupCreateNew) {
+    let power = create.power_preference;
+    create.native_adapter_selector =
+        Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| filmcraft_gpu::adapter::pick(adapters, surface, power, true)));
 }
 
 /// The backends a software adapter is looked for in: WARP is a DX12 adapter, and GL stays out on

@@ -7,7 +7,10 @@
 //! only drains part of the lead; the callback never decodes, allocates or takes a lock.
 //!
 //! When the ring does run dry (an underrun), the callback plays silence for the missing frames and
-//! counts them, and the mixer skips the same span, so sound stays locked to the picture.
+//! counts them, and the mixer skips the same span, so sound stays locked to the picture. The
+//! mixing thread also keeps more ahead from then on ([`LEAD_AFTER_UNDERRUN_S`]): its deadline was
+//! missed once because the machine was busy, and the next stall is absorbed instead of dropping
+//! more sound. The ring is sized for [`MAX_LEAD_S`] from the start.
 //!
 //! Desktop only: the web build has no threads and keeps mixing in its callback.
 
@@ -20,8 +23,23 @@ use std::time::Duration;
 pub const LEAD_S: f64 = 0.2;
 /// Frames mixed per block on the mixing thread.
 pub const BLOCK_FRAMES: usize = 1024;
+/// How far ahead the mixer keeps the ring after an underrun (s): it missed its deadline once,
+/// which on a busy machine it will again, and this absorbs the next stall.
+pub const LEAD_AFTER_UNDERRUN_S: f64 = 0.4;
+/// Largest lead the ring can hold, and the size it is allocated for (s).
+pub const MAX_LEAD_S: f64 = 0.5;
 /// Ceiling on mixed channels (large interfaces and aggregate devices stay well under it).
 const MAX_CHANNELS: usize = 64;
+
+/// Frames of lead for `seconds` of sound, never less than two blocks.
+fn lead_frames(sample_rate: u32, seconds: f64) -> usize {
+    ((sample_rate as f64 * seconds) as usize).max(BLOCK_FRAMES * 2)
+}
+
+/// The lead the callback asks for after an underrun, capped by the ring.
+fn raised_lead_frames(sample_rate: u32) -> usize {
+    lead_frames(sample_rate, LEAD_AFTER_UNDERRUN_S).min(lead_frames(sample_rate, MAX_LEAD_S))
+}
 
 /// Underrun counters for the current (or last) play, readable from any thread (`perf.stats`).
 #[derive(Debug, Default)]
@@ -129,20 +147,25 @@ where
 {
     stats.reset();
     let ch = channels.clamp(1, MAX_CHANNELS);
-    let lead = ((sample_rate as f64 * LEAD_S) as usize).max(BLOCK_FRAMES * 2);
-    let ring = Arc::new(Ring::new(lead * ch));
+    let lead = lead_frames(sample_rate, LEAD_S);
+    let raised = raised_lead_frames(sample_rate);
+    // The ring holds the largest lead, not only the current one: it grows after an underrun.
+    let ring = Arc::new(Ring::new(lead_frames(sample_rate, MAX_LEAD_S) * ch));
     let mut block = vec![0.0; BLOCK_FRAMES * ch];
     mix(start, &mut block, ch);
     ring.push(&block);
     // Frames the callback played as silence that the mixer has not skipped yet.
     let skip = Arc::new(AtomicU64::new(0));
+    // Frames the mixer keeps ahead: [`LEAD_S`] until a dropout raises it to [`raised`].
+    let target = Arc::new(AtomicU64::new(lead as u64));
     let stop = Arc::new(AtomicBool::new(false));
     {
         let (ring, skip, stop) = (ring.clone(), skip.clone(), stop.clone());
+        let target = target.clone();
         let body = move || {
             let mut cursor = start + BLOCK_FRAMES as i64;
             while !stop.load(Ordering::Acquire) {
-                if ring.len() + block.len() > lead * ch {
+                if ring.len() + block.len() > target.load(Ordering::Acquire) as usize * ch {
                     std::thread::sleep(Duration::from_millis(2));
                     continue;
                 }
@@ -183,6 +206,9 @@ where
             stats.underruns.fetch_add(1, Ordering::Relaxed);
             stats.missing_frames.fetch_add((n - have) as u64, Ordering::Relaxed);
             skip.fetch_add((n - have) as u64, Ordering::AcqRel);
+            // The mixer missed a deadline once: keep more ahead so a busy machine's next stall
+            // is absorbed instead of playing silence again.
+            target.fetch_max(raised as u64, Ordering::AcqRel);
         }
         let left = ring.len();
         primed |= left + 2 * BLOCK_FRAMES * ch > lead * ch;
@@ -190,4 +216,26 @@ where
             stats.min_lead_frames.fetch_min((left / ch) as u64, Ordering::Relaxed);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dropout_raises_the_lead_up_to_the_ring_cap() {
+        let initial = lead_frames(48_000, LEAD_S);
+        let raised = raised_lead_frames(48_000);
+        let cap = lead_frames(48_000, MAX_LEAD_S);
+        assert_eq!(initial, 9_600, "200 ms of a 48 kHz stream");
+        assert_eq!(raised, 19_200, "400 ms after a dropout");
+        assert!(raised > initial, "the mixing thread gets more headroom");
+        assert!(raised <= cap, "the ring holds the raised lead");
+    }
+
+    #[test]
+    fn a_tiny_rate_still_gets_whole_blocks_of_lead() {
+        assert!(lead_frames(1, LEAD_S) >= BLOCK_FRAMES * 2);
+        assert!(raised_lead_frames(1) >= BLOCK_FRAMES * 2);
+    }
 }

@@ -45,11 +45,13 @@ fn windows_default_leaves_out_gl() {
 }
 
 #[test]
-fn only_the_windows_default_and_software_modes_choose_the_adapter() {
+fn the_default_low_power_and_software_modes_choose_the_adapter() {
     for backend_override in [None, Some(Backends::VULKAN), Some(Backends::DX12)] {
         assert!(configured(Mode::Default, backend_override, true).1);
-        // elsewhere, and in DirectX 12 only mode, the adapter is wgpu's own choice
-        assert!(!configured(Mode::Default, backend_override, false).1);
+        // elsewhere too: a software Vulkan adapter (llvmpipe) must not shadow a hardware one
+        // that is only listed through OpenGL (virtio-gpu)
+        assert!(configured(Mode::Default, backend_override, false).1);
+        // DirectX 12 only keeps wgpu's own choice: there is only one backend to choose from
         assert!(!configured(Mode::Dx12, backend_override, true).1);
     }
     assert!(configured(Mode::Software, None, true).1 && configured(Mode::Software, None, false).1);
@@ -69,19 +71,21 @@ fn fallback_modes_leave_out_the_crashing_backends() {
     // Software on Windows is WARP (DX12), never GL (atio6axx.dll, #477).
     assert_eq!(configured(Mode::Software, None, true), (Backends::DX12, true));
     assert_eq!(configured(Mode::Software, None, false), (Backends::VULKAN | Backends::GL, true));
-    // The integrated GPU: every backend, wgpu's choice of adapter, low power (#2553).
+    // The integrated GPU: every backend, low power (#2553), and the pick itself so a software
+    // adapter does not shadow it.
     let mut options = NativeOptions::default();
     apply_for(&mut options, Mode::LowPower, None, false);
     let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
         panic!("default native options must create a wgpu instance");
     };
     assert_eq!(create.power_preference, wgpu::PowerPreference::LowPower);
-    assert!(create.native_adapter_selector.is_none());
-    // Off Windows the default is eframe's own.
+    assert!(create.native_adapter_selector.is_some());
+    // Off Windows the default keeps eframe's own backends (Vulkan and OpenGL), and picks the
+    // adapter among them.
     let WgpuSetup::CreateNew(eframe_default) = NativeOptions::default().wgpu_options.wgpu_setup else {
         panic!("default native options must create a wgpu instance");
     };
-    assert_eq!(configured(Mode::Default, None, false), (eframe_default.instance_descriptor.backends, false));
+    assert_eq!(configured(Mode::Default, None, false), (eframe_default.instance_descriptor.backends, true));
 }
 
 const W: u64 = 15;
