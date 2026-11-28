@@ -275,9 +275,10 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         let est = child.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = format_bytes(sum.estimated_bytes))).color(t.text_dim));
         reg.add("export.estimate", est.rect, sum.estimated_size.clone());
     });
-    // buttons
-    let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
-    let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
+    // buttons, wide enough for the translated labels
+    let (go_w, queue_w) = button_widths(ui);
+    let go = Rect::from_min_size(pos2(rect.max.x - 16.0 - go_w, rect.max.y - 44.0), vec2(go_w, 30.0));
+    let queue = Rect::from_min_size(pos2(go.min.x - 10.0 - queue_w, go.min.y), vec2(queue_w, 30.0));
     let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), if busy { Sense::hover() } else { Sense::click() });
     let stroke_color = if busy {
         t.text_faint
@@ -337,6 +338,18 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         }
     }
 }
+
+/// The widths of the Export and Send to Queue buttons: the English sizes, or wider when a translated
+/// label (the Export button reads Export, Cancel or Exporting) needs more room.
+fn button_widths(ui: &egui::Ui) -> (f32, f32) {
+    let label_width = |label: &str, font: egui::FontId| ui.painter().layout_no_wrap(label.to_string(), font, Color32::WHITE).size().x;
+    let go = [tl!("Export"), tl!("Cancel"), tl!("Exporting")].into_iter().map(|l| label_width(l, Tokens::semibold(13.0))).fold(0.0, f32::max);
+    let queue = label_width(tl!("Send to Queue"), Tokens::semibold(12.5));
+    ((go + BUTTON_PAD).max(104.0), (queue + BUTTON_PAD).max(122.0))
+}
+
+/// Space around a button label, both sides together.
+const BUTTON_PAD: f32 = 32.0;
 
 /// The export range in sequence ticks (for the summary).
 fn range_ticks(ex: &ExportUi, q: &filmcraft_engine::project::Sequence) -> (Tick, Tick) {
