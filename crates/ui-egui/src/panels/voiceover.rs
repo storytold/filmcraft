@@ -8,6 +8,7 @@
 //! click: menu), `timeline.track.<A1…>.voiceover.settings` (menu entry), and in the dialog
 //! `voiceover.source`, `voiceover.source.<i>`, `voiceover.input`, `voiceover.input.<i>`,
 //! `voiceover.name`, `voiceover.countdown`, `voiceover.preroll`, `voiceover.postroll`,
+//! `voiceover.followSpeech` (Follow Speech, disabled with its reason when it cannot run),
 //! `voiceover.ok`, `voiceover.cancel`; the countdown overlay is `voiceover.countdown.overlay`.
 //! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
 
@@ -200,6 +201,8 @@ fn open_settings(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
 /// Every frame: the settings dialog, the countdown overlay, and the punch-out + post-roll stop.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    // Follow Speech: what the input captured goes to the recogniser and the prompter follows it
+    filmcraft_engine::voiceover::pump(&mut app.session);
     settings_dialog(app, ctx);
     let Some(rec) = app.session.voiceover.rec.clone() else { return };
     let input_error = app.session.voiceover.input.as_ref().and_then(|input| input.error());
@@ -299,6 +302,21 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
             elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
             ui.end_row();
+            ui.label("");
+            let why = filmcraft_engine::follow::availability(&app.session).err();
+            let can = why.is_none() || d.prefs.follow_speech;
+            let r = ui.add_enabled(can, egui::Checkbox::new(&mut d.prefs.follow_speech, tl!("Follow Speech")));
+            let r = match &why {
+                Some(why) => r.on_disabled_hover_text(why.as_str()),
+                None => r.on_hover_text(tl!("Recognise the narration while recording and keep the prompter where you are")),
+            };
+            elems.push(("voiceover.followSpeech".into(), r.rect, "Follow Speech".into()));
+            ui.end_row();
+            if let Some(why) = &why {
+                ui.label("");
+                ui.label(RichText::new(tlf!("Follow Speech is not available: {why}", why = why)).weak().small());
+                ui.end_row();
+            }
             ui.label(tl!("Pre-roll:"));
             let r = ui.add(crate::widgets::number_drag(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
             elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
@@ -361,6 +379,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "countdownSoundCues": v.countdown_sound_cues,
             "prerollSeconds": v.preroll_seconds,
             "postrollSeconds": v.postroll_seconds,
+            "followSpeech": v.follow_speech,
         });
         match app.session.execute("audio.voiceover.settings", p) {
             Ok(_) => close = true,

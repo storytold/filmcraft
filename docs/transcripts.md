@@ -70,6 +70,11 @@ Without `speech-download`, `transcript.downloadModel` is disabled the same way. 
 still be imported with `transcript.set` and edited with every other command. Hosts and tests can
 install any recogniser in `Session::transcriber`, which enables transcription in any build.
 
+Live recognition while a voice-over is recorded (the prompter's Follow Speech, #5266) uses the same
+speech model preference and the same `whisper` feature; see [monitors.md](monitors.md#prompter).
+Its transcript is returned by `audio.voiceover.stop` and is not yet stored as the recording's
+transcript.
+
 ### Models
 
 Weights are **never** bundled or committed. They are downloaded on request into

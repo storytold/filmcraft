@@ -106,6 +106,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.snapInProgramMonitor", "Snap in Program Monitor", ["View"], None),
     // the monitors' wrench menus only, as in the reference app
     uic!("view.transparencyGrid", "Transparency Grid", [], None),
+    uic!("view.prompter", "Prompter", [], None),
     uic!("view.safeMargins", "Safe Margins", ["View", "Guide Templates"], None),
     uic!("view.guideTemplates.save", "Save Guides as Template…", ["View", "Guide Templates"], None),
     uic!("view.guideTemplates.manage", "Manage Guides…", ["View", "Guide Templates"], None),
@@ -1131,6 +1132,7 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
         "sequence.showThroughEdits" => st.show_through_edits,
         "markers.rippleSequenceMarkers" => st.ripple_sequence_markers,
         "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
+        "audio.voiceover.followSpeech" => session.prefs.voice_over.follow_speech,
         _ => return None,
     })
 }
