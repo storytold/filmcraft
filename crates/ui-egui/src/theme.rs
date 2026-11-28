@@ -165,7 +165,8 @@ impl Tokens {
             accent_hover: Color32::from_rgb(0x3f, 0x7c, 0xe8),
             text: Color32::from_rgb(0xd1, 0xd1, 0xd1),
             text_dim: Color32::from_rgb(0xb0, 0xb0, 0xb0),
-            text_faint: Color32::from_rgb(0x6e, 0x6e, 0x6e),
+            // secondary hints still read at 4.5:1 (WCAG AA) on the panels (was 0x6e: 3.3:1)
+            text_faint: Color32::from_rgb(0x86, 0x86, 0x86),
             icon: Color32::from_rgb(0xb0, 0xb0, 0xb0),
             icon_active: Color32::from_rgb(0xd1, 0xd1, 0xd1),
             hover: Color32::from_rgb(0x2c, 0x2c, 0x2c),
@@ -175,7 +176,9 @@ impl Tokens {
             separator: Color32::from_rgb(0x30, 0x30, 0x30),
             row_alt: Color32::from_rgb(0x21, 0x21, 0x21),
             row_selected: Color32::from_rgb(0x33, 0x33, 0x33),
-            hot_text: Color32::from_rgb(0x40, 0x96, 0xf3),
+            // a shade lighter than the timecode blue: 4.5:1 on a selected row too (the transcript's
+            // current word)
+            hot_text: Color32::from_rgb(0x4e, 0x9e, 0xf4),
             pill_active_bg: Color32::from_rgb(0x3a, 0x3a, 0x3a),
             clip_bar_bg: Color32::from_rgb(58, 58, 70),
             control_surface: Color32::from_rgb(0x24, 0x24, 0x24),
@@ -257,6 +260,11 @@ impl Tokens {
                 monitor_bg: Color32::from_rgb(0x32, 0x32, 0x32),
                 row_alt: Color32::from_rgb(50, 50, 50),
                 hover: Color32::from_rgb(64, 64, 64),
+                // 4.5:1 on the lighter grey panels
+                text_faint: Color32::from_rgb(0x9b, 0x9b, 0x9b),
+                // the dark theme's blue reads at 4.2:1 on this grey
+                hot_text: Color32::from_rgb(0x6c, 0xb0, 0xf7),
+                timecode: Color32::from_rgb(0x5a, 0xa6, 0xf6),
                 ..dark
             },
             ThemeKind::Light => Tokens {
@@ -268,7 +276,11 @@ impl Tokens {
                 tab_text_active: Color32::from_rgb(20, 20, 20),
                 text: Color32::from_rgb(34, 34, 34),
                 text_dim: Color32::from_rgb(90, 90, 90),
-                text_faint: Color32::from_rgb(140, 140, 140),
+                // 4.5:1 on the light panels and headers (was 140: 2.7:1)
+                text_faint: Color32::from_rgb(92, 92, 92),
+                // the dark theme's blue read at 2.5:1 on light grey: links and timecodes darker
+                hot_text: Color32::from_rgb(0x0d, 0x4e, 0xaa),
+                timecode: Color32::from_rgb(0x0f, 0x58, 0xbf),
                 icon: Color32::from_rgb(60, 60, 60),
                 hover: Color32::from_rgb(210, 210, 210),
                 pressed: Color32::from_rgb(196, 196, 196),
@@ -720,5 +732,49 @@ mod tests {
                 assert!(defs.families.values().flatten().all(|name| !name.starts_with("craft:")));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    fn luminance(c: Color32) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    fn ratio(a: Color32, b: Color32) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Every text colour reads at WCAG AA (4.5:1) on the panels and headers
+    /// of every theme, with and without Accessible color contrast. Secondary hints and the light
+    /// theme's links and timecodes used to fall to 2.5–3.3:1.
+    #[test]
+    fn text_meets_wcag_aa_in_every_theme() {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            for accessible in [false, true] {
+                let t = Tokens::for_kind(kind).with_appearance(None, accessible);
+                for (bg_name, bg) in [("panel", t.panel_bg), ("header", t.header_bg), ("timeline header", t.tl_header_bg)] {
+                    for (name, fg) in
+                        [("text", t.text), ("text_dim", t.text_dim), ("text_faint", t.text_faint), ("hot_text", t.hot_text), ("timecode", t.timecode)]
+                    {
+                        let r = ratio(fg, bg);
+                        assert!(r >= 4.5, "{kind:?} accessible={accessible}: {name} on {bg_name} is {r:.2}:1");
+                    }
+                }
+                // the transcript's current word (hot_text) on a selected or hovered row
+                for (bg_name, bg) in [("row_selected", t.row_selected), ("hover", t.hover)] {
+                    let r = ratio(t.hot_text, bg);
+                    assert!(r >= 4.5, "{kind:?} accessible={accessible}: hot_text on {bg_name} is {r:.2}:1");
+                }
+                assert!(ratio(Color32::WHITE, t.accent) >= 4.5, "{kind:?}: white on the accent");
+            }
+        }
     }
 }

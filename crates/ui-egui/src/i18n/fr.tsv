@@ -3751,3 +3751,64 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+	1 frame ({seconds} s)	1 image ({seconds} s)
+	Add Track	Ajouter une piste
+	Caption Export Settings	Paramètres d'export des sous-titres
+	Caption Track	Piste de sous-titres
+	Change Sequence Settings	Modifier les paramètres de séquence
+	Change the sequence to match the clip's settings?	Adapter la séquence aux paramètres du clip ?
+	Clip Mismatch Warning	Avertissement de non-concordance du clip
+	Clip: {settings}	Clip : {settings}
+	Copy of the project saved to {path}	Copie du projet enregistrée dans {path}
+	Cube LUT	LUT Cube
+	Delete Clips	Supprimer les clips
+	Delete Track	Supprimer la piste
+	Export .cube…	Exporter en .cube…
+	Exported {path} as {format}, from its file extension	{path} exporté au format {format}, d'après son extension
+	Exported {path}; not in the LUT: {effects}	{path} exporté ; absent de la LUT : {effects}
+	From preset file:	Depuis le fichier de préréglages :
+	Full Screen Program Monitor	Moniteur de programme en plein écran
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 9:16 portrait, mis à l'échelle pour remplir, VBR 1 passe, 10 Mbit/s, sonie normalisée à −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 9:16 portrait, mis à l'échelle pour remplir, VBR 1 passe, 12 Mbit/s, sonie normalisée à −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 9:16 portrait, mis à l'échelle pour remplir, VBR 1 passe, 8 Mbit/s, sonie normalisée à −14 LUFS
+	Highlight Balance	Équilibre des tons clairs
+	Highlight Hue	Teinte des tons clairs
+	Highlight Level	Niveau des tons clairs
+	Highlight Softness	Douceur des tons clairs
+	Imported {n} preset(s)	{n} préréglage(s) importé(s)
+	Imported {n} preset(s); not imported: {error}	{n} préréglage(s) importé(s) ; non importé : {error}
+	Imported {n} preset(s); {skipped} skipped	{n} préréglage(s) importé(s) ; {skipped} ignoré(s)
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} préréglage(s) importé(s) ; {warnings} avec des paramètres non pris en charge
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Keep Existing Settings	Conserver les paramètres actuels
+	Key Out Brights	Incruster les tons clairs
+	Midtone Balance	Équilibre des tons moyens
+	Midtone Hue	Teinte des tons moyens
+	Midtone Level	Niveau des tons moyens
+	No presets folder: the app has no data directory	Pas de dossier de préréglages : l'application n'a pas de dossier de données
+	Open Presets Folder	Ouvrir le dossier des préréglages
+	Preset library is up to date	La bibliothèque de préréglages est à jour
+	Preset library updated	Bibliothèque de préréglages mise à jour
+	Preset library updated: {imported} loaded, {removed} removed	Bibliothèque de préréglages mise à jour : {imported} chargé(s), {removed} retiré(s)
+	Project saved to {path}	Projet enregistré dans {path}
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Conception réactive – Temps recale les images clés des calques du graphique ; les effets du clip comme Opacité et Trajectoire gardent le temps du média
+	Scan Presets Folder	Analyser le dossier des préréglages
+	Sequence: {settings}	Séquence : {settings}
+	Set as Default Transition	Définir comme transition par défaut
+	Shadow Balance	Équilibre des tons foncés
+	Shadow Hue	Teinte des tons foncés
+	Shadow Level	Niveau des tons foncés
+	Shadow Softness	Douceur des tons foncés
+	Shadow Threshold	Seuil des tons foncés
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Les points d'entrée et de sortie de la source ne couvrent qu'une image. Choisissez Source entière pour exporter toute la séquence.
+	This clip does not match the sequence settings.	Ce clip ne correspond pas aux paramètres de la séquence.
+	This preference is not available yet.	Cette préférence n'est pas encore disponible.
+	Three-Way Color Corrector	Correcteur colorimétrique tridirectionnel
+	Ticked attributes are removed from the selected clips.	Les attributs cochés sont retirés des clips sélectionnés.
+	TikTok 1080×1920	TikTok 1080×1920
+	Time Format	Format de temps
+	Tonal Range	Gamme tonale
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Activé, la transparence GIF est tout ou rien : un alpha inférieur à 128 est transparent, 128 et plus est opaque.
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
+	{frames} frames ({seconds} s)	{frames} images ({seconds} s)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} existe déjà, rien n'a donc été exporté. Pour le remplacer, choisissez-le dans la boîte d'enregistrement.
