@@ -222,6 +222,9 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("crop", vec![("left", fl(10.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("bottom", fl(15.0)), ("feather", fl(12.0))], false),
         ("crop", vec![("left", fl(12.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("zoom", ParamValue::Bool(true))], false),
         ("crop", vec![("left", fl(70.0)), ("right", fl(70.0)), ("feather", fl(5000.0))], false),
+        // #4543: the feather fades only the cropped sides; the sides left at 0% stay hard
+        ("crop", vec![("left", fl(25.0)), ("right", fl(25.0)), ("feather", fl(6.0))], false),
+        ("crop", vec![("top", fl(30.0)), ("feather", fl(8.0))], false),
         ("edge_feather", vec![("amount", fl(30.0))], false),
         ("transform", vec![("scale_height", fl(150.0)), ("rotation", fl(30.0)), ("position", pt(30.0, 20.0)), ("opacity", fl(60.0))], false),
         (
