@@ -74,6 +74,27 @@ fn corrupt_timeline_times_are_rejected_before_end_arithmetic() {
     }
 }
 
+/// #4840: the playhead is held on one of the clip's frames, so a keyframe made at the playhead is
+/// one the playhead can stop on; past the out point that is the last frame, not the tick before.
+#[test]
+fn playhead_frame_in_holds_the_playhead_on_a_frame_of_the_clip() {
+    let (mut p, clip, seq) = demo_project();
+    let rate = p.sequence(seq).unwrap().settings.frame_rate;
+    let mut ti = p.make_track_item(clip, TrackKind::Video, rate.tick_of(10), TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    // inside the clip the playhead stays where it is
+    for f in 10..34 {
+        assert_eq!(ti.playhead_frame_in(rate.tick_of(f), rate), rate.tick_of(f));
+    }
+    assert_eq!(ti.playhead_frame_in(Tick::ZERO, rate), rate.tick_of(10), "before the clip: its first frame");
+    assert_eq!(ti.playhead_frame_in(rate.tick_of(34), rate), rate.tick_of(33), "on the out point: the last frame");
+    assert_eq!(ti.playhead_frame_in(Tick::MAX, rate), rate.tick_of(33));
+    // a clip shorter than a frame, or empty, keeps its start
+    ti.duration = Tick(1);
+    assert_eq!(ti.playhead_frame_in(Tick::MAX, rate), ti.start);
+    ti.duration = Tick::ZERO;
+    assert_eq!(ti.playhead_frame_in(Tick::MAX, rate), ti.start);
+}
+
 #[test]
 fn point_params_keep_auto_through_json_and_no_other_point_reads_null() {
     // serde_json writes NaN as `null`; a point parameter reads it back as NaN ("auto")

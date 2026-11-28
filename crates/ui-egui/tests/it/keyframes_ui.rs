@@ -829,3 +829,32 @@ fn keyframe_menu_clear_deletes_only_the_clicked_keyframe_of_a_selection() {
     assert_eq!((scale.len(), position), (1, 1), "2 of 3 keyframes remain: {scale:?}");
     assert!(!scale.contains(&time), "the right-clicked Scale keyframe is the one deleted");
 }
+
+/// #4840: the stopwatch with the playhead on the clip's out point (the edit point after its last
+/// frame) keys the clip's last frame. It used to key one tick before the out point, between two
+/// frames, so ▶ from the last frame went nowhere: the playhead lands on frames only.
+#[test]
+fn stopwatch_at_the_clip_end_keys_a_frame_the_arrows_reach() {
+    let (mut d, clip) = Driver::demo();
+    // fold Motion and Opacity so the Time Remapping rows are on screen
+    for fx in ["motion", "opacity"] {
+        d.click(&format!("effectControls.effect.{fx}.twirl"));
+    }
+    let rate = d.harness.state().session.sequence_rate();
+    let out = clip.start + clip.duration;
+    d.exec("playhead.set", json!({"time": out}));
+    d.exec("timeline.select", json!({"clips": [clip.id]}));
+    d.click("effectControls.time_remap.speed.stopwatch");
+    let keys: Vec<i64> = d.parameter(&clip, "time_remap", "speed").keyframes.iter().map(|k| k.time.0).collect();
+    assert_eq!(keys.len(), 1, "the stopwatch keys the parameter: {keys:?}");
+    let last = rate.snap(Tick(out - 1));
+    let media = |d: &mut Driver, t: i64| d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effect_time_at(Tick(t)).0;
+    assert_eq!(keys[0], media(&mut d, last.0), "the keyframe sits on the clip's last frame");
+
+    d.exec("playhead.set", json!({"time": clip.start}));
+    d.exec("timeline.select", json!({"clips": [clip.id]}));
+    d.click("effectControls.time_remap.speed.nextKeyframe");
+    let ph = d.playhead();
+    assert_eq!(ph, last.0, "▶ goes to the keyframe");
+    assert_eq!(media(&mut d, ph), keys[0], "the playhead is on the keyframe, so ▶ has nowhere further to go");
+}

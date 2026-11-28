@@ -81,16 +81,17 @@ fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
     param.is_some_and(|p| p.keyframes.iter().any(|kf| kf.time == k.time))
 }
 
-/// The clip's media time the panel shows its values at: the playhead's, held inside the clip.
-fn effect_time_now(it: &TrackItem, ph: Tick) -> Tick {
-    it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)))
+/// The clip's media time the panel shows its values at: the playhead's, held on one of the clip's
+/// frames, where the stopwatch and the keyframe buttons key (#4840).
+fn effect_time_now(it: &TrackItem, ph: Tick, rate: filmcraft_time::FrameRate) -> Tick {
+    it.effect_time_at(it.playhead_frame_in(ph, rate))
 }
 
 /// Whether `k` sits on a row the panel draws disabled at the playhead `ph` (Scale Width while
 /// Uniform Scale is on, #4381). Such keyframes can't be selected, so a group drag or a selection's
 /// interpolation change leaves them alone.
-fn keyframe_disabled(it: &TrackItem, k: &KeyframeRef, ph: Tick) -> bool {
-    k.mask.is_none() && it.effects.get(k.effect).is_some_and(|e| ignored_by_uniform_scale(it, e, &k.param, effect_time_now(it, ph)))
+fn keyframe_disabled(it: &TrackItem, k: &KeyframeRef, ph: Tick, rate: filmcraft_time::FrameRate) -> bool {
+    k.mask.is_none() && it.effects.get(k.effect).is_some_and(|e| ignored_by_uniform_scale(it, e, &k.param, effect_time_now(it, ph, rate)))
 }
 
 /// Edit ▸ Select All (⌘A) with Effect Controls focused selects every keyframe the panel shows
@@ -101,8 +102,9 @@ pub(crate) fn select_all_keyframes(app: &mut FilmcraftApp) -> bool {
     }
     let mut keys = Vec::new();
     let ph = app.session.playhead();
+    let rate = app.session.sequence_rate();
     for (clip, it, _) in selected_clips(app) {
-        let mt = effect_time_now(&it, ph);
+        let mt = effect_time_now(&it, ph, rate);
         for (effect, e) in it.effects.iter().enumerate() {
             let key = |param: &str, mask, time| KeyframeRef { clip: clip.0, effect, param: param.to_string(), mask, time };
             // not a disabled row's (Scale Width while Uniform Scale is on)
@@ -202,7 +204,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // keep only selected keyframes that still exist on a clip shown here, on a row that isn't
     // disabled (selected before Uniform Scale was turned on, say)
     let ph = app.session.playhead();
-    app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k) && !keyframe_disabled(it, k, ph)));
+    let ph_rate = app.session.sequence_rate();
+    app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k) && !keyframe_disabled(it, k, ph, ph_rate)));
     let Some((clip, it, _)) = clips.first().cloned() else {
         // a transition clicked in the Timeline (#430)
         if let Some(id) = crate::panels::transition_controls::selected(app) {
@@ -283,7 +286,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 app.auto.add("effectControls.graphicTimeHint", ir, hint);
             }
-            let mt_now = effect_time_now(it, ph);
+            let mt_now = effect_time_now(it, ph, rate);
             // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
@@ -1153,7 +1156,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let ph = app.session.playhead();
-    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = effect_time_now(&it, ph, app.session.sequence_rate());
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 8.0))).id_salt("props"));
     // header: clip name + menu
