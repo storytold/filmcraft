@@ -77,6 +77,28 @@ fn the_bottom_edge_of_the_last_audio_track_resizes_the_audio_tracks_from_either_
     assert!(d.heights().1 < a1 - 5.0);
 }
 
+// Regression test for #4571: a drag starting a couple of points above the divider between V1 and A1,
+// in the track headers, resized the video tracks instead of moving the divider.
+#[test]
+fn a_drag_just_above_the_divider_moves_the_divider_instead_of_resizing_the_video_tracks() {
+    let mut d = Driver::demo();
+    let x = rect_of(&mut d, "timeline.track.V1.target").center().x;
+    let (v0, a0) = d.heights();
+    let mut split = d.app().ui.timeline.split;
+    for dy in [-2.0, -1.0] {
+        let y = rect_of(&mut d, "timeline.divider").min.y + dy;
+        let before = split;
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x, "y": y + 40.0}}));
+        d.frames(3);
+        assert_eq!(d.heights(), (v0, a0), "a drag {dy} pt above the divider leaves the track heights alone");
+        split = d.app().ui.timeline.split;
+        assert!(split > before, "a drag {dy} pt above the divider moves it down: {before} -> {split}");
+    }
+    // the line between V1 and V2 still resizes the video tracks
+    d.drag("timeline.track.V2.resize", 0.5, -15.0);
+    assert!(d.heights().0 > v0 + 5.0, "video tracks grow from the line between V1 and V2");
+}
+
 /// Every shape drawn this frame, flattened.
 fn flat_shapes(d: &Driver) -> Vec<egui::Shape> {
     fn walk(s: &egui::Shape, out: &mut Vec<egui::Shape>) {
