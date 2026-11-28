@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-28 · **Change:** minor (RFC-0052 Headless section, all unknown; earlier major: new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 How FilmCraft looks, feels and responds compared with Premiere: tools, on-screen handles, snapping,
 nudging, modifier keys, shortcuts, drag behaviour, numeric entry, panels, context menus. Keyboard
@@ -31,8 +31,17 @@ open interaction reports (about 40 of the 188 open issues).
 | Context menus | per panel and per item | most panels; check against Premiere not done | 70% | — | 5–10 h |
 | Accessibility | screen reader partial, keyboard navigation | keyboard navigation; every widget has an automation id; no screen-reader support | 30% | — | 15–30 h |
 
+## Headless (RFC-0052)
+
+**Headless ([RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md)): 0 yes, 0 no (window 0, os 0, engine-gap 0), 0 partial, all unknown.**
+
+This page is an area scorecard, not an itemized menu or command checklist, so no area can be marked `yes` yet. [RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md) fills `yes` only from the engine command registry that `filmcraft-cli` and the MCP server load, and only once a row cites a command id (LightCraft's `cmd:<id>` check is the model). Desktop-only command ids do not count. `cargo xtask parity` matches menu labels against a maintainer-local reference and writes to `target/parity/`, so it cannot yet fill a committed column.
+
+When an itemized checklist exists, a checked row that isn't fully reachable says `no (<reach>)` or `partial (<reach>)`, where the reach is `window` (needs the desktop window, a dialog or the pointer), `os` (needs an OS or online service the engine doesn't wrap) or `engine-gap` (could be a command, isn't one yet). A `partial` row's notes say which part a headless client can do. Until then every area stays `unknown`.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-28 | minor | Headless (RFC-0052) section: all areas unknown, with marking rules, until an itemized checklist cites command ids |
 | 2026-10-10 | major | Created: UI areas against Premiere 26.5.2, menu label diff, keyboard parity from keyboard.md, open UI issues itemized |
