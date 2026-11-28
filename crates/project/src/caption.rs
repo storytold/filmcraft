@@ -96,6 +96,8 @@ pub struct CaptionStyle {
     /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
     /// like graphic text: the nearest weight when the family has no face of that name.
     pub font_style: String,
+    /// Width lines wrap at, as a fraction of the frame width (0.05–1).
+    pub max_width: f32,
 }
 
 impl Default for CaptionStyle {
@@ -113,6 +115,7 @@ impl Default for CaptionStyle {
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
             font_style: "SemiBold".into(),
+            max_width: 0.9,
         }
     }
 }
@@ -314,6 +317,15 @@ mod tests {
         let st: CaptionStyle = serde_json::from_str(old).unwrap();
         assert_eq!(st, CaptionStyle::default());
         assert_eq!(st.font_style, "SemiBold");
+    }
+
+    #[test]
+    fn styles_saved_without_a_wrap_width_wrap_at_90_percent() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.max_width, 0.9);
     }
 
     #[test]
