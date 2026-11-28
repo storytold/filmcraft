@@ -99,6 +99,19 @@ fn a_clip_with_picture_and_sound_previews_its_video_and_audio_tracks() {
     }
 }
 
+/// #4916: with A1's target toggle off, dragging a clip with picture and sound from the bin
+/// places the picture only: no preview band on A1 and no audio clip lands there.
+#[test]
+fn a_drop_skips_the_audio_track_when_a1_is_not_targeted() {
+    let mut d = Driver::demo();
+    let (item, from) = d.footage_item(true, true).expect("the demo has a clip with picture and sound");
+    let a1 = d.harness.state().session.active_sequence().unwrap().audio_tracks[0].id;
+    d.ok("engine.execute", json!({"command": "timeline.setTargeting", "params": {"track": a1.0, "targeted": false}}));
+    let shown = d.drag_to_track(from, "V1");
+    assert_eq!(shown, previews(&["V1"]), "no preview band on the untargeted A1");
+    assert_eq!(d.tracks_holding(item), ["V1".to_string()].into_iter().collect(), "video only: the untargeted A1 gets no audio");
+}
+
 #[test]
 fn a_picture_only_item_over_an_audio_track_previews_the_video_track_it_goes_to() {
     let mut d = Driver::demo();
