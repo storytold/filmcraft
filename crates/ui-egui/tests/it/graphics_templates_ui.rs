@@ -81,6 +81,35 @@ fn browse_search_apply_and_edit_template_properties() {
 }
 
 #[test]
+fn responsive_time_stays_visible_with_a_layer_selected() {
+    let mut d = Driver::demo("rolltime");
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.EssentialGraphics"}));
+    d.ok("ui.set", json!({"gfxTemplates": {"tab": "browse"}}));
+    d.frames(4);
+    d.exec("playhead.set", json!({"seconds": 300}));
+    d.ok("ui.click", json!({"id": "gfxTemplates.item.builtin:end-credits-roll"}));
+    d.ok("ui.click", json!({"id": "gfxTemplates.apply"}));
+    d.frames(3);
+    let clips = d.clips_named("End Credits – Roll");
+    assert_eq!(clips.len(), 1, "applied once");
+    d.ok("ui.set", json!({"gfxTemplates": {"tab": "edit", "query": ""}}));
+    d.frames(3);
+    // no layer selected: the roll options are offered
+    d.exec("graphics.selectLayer", json!({"clip": clips[0], "layers": []}));
+    d.frames(3);
+    assert!(d.ids("graphics.roll.").contains(&"graphics.roll.startOffScreen".to_string()));
+    assert!(d.ids("graphics.time.").contains(&"graphics.time.intro".to_string()));
+    // select a layer, as a click on the Layers list does: the clip-level roll
+    // options must stay offered (#4972)
+    d.exec("graphics.selectLayer", json!({"clip": clips[0], "layers": [0]}));
+    d.frames(3);
+    assert!(d.ids("graphics.roll.").contains(&"graphics.roll.startOffScreen".to_string()), "roll options vanished with a layer selected");
+    assert!(d.ids("graphics.roll.").contains(&"graphics.roll.endOffScreen".to_string()));
+    assert!(d.ids("graphics.time.").contains(&"graphics.time.intro".to_string()));
+}
+
+#[test]
 fn drag_template_onto_the_timeline() {
     let mut d = Driver::demo("drag");
     d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));

@@ -462,7 +462,7 @@ pub fn template_controls(
     true
 }
 
-/// Responsive Design – Time (intro / outro and roll / crawl), shown with no layer selected.
+/// Responsive Design – Time (intro / outro and roll / crawl) for the whole clip.
 pub fn responsive_time(app: &FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, it: &TrackItem, autos: &mut Elems, actions: &mut Vec<(String, Value)>) {
     let t = app.tokens;
     let rate = app.session.sequence_rate();
