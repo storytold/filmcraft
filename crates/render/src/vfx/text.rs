@@ -102,7 +102,13 @@ pub(crate) fn burnin_text(e: &EffectInstance, cx: &FxCtx) -> String {
             let fps = cx.env.map_or(30.0, |env| env.frame_rate());
             format!("{}", (cx.seconds * fps).round() as i64)
         }
-        _ => cx.env.map(|env| env.sequence_name()).unwrap_or_default(),
+        5 => cx.env.map(|env| env.sequence_name()).unwrap_or_default(),
+        6 => cx.env.map(|env| env.media_duration()).unwrap_or_default(),
+        7 => cx.env.map(|env| env.clip_duration()).unwrap_or_default(),
+        n => {
+            let field = ["Description", "Comment", "Scene", "Shot"].get(n.saturating_sub(8) as usize).copied().unwrap_or("Description");
+            cx.env.map(|env| env.metadata(field)).unwrap_or_default()
+        }
     };
     let prefix = tv(e, "prefix");
     if prefix.is_empty() { body } else { format!("{prefix} {body}") }
@@ -123,6 +129,6 @@ pub fn metadata_burnin(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         5 => (Vec2::new(w - margin, margin), 2),
         _ => (pv(e, "position", cx, img), 1),
     };
-    let family = if matches!(chv(e, "source"), 0 | 1 | 4) { "JetBrains Mono" } else { "Inter" };
+    let family = if matches!(chv(e, "source"), 0 | 1 | 4 | 6 | 7) { "JetBrains Mono" } else { "Inter" };
     draw_text(img, &text, TextLook { family, pos, px: size, align, color: cv(e, "color", cx), box_alpha: fv(e, "opacity", cx) / 100.0 });
 }
