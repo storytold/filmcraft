@@ -379,3 +379,30 @@ fn auto_reframe_sequence_covers_subclips() {
     assert!(!placed.is_empty(), "the subclip is on a video track");
     assert!(placed.iter().all(|it| it.effects.iter().any(|e| e.effect == "auto_reframe")), "the subclip is reframed");
 }
+
+/// The reframed picture fills the new frame: the copy's clips used to keep the Motion position of
+/// the 16:9 edit (its centre, 960 × 540), so in the 1080 × 1920 copy the picture sat in the top
+/// half and the bottom of the frame stayed black.
+#[test]
+fn auto_reframed_picture_fills_the_vertical_frame() {
+    let mut s = demo();
+    s.execute("sequence.autoReframe", json!({})).unwrap();
+    // a clip whose picture is bright from top to bottom (the dunes), away from the transitions
+    s.execute("playhead.set", json!({"seconds": 15.0})).unwrap();
+    let img = s.render_program(0.125).unwrap();
+    assert!(img.h > img.w, "a vertical frame");
+    // mean brightness of a band of rows
+    let band = |y0: usize, y1: usize| {
+        let (mut sum, mut n) = (0.0f32, 0usize);
+        for y in y0..y1 {
+            for x in 0..img.w {
+                let p = img.get(x, y);
+                sum += (p[0] + p[1] + p[2]) / 3.0;
+                n += 1;
+            }
+        }
+        sum / n.max(1) as f32
+    };
+    let (top, bottom) = (band(0, img.h / 8), band(img.h - img.h / 8, img.h));
+    assert!(top > 0.05 && bottom > 0.05, "the picture reaches both ends of the frame (top {top}, bottom {bottom})");
+}

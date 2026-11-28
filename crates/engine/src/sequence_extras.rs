@@ -348,6 +348,20 @@ fn auto_reframe(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = reframe_size(orig.settings.width, orig.settings.height, aspect)
         .ok_or_else(|| bad(cmd, format!("unknown aspect `{aspect}` (9:16, 1:1, 4:5 or 16:9)")))?;
     let def = filmcraft_project::find_effect("auto_reframe").ok_or_else(|| EngineError::Other("the Auto Reframe effect is missing".into()))?;
+    // The effect follows the subject inside a window of the target shape in the layer's own
+    // frame; Motion then scales that window up to cover the new frame and centres it there.
+    // (With "Sequence" as its target the effect zoomed inside the 16:9 layer instead, which the
+    // copy's Motion, still at the old frame's centre and scale, left in the top of a 9:16 frame.)
+    let target = match aspect {
+        "9:16" => 1,
+        "1:1" => 2,
+        "4:5" => 3,
+        _ => 4,
+    };
+    let (old_w, old_h) = (f64::from(orig.settings.width.max(1)), f64::from(orig.settings.height.max(1)));
+    let (new_w, new_h) = (f64::from(w.max(1)), f64::from(h.max(1)));
+    let cover = (new_w / old_w).max(new_h / old_h);
+    let fit = (new_w / old_w).min(new_h / old_h);
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("{} ({aspect})", src.name));
     let (id, reframed) = s.edit("Auto Reframe Sequence", |pr, st| {
         let mut q = (**orig).clone();
@@ -366,6 +380,14 @@ fn auto_reframe(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(v) = inst.params.get_mut("preset") {
                     v.value = filmcraft_project::ParamValue::Choice(preset);
                 }
+                if let Some(v) = inst.params.get_mut("aspect") {
+                    v.value = filmcraft_project::ParamValue::Choice(target);
+                }
+                // a clip scaled to the frame is fitted inside the new frame first
+                let grow = if it.scale_to_frame { cover / fit } else { cover };
+                if let Some(m) = it.effects.iter_mut().find(|e| e.effect == "motion") {
+                    reframe_motion(m, grow, (old_w / 2.0, old_h / 2.0), (new_w / 2.0, new_h / 2.0));
+                }
                 it.effects.push(inst);
                 reframed += 1;
             }
@@ -383,6 +405,41 @@ fn auto_reframe(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     s.events.push(crate::Event::OpenSequence(id));
     Ok(json!({"sequence": id.0, "name": name, "width": w, "height": h, "reframed": reframed}))
+}
+
+/// Motion of a clip copied into a reframed sequence: its scale grows by `grow` and its position,
+/// taken from the old frame's centre, moves to the new one (offsets grow with the picture). Auto
+/// positions (NaN, "the centre") stay auto; every keyframe moves the same way.
+fn reframe_motion(m: &mut filmcraft_project::EffectInstance, grow: f64, old_c: (f64, f64), new_c: (f64, f64)) {
+    use filmcraft_project::ParamValue;
+    if !grow.is_finite() || grow <= 0.0 {
+        return;
+    }
+    let scale = |v: &mut ParamValue| {
+        if let ParamValue::Float(f) = v {
+            *f *= grow;
+        }
+    };
+    let place = |v: &mut ParamValue| {
+        if let ParamValue::Vec2(p) = v
+            && p.x.is_finite()
+            && p.y.is_finite()
+        {
+            p.x = (p.x - old_c.0) * grow + new_c.0;
+            p.y = (p.y - old_c.1) * grow + new_c.1;
+        }
+    };
+    for (name, param) in &mut m.params {
+        let f: &dyn Fn(&mut ParamValue) = match name.as_str() {
+            "scale" | "scale_width" => &scale,
+            "position" => &place,
+            _ => continue,
+        };
+        f(&mut param.value);
+        for k in &mut param.keyframes {
+            f(&mut k.value);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
