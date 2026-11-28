@@ -302,6 +302,59 @@ fn a_nests_audio_previews_follow_the_sound_of_its_sequence() {
     assert_eq!(audio_hashes(&p, top), deep);
 }
 
+/// Nine levels, each placing the next on twenty tracks: hashing the top walks 20^8 placements unless
+/// the walk is bounded. It must still finish, and give the same hash twice.
+#[test]
+fn hashing_a_fan_out_of_nests_is_bounded_and_stable() {
+    let (mut p, matte, _, _) = setup();
+    let r = FrameRate::FPS_24;
+    let mut below = matte;
+    for level in 0..9 {
+        let s = p.new_sequence(&format!("L{level}"), SequenceSettings { width: 64, height: 64, frame_rate: r, ..Default::default() }, 20, 1, None);
+        for track in 0..20 {
+            let ti = p.make_track_item(below, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+            p.sequence_mut(s).unwrap().video_tracks[track].items.push(ti);
+        }
+        below = s;
+    }
+    let t = std::time::Instant::now();
+    let a = video_segments(&p, below);
+    assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].hash, video_segments(&p, below)[0].hash);
+    // the walk was cut short, so the hash must not name a preview
+    assert!(!a[0].cacheable);
+}
+
+#[test]
+fn an_ordinary_segment_is_cacheable() {
+    let (mut p, matte, _, _) = setup();
+    let r = FrameRate::FPS_24;
+    let s = p.new_sequence("n", SequenceSettings { width: 64, height: 64, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let ti = p.make_track_item(matte, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+    p.sequence_mut(s).unwrap().video_tracks[0].items.push(ti);
+    assert!(video_segments(&p, s).iter().all(|g| g.cacheable));
+}
+
+/// A nest the cost walk cannot reach within its visit budget is charged a conservative cost, so it is
+/// rendered instead of being estimated as free; a depth-limited chain still costs nothing extra.
+#[test]
+fn an_unmeasurable_nest_is_charged_a_conservative_cost() {
+    use crate::nest_budget::{MAX_NESTED_VISITS, Visit};
+    use crate::preview::decode_cost_ms;
+    let (mut p, matte, _, _) = setup();
+    let r = FrameRate::FPS_24;
+    let s = p.new_sequence("nest", SequenceSettings { width: 64, height: 64, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let ti = p.make_track_item(matte, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+    p.sequence_mut(s).unwrap().video_tracks[0].items.push(ti);
+    let measured = decode_cost_ms(&p, s, 0);
+    assert!(measured > 0.0 && measured < 1000.0, "{measured}");
+    let _spent: Vec<Visit> = (0..MAX_NESTED_VISITS).map(|_| Visit::enter()).collect();
+    let unmeasured = decode_cost_ms(&p, s, 0);
+    assert!(unmeasured.is_finite() && unmeasured > 1000.0, "{unmeasured}");
+    assert_eq!(decode_cost_ms(&p, s, 9), 0.0, "the depth limit keeps its zero cost");
+}
+
 #[test]
 fn a_subclip_that_is_its_own_parent_does_not_recurse_forever() {
     let (mut p, _, ocean, seq) = setup();
