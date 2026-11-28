@@ -582,7 +582,7 @@ impl AudioFileSource {
             return Ok(Self { info, rate, samples });
         }
         if ext == "mp2"
-            && let Some((layer, rate, samples)) = decode_mpeg_layer12(&bytes)
+            && let Some((layer, rate, samples)) = decode_mpeg_layer12(&bytes)?
         {
             let frames = samples.first().map_or(0, Vec::len);
             let info = MediaInfo {
@@ -788,21 +788,36 @@ fn decode_adts(bytes: &[u8]) -> Result<Option<(u32, Vec<Vec<f32>>)>> {
 /// planar samples). Frames follow each other from the first frame header (after an ID3v2 tag);
 /// damaged data is skipped up to the next frame header of the same layer and rate, and a frame
 /// with another channel count keeps its duration as silence. `None` when the stream does not start
-/// with a Layer I / II frame followed by another frame (or the end), e.g. MP3.
-fn decode_mpeg_layer12(bytes: &[u8]) -> Option<(u8, u32, Vec<Vec<f32>>)> {
+/// with a Layer I / II frame followed by another frame (or the end), e.g. MP3. `Err` when the
+/// stream would decode past the in-memory budget: a frame can decode to far more than it holds.
+fn decode_mpeg_layer12(bytes: &[u8]) -> Result<Option<(u8, u32, Vec<Vec<f32>>)>> {
+    decode_mpeg_layer12_with(bytes, MAX_DECODED_SAMPLES)
+}
+
+fn decode_mpeg_layer12_with(bytes: &[u8], budget: usize) -> Result<Option<(u8, u32, Vec<Vec<f32>>)>> {
     let mut p = id3v2_len(bytes);
     let frame_at = |p: usize| bytes.get(p..).and_then(|b| craft_audio::mpa::parse_header(b).ok()).filter(|h| h.frame_bytes > 0);
-    let first = frame_at(p)?;
+    let Some(first) = frame_at(p) else { return Ok(None) };
     let next = p.saturating_add(first.frame_bytes);
     if first.layer == 3 || (next < bytes.len() && frame_at(next).is_none_or(|h| h.layer != first.layer || h.sample_rate != first.sample_rate)) {
-        return None;
+        return Ok(None);
     }
     let mut dec = craft_audio::mpa::Decoder::new();
     let mut out: Vec<Vec<f32>> = vec![Vec::new(); first.channels()];
+    let mut total = 0usize;
     while let Some(rest) = bytes.get(p..).filter(|r| r.len() >= 4) {
         match dec.decode(rest) {
             Ok(f) if f.header.layer == first.layer && f.header.sample_rate == first.sample_rate => {
                 let n = f.header.samples();
+                let add = if f.channels.len() == out.len() {
+                    f.channels.iter().map(Vec::len).sum()
+                } else {
+                    n.checked_mul(out.len()).ok_or_else(|| CodecError::Unsupported("MPEG audio too long to decode into memory".into()))?
+                };
+                if total.saturating_add(add) > budget {
+                    return Err(CodecError::Unsupported("audio too long to decode into memory (over 4 GiB decoded): shorten or transcode it".into()));
+                }
+                total = total.saturating_add(add);
                 if f.channels.len() == out.len() {
                     for (o, c) in out.iter_mut().zip(f.channels) {
                         o.extend(c);
@@ -817,7 +832,7 @@ fn decode_mpeg_layer12(bytes: &[u8]) -> Option<(u8, u32, Vec<Vec<f32>>)> {
             _ => p += 1,
         }
     }
-    out.first().is_some_and(|c| !c.is_empty()).then_some((first.layer, first.sample_rate, out))
+    Ok(out.first().is_some_and(|c| !c.is_empty()).then_some((first.layer, first.sample_rate, out)))
 }
 
 impl MediaSource for AudioFileSource {
@@ -890,18 +905,33 @@ mod mpeg_layer12_tests {
     fn raw_streams_resync_after_damage() {
         let mono = silent_frame(14, 3);
         let file = [&b"ID3\x04\0\0\0\0\0\x05abcde"[..], &mono, &mono, &[0xFF, 0xFD, 0x13, 0x37, 0x42], &mono].concat();
-        let (layer, rate, samples) = decode_mpeg_layer12(&file).unwrap();
+        let (layer, rate, samples) = decode_mpeg_layer12(&file).unwrap().unwrap();
         assert_eq!((layer, rate, samples.len(), samples[0].len()), (2, 48_000, 1, 3 * 1152));
         let src = AudioFileSource::decode("x.mp2", file.clone().into()).unwrap();
         assert_eq!(src.info().audio().map(|a| (a.channels, a.codec.as_str())), Some((1, "MP2")));
         // MP3, junk and truncated data are not ours (symphonia gets them)
-        assert!(decode_mpeg_layer12(&[0xFF, 0xFB, 0x90, 0x44, 0, 0]).is_none());
+        assert!(decode_mpeg_layer12(&[0xFF, 0xFB, 0x90, 0x44, 0, 0]).unwrap().is_none());
         for n in 0..40 {
-            assert!(decode_mpeg_layer12(&file[..n]).is_none(), "{n}");
+            assert!(decode_mpeg_layer12(&file[..n]).unwrap().is_none(), "{n}");
         }
-        assert!(decode_mpeg_layer12(&[&mono[..], &[0x12; 50]].concat()).is_none());
+        assert!(decode_mpeg_layer12(&[&mono[..], &[0x12; 50]].concat()).unwrap().is_none());
         // an ID3v2 tag claiming the largest size (with a footer) points past the end
-        assert!(decode_mpeg_layer12(&[&b"ID3\x04\0\x10\x7F\x7F\x7F\x7F"[..], &mono].concat()).is_none());
+        assert!(decode_mpeg_layer12(&[&b"ID3\x04\0\x10\x7F\x7F\x7F\x7F"[..], &mono].concat()).unwrap().is_none());
+    }
+
+    /// The decoder keeps a per-stream budget: every frame decodes to samples far larger than its
+    /// bytes, so a long stream must stop with an error before it exhausts memory.
+    #[test]
+    fn raw_streams_keep_within_the_decode_budget() {
+        let frame = silent_frame(14, 3);
+        let file = [&frame[..], &frame, &frame].concat();
+        let ok = decode_mpeg_layer12_with(&file, 3 * 1152).unwrap().unwrap();
+        assert_eq!(ok.2[0].len(), 3 * 1152);
+        let err = match decode_mpeg_layer12_with(&file, 2 * 1152) {
+            Ok(_) => panic!("the budget must stop the stream"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, CodecError::Unsupported(_)), "{err:?}");
     }
 }
 
