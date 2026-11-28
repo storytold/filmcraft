@@ -41,6 +41,7 @@ filmcraft-tts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+craft-command = { workspace = true }
 log = { workspace = true }
 roxmltree = { workspace = true }
 chrono = { workspace = true }
@@ -50,6 +51,7 @@ image = { version = "0.25", default-features = false, features = ["png", "gif"] 
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+craft-command = { workspace = true, features = ["testing"] }
 tempfile = "3"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 rayon = { workspace = true }

@@ -16,30 +16,11 @@ use serde_json::{Value, json};
 
 use crate::{EngineError, Result, Session};
 
-type Run = fn(&mut Session, &Value) -> Result<Value>;
-type Enabled = fn(&Session) -> std::result::Result<(), String>;
+pub type Run = fn(&mut Session, &Value) -> Result<Value>;
+pub type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
-/// Metadata + implementation for one command.
-pub struct CommandSpec {
-    pub id: &'static str,
-    pub label: &'static str,
-    /// Menu placement, e.g. `["Sequence"]` or `["File", "New"]`. Empty = not in menus.
-    pub menu: &'static [&'static str],
-    /// Default shortcut (egui-style names, `Cmd` = ⌘ on macOS / Ctrl elsewhere).
-    pub shortcut: Option<&'static str>,
-    /// Parameter description (JSON-ish, for agents and the MCP schema).
-    pub params: &'static str,
-    pub enabled: Enabled,
-    pub run: Run,
-    /// Record in the journal (false for pure queries).
-    pub journal: bool,
-    /// The keys through which a caller may name this command's targets instead of selecting them
-    /// (see [`Session::execute`]). Set once for the whole registry by [`command_specs`] from the
-    /// parameter doc, and checked against what each command really reads by the
-    /// `named_targets_are_read_by_the_commands_that_declare_them` test; a command that documents
-    /// a key but reads only the selection is listed in [`SELECTION_ONLY`].
-    pub named: NamedKeys,
-}
+/// Built-in command row. `enabled` is `fn(&Session)`. Named params are applied in `Session::enabled_for`.
+pub type CommandSpec = craft_command::CommandSpec<Session, EngineError>;
 
 /// Which target keys a command accepts (#65): `clips` (list of clip ids), `clip` (one clip id),
 /// `items` (list of project item ids), `item` (one project item id).
@@ -79,24 +60,27 @@ const SELECTION_ONLY: &[&str] = &[];
 
 macro_rules! cmd {
     ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, named: NamedKeys::NONE }
+        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, alt_shortcuts: &[], params: $params, enabled: $en, run: $run, journal: true }
     };
 }
 macro_rules! query {
     ($id:literal, $label:literal, $params:literal, $run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false, named: NamedKeys::NONE }
+        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, alt_shortcuts: &[], params: $params, enabled: always, run: $run, journal: false }
     };
+}
+
+/// The keys through which a caller may name this command's targets instead of selecting them (see
+/// [`Session::execute`]). Read from the parameter doc, and checked against what each command really
+/// reads by the `named_targets_are_read_by_the_commands_that_declare_them` test; a command that
+/// documents a key but reads only the selection is listed in [`SELECTION_ONLY`]. The shared
+/// `craft_command::CommandSpec` row has no such field, so it is derived here, not stored.
+pub fn named_keys(spec: &CommandSpec) -> NamedKeys {
+    if SELECTION_ONLY.contains(&spec.id) { NamedKeys::NONE } else { NamedKeys::from_doc(spec.params) }
 }
 
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
-    SPECS.get_or_init(|| {
-        let mut v = build();
-        for c in &mut v {
-            c.named = if SELECTION_ONLY.contains(&c.id) { NamedKeys::NONE } else { NamedKeys::from_doc(c.params) };
-        }
-        v
-    })
+    SPECS.get_or_init(build)
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
@@ -207,11 +191,11 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
 fn named_ids(spec: &CommandSpec, p: &Value, many: (&str, NamedKeys), one: (&str, NamedKeys)) -> Option<Vec<u64>> {
-    let ids: Vec<u64> = if spec.named.contains(many.1)
+    let ids: Vec<u64> = if named_keys(spec).contains(many.1)
         && let Some(a) = p.get(many.0).and_then(Value::as_array)
     {
         a.iter().filter_map(Value::as_u64).collect()
-    } else if spec.named.contains(one.1) {
+    } else if named_keys(spec).contains(one.1) {
         u64_p(p, one.0).into_iter().collect()
     } else {
         Vec::new()
@@ -231,11 +215,11 @@ pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 /// `None` when the caller named nothing or no sequence is open, so the selection's reason stands.
 pub(crate) fn named_clips_missing(s: &Session, spec: &CommandSpec, p: &Value) -> Option<String> {
     s.active_sequence()?;
-    let first = if spec.named.contains(NamedKeys::CLIPS)
+    let first = if named_keys(spec).contains(NamedKeys::CLIPS)
         && let Some(a) = p.get("clips").and_then(Value::as_array)
     {
         a.first()?
-    } else if spec.named.contains(NamedKeys::CLIP) {
+    } else if named_keys(spec).contains(NamedKeys::CLIP) {
         p.get("clip").filter(|v| !v.is_null())?
     } else {
         return None;
@@ -1616,7 +1600,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             crate::masks::discard_jobs(s);
-            s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
+            s.set_project(std::sync::Arc::new(filmcraft_project::Project::new(&name)));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
@@ -1625,15 +1609,15 @@ fn build() -> Vec<CommandSpec> {
             if s.path.take().is_some() {
                 s.previews.reset_temp();
             }
-            s.revision += 1;
+            let hooks = s.hooks.clone();
+            hooks.with_cause(craft_command::Cause::Load, || s.bump());
             s.saved_revision = s.revision;
-            s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
-            s.project = std::sync::Arc::new(p);
+            s.set_project(std::sync::Arc::new(p));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
@@ -1645,9 +1629,9 @@ fn build() -> Vec<CommandSpec> {
             if s.path.take().is_some() {
                 s.previews.reset_temp();
             }
-            s.revision += 1;
+            let hooks = s.hooks.clone();
+            hooks.with_cause(craft_command::Cause::Load, || s.bump());
             s.saved_revision = s.revision;
-            s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))
         }),
@@ -2120,7 +2104,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false,"allowStaleLink":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -3537,11 +3521,11 @@ fn build() -> Vec<CommandSpec> {
             label: "Advance Trim Playback",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"clock":seconds}"#,
             enabled: has_seq,
             run: |s, p| crate::trim::tick(s, p.get("clock").and_then(Value::as_f64).unwrap_or(0.0)),
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         query!("trim.monitor", "Trim Monitor State", "{}", |s, _| Ok(crate::trim::monitor_info(s))),
         cmd!("trim.nudge", "Trim by Frames", [], None, r#"{"frames":i64}"#, has_edit_points, |s, p| crate::trim::nudge(s, p)),
@@ -3816,11 +3800,11 @@ fn build() -> Vec<CommandSpec> {
             label: "Select Effect",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"clip":id,"effect":index|id}|{"none":true}"#,
             enabled: has_seq,
             run: select_effect,
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         cmd!(
             "effects.setParam",
@@ -4231,15 +4215,35 @@ fn build() -> Vec<CommandSpec> {
         }),
         // ================= Queries =================
         query!("command.list", "List Commands", "{}", |s, _| {
-            Ok(Value::Array(
-                command_specs()
-                    .iter()
-                    .map(|c| {
-                        let all: Vec<&str> = s.shortcuts.for_command(c.id).iter().map(|b| b.keys.as_str()).collect();
-                        json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": s.shortcuts.primary(c.id), "shortcuts": all, "defaultShortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()})
+            // Copy the rows first. `for_each` borrows the registry, and enablement
+            // resolves the same registry again.
+            let mut rows = Vec::new();
+            s.registry.for_each(|view| {
+                let menu = match view.menu {
+                    craft_command::Menu::Static(path) => path.iter().map(|part| (*part).to_string()).collect::<Vec<_>>(),
+                    craft_command::Menu::Shared(path) => path.iter().map(|part| part.to_string()).collect(),
+                };
+                rows.push((view.id.to_string(), view.label.to_string(), menu, view.shortcut.map(str::to_string), view.params.to_string()));
+            });
+            let out = rows
+                .into_iter()
+                .map(|(id, label, menu, default_shortcut, params)| {
+                    let all: Vec<&str> = s.shortcuts.for_command(&id).iter().map(|b| b.keys.as_str()).collect();
+                    let schema = s.registry.schema(&id).map(|value| (*value).clone());
+                    json!({
+                        "id": id,
+                        "label": label,
+                        "menu": menu,
+                        "shortcut": s.shortcuts.primary(&id),
+                        "shortcuts": all,
+                        "defaultShortcut": default_shortcut,
+                        "params": params,
+                        "enabled": s.is_enabled(&id),
+                        "schema": schema,
                     })
-                    .collect(),
-            ))
+                })
+                .collect();
+            Ok(Value::Array(out))
         }),
         query!("project.inspect", "Inspect Project", "{}", |s, _| Ok(crate::commands::inspect_project(s))),
         query!("sequence.inspect", "Inspect Sequence", r#"{"item":id?}"#, |s, p| {
@@ -4290,8 +4294,64 @@ fn build() -> Vec<CommandSpec> {
     crate::clip_ops::apply_layout(&mut v);
     // Search Bin, Find, Project Settings, Scene Edit Detection, Normalize Mix Track… (M3.11)
     crate::project_tools::apply_layout(&mut v);
+    // `link.editIn` cannot be dynamic: Registry::register reserves ids that do not start with `plugin.<plugin_id>.`.
+    v.push(cmd!(
+        "link.editIn",
+        "Edit in EffectCraft",
+        ["Clip"],
+        Some("Cmd+Alt+Shift+E"),
+        r#"{"instance":str?,"accept_unsupported":bool?}"#,
+        link_edit_in_enabled,
+        link_edit_in_run
+    ));
     v.shrink_to_fit();
     v
+}
+
+/// FilmCraft Link installs this. The first call wins. Until then the menu command errors and does not nest.
+pub fn set_link_edit_in(run: fn(&mut Session, &Value) -> Result<Value>) -> bool {
+    LINK_EDIT_IN.set(run).is_ok()
+}
+
+static LINK_EDIT_IN: OnceLock<fn(&mut Session, &Value) -> Result<Value>> = OnceLock::new();
+
+fn link_edit_in_enabled(s: &Session) -> std::result::Result<(), String> {
+    // Same strings as `filmcraft_link::commands::edit_in_enabled`. The engine cannot call that crate.
+    // An unsaved project is allowed: the UI asks where to save first, and `link.editIn` itself
+    // refuses to run without a path (the result movie goes next to the project file).
+    let Some(sequence) = s.active_sequence() else {
+        return Err("no sequence is open".into());
+    };
+    let video = s
+        .state
+        .selection
+        .iter()
+        .any(|clip| sequence.find_item(*clip).is_some_and(|(track_id, _)| sequence.track(track_id).is_some_and(|track| track.kind == TrackKind::Video)));
+    if !video {
+        return Err("select a video clip in the timeline".into());
+    }
+    // A linked clip reopens its link and an unlinked one is nested. Both at once is neither.
+    // The same string as `filmcraft_link::reopen::MIXED_SELECTION`.
+    let (mut linked, mut plain) = (false, false);
+    for clip in &s.state.selection {
+        let Some((track_id, item)) = sequence.find_item(*clip) else { continue };
+        if sequence.track(track_id).is_none_or(|track| track.kind != TrackKind::Video) {
+            continue;
+        }
+        if s.project.item(item.item).is_some_and(|entry| entry.metadata.contains_key("craft.link")) {
+            linked = true;
+        } else {
+            plain = true;
+        }
+    }
+    if linked && plain { Err("the selection mixes linked and unlinked clips".into()) } else { Ok(()) }
+}
+
+fn link_edit_in_run(s: &mut Session, params: &Value) -> Result<Value> {
+    match LINK_EDIT_IN.get() {
+        Some(run) => run(s, params),
+        None => Err(EngineError::Other("EffectCraft is not installed".into())),
+    }
 }
 
 /// Put `e`'s parameters (all of them, or only `only`) back to their defaults, as Premiere's reset
@@ -5406,7 +5466,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         && let Some(name) = project_name_for(path)
         && s.project.name != name
     {
-        name_project(std::sync::Arc::make_mut(&mut s.project), name);
+        name_project(s.project_mut(), name);
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
@@ -5454,7 +5514,7 @@ pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Proj
     // Projects saved before stills applied EXIF Orientation keep a portrait still's
     // unturned size and the anchors baked from it (#4613).
     crate::still_migration::migrate_legacy_still_sizes(&mut proj, &s.media, &*s.services);
-    s.project = std::sync::Arc::new(proj);
+    s.set_project(std::sync::Arc::new(proj));
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
@@ -5468,11 +5528,11 @@ pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Proj
         s.previews.set_dir(Some(crate::project_tools::previews_dir_for(&s.project, p, &s.prefs.auto_save.scratch_folders)));
     }
     s.path = path;
-    s.revision += 1;
+    let hooks = s.hooks.clone();
+    hooks.with_cause(craft_command::Cause::Load, || s.bump());
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
-    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);
 }
 

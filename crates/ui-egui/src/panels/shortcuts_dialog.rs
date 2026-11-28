@@ -75,7 +75,7 @@ pub fn chord_of(key: egui::Key, m: egui::Modifiers) -> Option<String> {
 fn label_of(app: &FilmcraftApp, id: &str) -> String {
     app.session
         .shortcuts
-        .command(id)
+        .command(&app.session.registry, id)
         .map(|c| c.label)
         .or_else(|| filmcraft_engine::find_command(id).map(|c| c.label.to_string()))
         .map_or_else(|| id.to_string(), |l| crate::i18n::t(&l).to_string())
@@ -1125,7 +1125,7 @@ mod key_label_tests {
                 let Ok(c) = Chord::parse(&b.keys) else { continue };
                 let label = session
                     .shortcuts
-                    .command(&b.command)
+                    .command(&session.registry, &b.command)
                     .map(|c| c.label)
                     .or_else(|| filmcraft_engine::find_command(&b.command).map(|c| c.label.to_string()))
                     .unwrap_or_else(|| b.command.clone());

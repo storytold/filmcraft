@@ -226,6 +226,8 @@ Move timelines between FilmCraft and every other editor:
 
 Import merges the document's bins, media and sequences into your project as one undoable step, and links each media file it finds on disk.
 
+**Edit in EffectCraft (Craft Link).** Select video clips and choose Clip ▸ Edit in EffectCraft (`⌘⌥⇧E`, `Ctrl+Alt+Shift+E` on Windows and Linux). EffectCraft must be installed. FilmCraft nests the selection and renders every source that has no file (generators, titles, nested sequences) to a ProRes 4444 movie in a cache folder. It sends the nest to EffectCraft as an OpenTimelineIO document. The result movie lands in `<project>/Project Links/` and replaces the nest on the timeline. The clip carries a badge: `linked` while EffectCraft is running, `linked, not live` with the reason when it is not. Effects EffectCraft cannot import stay on the outer clip, and a banner says so. Undo takes the nest back in one step. Details: [docs/craft-link.md](docs/craft-link.md).
+
 <br>
 
 ## Built for agents
@@ -283,6 +285,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
+| [docs/craft-link.md](docs/craft-link.md) | Edit in EffectCraft: the user flow, the link socket, the cache folder, platform limits |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
 | [ROADMAP.md](ROADMAP.md) | Stage, parity numbers, languages, what's next and the progress log |

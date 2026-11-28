@@ -51,20 +51,7 @@ impl FilmcraftApp {
                 }
                 r
             }),
-            "file.saveAs" | "file.save" | "file.saveCopy" => {
-                let suggested =
-                    if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };
-                let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
-                self.pick(FileDialog::SaveProject { name: suggested }, move |app, paths| {
-                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                    let r = app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string());
-                    match &r {
-                        Ok(_) => crate::menus::saved_status(app, cmd, &path),
-                        Err(e) => app.ui.status = e.clone(),
-                    }
-                    r
-                })
-            }
+            "file.saveAs" | "file.save" | "file.saveCopy" => self.save_project_dialog(id, None),
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 if let Some(asked) = crate::panels::clip_dialogs::ask_before_open(app, &path) {
@@ -119,4 +106,33 @@ impl FilmcraftApp {
             r
         })
     }
+
+    /// The Save As dialog of `file.save`, `file.saveAs` or `file.saveCopy`, then the save itself.
+    ///
+    /// With a host that shows dialogs without blocking, this returns `{"dialog": "open"}` before the
+    /// user answers, so work that needs the saved project goes in `after`. It runs once the dialog
+    /// has answered, on the same frame as the save, or at once when the host's picker is synchronous.
+    pub(crate) fn save_project_dialog(&mut self, id: &str, after: Option<AfterSave>) -> Result<Value, String> {
+        let suggested =
+            if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };
+        let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
+        self.pick(FileDialog::SaveProject { name: suggested }, move |app, paths| {
+            let saved = paths.into_iter().next().map(|path| {
+                let r = app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string());
+                match &r {
+                    Ok(_) => crate::menus::saved_status(app, cmd, &path),
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                r
+            });
+            match after {
+                Some(after) => after(app, saved),
+                None => saved.unwrap_or(Ok(Value::Null)),
+            }
+        })
+    }
 }
+
+/// Work that follows a save dialog. Its argument is the result of the save command, or `None` when
+/// the user cancelled the dialog.
+pub(crate) type AfterSave = Box<dyn FnOnce(&mut FilmcraftApp, Option<Result<Value, String>>) -> Result<Value, String>>;

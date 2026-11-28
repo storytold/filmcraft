@@ -220,7 +220,7 @@ fn confirming_one_script_relink_does_not_confirm_automatically_found_sources() {
         })
         .collect();
     {
-        let project = std::sync::Arc::make_mut(&mut s.project);
+        let project = s.project_mut();
         let doc = project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap();
         for take in &takes {
             doc.take_mut(filmcraft_project::ScriptTakeId(*take)).unwrap().source_identity = None;
@@ -280,7 +280,7 @@ fn auto_relink_reports_script_review_without_blocking_other_sources() {
         let take = s.execute("script.addTake", json!({"item":script,"source":items[0].0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
         s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
         let take_id = filmcraft_project::ScriptTakeId(take);
-        let project = std::sync::Arc::make_mut(&mut s.project);
+        let project = s.project_mut();
         project.item_mut(items[0]).unwrap().as_media_mut().unwrap().identity = None;
         project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap().take_mut(take_id).unwrap().source_identity = None;
         s.execute("file.save", json!({"path":path})).unwrap();
@@ -488,8 +488,8 @@ fn deleting_bin_keeps_subclip_source_but_removes_unused_media() {
     let root = tmp_dir("delete-bin-used-media");
     let (path, items) = saved_project(&root);
     let mut s = open(&path);
-    let p = std::sync::Arc::make_mut(&mut s.project);
     let seq = s.state.active_sequence.unwrap();
+    let p = s.project_mut();
     let range = filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, p.item(items[0]).unwrap().duration());
     let sub =
         p.add_item("Subclip", filmcraft_project::Label::Iris, filmcraft_project::ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
@@ -533,7 +533,7 @@ fn deleting_subclip_and_source_does_not_keep_an_unused_source() {
     let (path, items) = saved_project(&root);
     let mut s = open(&path);
     let seq = s.state.active_sequence.unwrap();
-    let p = std::sync::Arc::make_mut(&mut s.project);
+    let p = s.project_mut();
     let range = filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, p.item(items[0]).unwrap().duration());
     let sub =
         p.add_item("Subclip", filmcraft_project::Label::Iris, filmcraft_project::ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
@@ -556,7 +556,7 @@ fn deleting_bin_preserves_intermediate_subclip_needed_by_surviving_clip() {
     let (path, items) = saved_project(&root);
     let mut s = open(&path);
     let seq = s.state.active_sequence.unwrap();
-    let p = std::sync::Arc::make_mut(&mut s.project);
+    let p = s.project_mut();
     let range = filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, p.item(items[0]).unwrap().duration());
     let parent =
         p.add_item("Parent", filmcraft_project::Label::Iris, filmcraft_project::ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
@@ -582,7 +582,7 @@ fn deleting_bin_preserves_intermediate_subclip_needed_by_surviving_clip() {
 
 /// Point item `id` at `path` the way a project file from someone else could.
 fn set_media_path(s: &mut Session, id: ItemId, path: &str) {
-    let p = std::sync::Arc::make_mut(&mut s.project);
+    let p = s.project_mut();
     let m = p.item_mut(id).and_then(|i| i.as_media_mut()).unwrap();
     m.media = filmcraft_project::MediaRef::File { path: path.to_string() };
 }
@@ -610,13 +610,13 @@ fn make_offline_delete_only_removes_the_media_the_item_was_linked_to() {
     }
     // an item with no recorded identity (a placeholder, an older project) never deletes anything
     set_media_path(&mut s, items[0], &a.to_string_lossy());
-    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).and_then(|i| i.as_media_mut()).unwrap().identity = None;
+    s.project_mut().item_mut(items[0]).and_then(|i| i.as_media_mut()).unwrap().identity = None;
     let r = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
     assert_eq!(r["deleted"], json!([]), "{r}");
     assert!(a.exists(), "a file with no recorded identity was deleted");
     // the file the item was imported from is deleted
     let id_a = crate::relink::identity_of(&*s.services, &a.to_string_lossy()).unwrap();
-    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).and_then(|i| i.as_media_mut()).unwrap().identity = Some(id_a);
+    s.project_mut().item_mut(items[0]).and_then(|i| i.as_media_mut()).unwrap().identity = Some(id_a);
     set_media_path(&mut s, items[0], &a.to_string_lossy());
     let r = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
     assert_eq!(r["deleted"].as_array().map(Vec::len), Some(1), "{r}");

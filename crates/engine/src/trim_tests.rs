@@ -56,9 +56,9 @@ fn trim_mode_roll_moves_linked_audio_once() {
         assert_eq!(s.history.undo.len(), undo + 1);
         let after = s.project.clone();
         s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(*s.project, *before);
+        assert_eq!(**s.project, *before);
         s.execute("edit.redo", json!({})).unwrap();
-        assert_eq!(*s.project, *after);
+        assert_eq!(**s.project, *after);
     }
 }
 
@@ -96,9 +96,9 @@ fn selected_linked_regular_and_ripple_edges_move_once() {
             }
             let after = s.project.clone();
             s.execute("edit.undo", json!({})).unwrap();
-            assert_eq!(*s.project, *before);
+            assert_eq!(**s.project, *before);
             s.execute("edit.redo", json!({})).unwrap();
-            assert_eq!(*s.project, *after);
+            assert_eq!(**s.project, *after);
         }
     }
 }
@@ -125,7 +125,7 @@ fn nearest_linked_roll_and_dynamic_trim() {
         assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.end(), expected);
     }
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
 }
 
 /// The shorter audio handle limits the picture too; separately applying the two cuts desyncs them.
@@ -159,7 +159,7 @@ fn linked_trim_respects_locked_tracks() {
         s.execute("trim.selectEditPoint", json!({"clip": clips[0].1.0, "edge": "out", "kind": kind})).unwrap();
         let before = s.project.clone();
         assert!(s.execute("trim.nudge", json!({"frames": -3})).is_err());
-        assert_eq!(*s.project, *before);
+        assert_eq!(**s.project, *before);
     }
 }
 

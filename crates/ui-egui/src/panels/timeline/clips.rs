@@ -266,6 +266,9 @@ pub(super) fn draw_clip(
         let speed = format!("[{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
         label = if label.is_empty() { speed } else { format!("{label} {speed}") };
     }
+    if let Some(link) = app.session.link_badges.get(&it.item) {
+        label = if label.is_empty() { format!("[{link}]") } else { format!("{label} [{link}]") };
+    }
     if w > 24.0 && !label.is_empty() {
         clip_p.text(
             pos2(body.min.x + 6.0, body.min.y + 8.5),

@@ -215,7 +215,7 @@ fn timecode_marker_and_in_point_sync_within_one_frame() {
     // clip markers: the same event moment marked in both clips (frame accuracy)
     let event_frame_a = 72; // 3 s into camera A
     let at_b = rate.tick_of(event_frame_a) - truth;
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     for (it, t) in [(items[0], rate.tick_of(event_frame_a)), (items[1], rate.snap(at_b))] {
         let m = p.item_mut(it).unwrap().as_media_mut().unwrap();
         m.markers.push(Marker {
@@ -231,14 +231,14 @@ fn timecode_marker_and_in_point_sync_within_one_frame() {
             color: filmcraft_project::Label::Rose,
         });
     }
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     let r = on_items(&mut s, "clip.createMulticam", &items, json!({"method": "marker", "marker": "clap"})).unwrap();
     let off = offset_of(&s, &r);
     assert!((off - truth).abs() <= rate.frame_duration(), "marker sync {} vs {}", off.0, truth.0);
     // In points: A's In at 2.5 s, B's at 0 → B starts 2.5 s after A
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     p.item_mut(items[0]).unwrap().as_media_mut().unwrap().mark_in = Some(rate.tick_of(60));
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     let r = on_items(&mut s, "clip.createMulticam", &items, json!({"method": "in"})).unwrap();
     assert_eq!(offset_of(&s, &r), rate.tick_of(60));
     // Out points: A ends at 12 s, B at 10 s, both Outs unset → ends aligned: B media 0 at 2 s
@@ -274,7 +274,7 @@ fn timeline_synchronize_by_audio_and_timecode() {
     let Some((a, b, rec)) = fixtures() else { return };
     let mut s = Session::default();
     let items = import(&mut s, &[&a, &b, &rec]);
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let rate = FrameRate::FPS_24;
     let seq = p.new_sequence("Edit", filmcraft_project::SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 2, 3, None);
     // camera B on V2/A2 at 20 s, recorder on A3 at 1 s, camera A on V1/A1 at 5 s
@@ -294,7 +294,7 @@ fn timeline_synchronize_by_audio_and_timecode() {
     place(&mut p, items[0], 120, Some(0), 0);
     place(&mut p, items[1], 480, Some(1), 1);
     place(&mut p, items[2], 24, None, 2);
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.state.active_sequence = Some(seq);
     let all: Vec<u64> = s.project.sequence(seq).unwrap().all_tracks().flat_map(|t| t.items.iter().map(|i| i.id.0)).collect();
     s.execute("timeline.select", json!({"clips": all})).unwrap();
@@ -343,10 +343,10 @@ fn multicam_from_clips_selected_in_the_timeline() {
     let mut s = Session::default();
     let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
     let items = import(&mut s, &refs);
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let edit =
         p.new_sequence("Edit", filmcraft_project::SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.state.active_sequence = Some(edit);
     for (k, item) in items.iter().enumerate() {
         s.set_playhead(FrameRate::FPS_24.tick_of(k as i64 * 48));
@@ -395,10 +395,10 @@ fn mc_session(audio: &str) -> (Session, Vec<ItemId>, ItemId, ItemId) {
     let items = import(&mut s, &refs);
     let r = on_items(&mut s, "clip.createMulticam", &items, json!({"method": "in", "audio": audio, "cameraNames": "track"})).unwrap();
     let src = ItemId(r["sequence"].as_u64().unwrap());
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let edit =
         p.new_sequence("Cut", filmcraft_project::SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 2, None);
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.state.active_sequence = Some(edit);
     s.execute("source.open", json!({"item": src.0})).unwrap();
     s.execute("source.overwrite", json!({})).unwrap();
@@ -615,7 +615,7 @@ fn edit_cameras_and_save_load() {
     assert_eq!(doc["schema_version"], filmcraft_format::SCHEMA_VERSION);
     let mut t = Session::default();
     t.execute("file.open", json!({"path": path})).unwrap();
-    assert_eq!(*t.project, *s.project, "multi-camera data survives save/load");
+    assert_eq!(**t.project, **s.project, "multi-camera data survives save/load");
     assert_eq!(t.project.sequence(src).unwrap().multicam.as_ref().unwrap().cameras[1].name, "Wide");
 }
 
@@ -623,7 +623,7 @@ fn edit_cameras_and_save_load() {
 fn any_nest_can_be_multicam() {
     // a plain nested sequence with two video tracks: angles are its tracks
     let (mut s, items, _, _) = mc_session("camera1");
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let rate = FrameRate::FPS_24;
     let nest = p.new_sequence("Nest", filmcraft_project::SequenceSettings { width: W, height: H, frame_rate: rate, ..Default::default() }, 2, 0, None);
     for (k, it) in items[..2].iter().enumerate() {
@@ -645,7 +645,7 @@ fn any_nest_can_be_multicam() {
     let clip = v.id;
     let q = p.sequence_mut(edit).unwrap();
     q.video_tracks[1].items.push(v);
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     assert!(psnr(&frame(&mut s, 3), &camera_frame(&s, items[1], 3)) > 40.0, "nest: top track");
     s.execute("timeline.select", json!({"clips": [clip.0]})).unwrap();
     s.execute("clip.multicamEnable", json!({})).unwrap();
@@ -697,10 +697,10 @@ fn many_angles(n: usize) -> (Session, ItemId) {
     }
     let r = on_items(&mut s, "clip.createMulticam", &items, json!({"method": "in", "cameraNames": "clip"})).unwrap();
     let src = ItemId(r["sequence"].as_u64().unwrap());
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let edit =
         p.new_sequence("Cut", filmcraft_project::SequenceSettings { width: 64, height: 36, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 2, None);
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.state.active_sequence = Some(edit);
     s.execute("source.open", json!({"item": src.0})).unwrap();
     s.execute("source.overwrite", json!({})).unwrap();

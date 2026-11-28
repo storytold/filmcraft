@@ -656,16 +656,16 @@ fn character_style_drag_merges_only_its_target_and_range() {
     assert_eq!(s.history.undo.len(), n + 1, "one drag, one undo step");
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after);
+    assert_eq!(**s.project, *after);
     s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":0,"end":5,"style":{"size":150},"merge":true,"begin":true})).unwrap();
     assert_eq!(s.history.undo.len(), n + 2, "a new gesture on the same range starts a new step");
     s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":6,"end":11,"style":{"size":160},"merge":true})).unwrap();
     assert_eq!(s.history.undo.len(), n + 3, "another character range does not merge");
     let before = s.project.clone();
     assert!(s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":3,"end":3,"style":{"size":170},"merge":true})).is_err());
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     assert_eq!(s.history.undo.len(), n + 3, "an invalid edit adds no undo step");
 }
 

@@ -235,7 +235,7 @@ fn set_with_clips_changes_every_listed_graphic_in_one_undo_step() {
     assert_eq!((size(&s, clips[0]), size(&s, clips[1]), size(&s, clips[2])), (140.0, 140.0, 90.0));
     assert_eq!(s.history.undo.len(), n + 1, "a drag over several clips is one undo step");
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(s.project, before, "one undo restores each clip's own size");
+    assert_eq!(*s.project, before, "one undo restores each clip's own size");
     // a clip that is not a graphic, a missing clip or layer, or `clip` with `clips`: nothing changes
     let video = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
     for p in [
@@ -246,14 +246,14 @@ fn set_with_clips_changes_every_listed_graphic_in_one_undo_step() {
         json!({"clip": clips[0], "clips": [clips[1]], "layer": 0, "props": {"size": 50}}),
     ] {
         assert!(s.execute("graphics.set", p.clone()).is_err(), "{p}");
-        assert_eq!(s.project, before, "{p}");
+        assert_eq!(*s.project, before, "{p}");
     }
     // the second clip's layer 1 is a shape: the text property fails there and the first clip keeps its size
     s.execute("graphics.newShape", json!({"clip": clips[1], "shape": "rectangle"})).unwrap();
     s.execute("graphics.newText", json!({"clip": clips[0], "text": "Second"})).unwrap();
     let before = s.project.clone();
     assert!(s.execute("graphics.set", json!({"clips": [clips[0], clips[1]], "layer": 1, "props": {"font": "Inter"}})).is_err());
-    assert_eq!(s.project, before);
+    assert_eq!(*s.project, before);
 }
 
 #[test]
@@ -948,7 +948,7 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     // clip's first intrinsic effect, in the order they were applied
     fn before_intrinsics(s: &mut Session, clip: ClipId, n: usize) {
         let seq = s.state.active_sequence.unwrap();
-        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let q = s.project_mut().sequence_mut(seq).unwrap();
         let it = q.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).find(|i| i.id == clip).unwrap();
         let applied = it.effects.split_off(it.effects.len() - n);
         let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap();

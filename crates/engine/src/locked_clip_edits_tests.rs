@@ -79,7 +79,7 @@ fn locked_track_refuses_roll_slip_slide_speed() {
     ] {
         let err = s.execute(cmd["id"].as_str().unwrap(), cmd["p"].clone()).unwrap_err();
         assert!(err.to_string().contains("locked"), "{}: {err}", cmd["id"]);
-        assert_eq!(*s.project, *snap, "{} must leave the sequence unchanged", cmd["id"]);
+        assert_eq!(**s.project, *snap, "{} must leave the sequence unchanged", cmd["id"]);
     }
 }
 

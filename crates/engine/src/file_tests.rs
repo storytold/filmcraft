@@ -34,11 +34,11 @@ fn saved_file_is_versioned_and_save_copy_keeps_state() {
     assert_eq!(s.path.as_deref(), Some(path.as_str()));
     let mut t = Session::default();
     t.execute("file.open", json!({"path": copy})).unwrap();
-    assert_eq!(*t.project, *s.project);
+    assert_eq!(**t.project, **s.project);
     // Revert discards the edit.
     s.execute("file.revert", json!({})).unwrap();
     assert!(!s.is_dirty());
-    assert_ne!(*t.project, *s.project);
+    assert_ne!(**t.project, **s.project);
     assert!(!Session::default().is_enabled("file.revert"), "nothing to revert to before a save");
     // No temp files left next to the project.
     let stray: Vec<_> = std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();

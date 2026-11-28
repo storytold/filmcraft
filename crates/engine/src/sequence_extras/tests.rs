@@ -268,7 +268,7 @@ fn flash_cue_markers_round_trip() {
     assert_eq!((m.kind, m.name.as_str(), m.comment.as_str()), (MarkerKind::FlashCue, "Cue Point 1", "cue"));
     assert_eq!(m.start, s.sequence_rate().snap(Tick::from_seconds_f64(2.0)));
     let back = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap().project;
-    assert_eq!(back, *s.project);
+    assert_eq!(back, **s.project);
     let r2 = s.execute("markers.addFlashCue", json!({})).unwrap();
     let q = s.active_sequence().unwrap();
     assert_eq!(q.markers.iter().find(|m| m.id.0 == r2["marker"].as_u64().unwrap()).unwrap().name, "Cue Point 2");

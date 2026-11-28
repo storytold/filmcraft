@@ -28,7 +28,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut, alt_shortcuts: &[], params, enabled, run, journal: true }
 }
 
 fn has_caption_track(s: &Session) -> std::result::Result<(), String> {
@@ -624,6 +624,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "List Captions",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"track":id|"C1"?}"#,
             enabled: always,
             run: |s, p| {
@@ -638,7 +639,6 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"tracks": tracks, "selection": s.state.caption_selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
             },
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

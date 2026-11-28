@@ -50,7 +50,7 @@ fn clicking_between_two_clips_selects_the_gap_and_delete_closes_it() {
     s.active_sequence().unwrap().check().unwrap();
 
     assert_eq!(s.undo().as_deref(), Some("Ripple Delete"), "one undo step");
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn close_gap_without_params_closes_selected_gap_in_one_undo_step() {
     let [(first, _), (second, sound)] = two_clips(&mut s, [0, 96]);
     let frame = s.sequence_rate().tick_of(48);
     s.execute("timeline.selectGap", json!({"track":"V1","frame":60})).unwrap();
-    let before = serde_json::to_value(&s.project).unwrap();
+    let before = serde_json::to_value(&*s.project).unwrap();
     let undo = s.history.undo.len();
     assert_eq!(s.execute("sequence.closeGap", json!({})).unwrap(), serde_json::Value::Null);
     assert_eq!(range(&s, first).0, Tick::ZERO);
@@ -198,11 +198,11 @@ fn close_gap_without_params_closes_selected_gap_in_one_undo_step() {
     assert_eq!(range(&s, sound).0, frame);
     assert!(s.state.gap_selection.is_none());
     assert_eq!(s.history.undo.len(), undo + 1);
-    let after = serde_json::to_value(&s.project).unwrap();
+    let after = serde_json::to_value(&*s.project).unwrap();
     s.undo();
-    assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+    assert_eq!(serde_json::to_value(&*s.project).unwrap(), before);
     s.redo();
-    assert_eq!(serde_json::to_value(&s.project).unwrap(), after);
+    assert_eq!(serde_json::to_value(&*s.project).unwrap(), after);
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn close_gap_without_a_selected_gap_closes_every_gap_in_one_undo_step() {
     let rate = s.sequence_rate();
     let at = |f: i64| rate.tick_of(f);
     let (zero, f48, f96) = (Tick::ZERO, at(48), at(96));
-    let before = serde_json::to_value(&s.project).unwrap();
+    let before = serde_json::to_value(&*s.project).unwrap();
     let undo = s.history.undo.len();
     let r = s.execute("sequence.closeGap", json!({})).unwrap();
     assert_eq!(r["gaps"], json!(3), "the leading gap and the two between the clips: {r}");
@@ -265,7 +265,7 @@ fn close_gap_without_a_selected_gap_closes_every_gap_in_one_undo_step() {
     }
     assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
     s.undo();
-    assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+    assert_eq!(serde_json::to_value(&*s.project).unwrap(), before);
 }
 
 /// With In and Out set, only the gaps that lie between them close.

@@ -111,7 +111,7 @@ fn a_project_saved_after_an_interchange_import_opens_again() {
     assert_eq!(motion_point(&first_clip(&t, seq), "position"), Vec2::new(960.0, 540.0));
     // without a link step the import is one undo step
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     s.execute("edit.redo", json!({})).unwrap();
     assert_eq!(auto_points(&s.project), ["motion.anchor"]);
     let _ = std::fs::remove_dir_all(&d);
@@ -139,7 +139,7 @@ fn a_linked_clip_gets_its_anchor_from_the_real_size_of_the_media() {
     s.execute("file.saveAs", json!({"path": path})).unwrap();
     let mut t = Session::default();
     t.execute("file.open", json!({"path": path})).unwrap();
-    assert_eq!(*t.project, *s.project);
+    assert_eq!(**t.project, **s.project);
     // undo: Link Media takes the real size and the anchor back together, then the import itself
     let linked = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
@@ -147,10 +147,10 @@ fn a_linked_clip_gets_its_anchor_from_the_real_size_of_the_media() {
     assert_eq!(s.project.source_size(clip.item), Some((3840, 2160)), "the size the document declared");
     assert!(motion_point(&clip, "anchor").x.is_nan());
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     s.execute("edit.redo", json!({})).unwrap();
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *linked);
+    assert_eq!(**s.project, *linked);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -207,7 +207,7 @@ fn relinking_later_resolves_the_anchor_that_waited_for_the_real_size() {
     assert_eq!(filmcraft_format::encode(&t.project, false), filmcraft_format::encode(&waiting, false));
     assert_eq!(auto_points(&t.project), ["motion.anchor"]);
     t.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*t.project, *linked);
+    assert_eq!(**t.project, *linked);
     // an anchor that is already a number is not touched by a later relink to another size
     std::fs::create_dir_all(d.join("other")).unwrap();
     let other = d.join("other/shot.mov");

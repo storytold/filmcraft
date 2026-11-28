@@ -102,7 +102,7 @@ fn the_preview_changes_nothing_and_makes_no_undo_step() {
         preview(&mut s, v, frames);
         preview(&mut s, a, frames);
     }
-    assert_eq!(*s.project, *before);
+    assert_eq!(*s.project, before);
     assert_eq!(s.history.undo.len(), undo);
     assert_eq!(s.revision, revision);
 }

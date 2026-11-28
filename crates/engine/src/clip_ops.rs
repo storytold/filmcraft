@@ -36,7 +36,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut, alt_shortcuts: &[], params, enabled, run, journal: true }
 }
 
 macro_rules! label_cmd {
@@ -46,11 +46,11 @@ macro_rules! label_cmd {
             label: $name,
             menu: &["Edit", "Label"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"items":[id]?,"clips":[id]?}"#,
             enabled: can_label,
             run: |s, p| apply_label(s, p, $l),
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         }
     };
 }
@@ -65,8 +65,8 @@ mod subclip;
 mod video_options;
 
 use audio_options::{breakout_to_mono, extract_audio};
-pub use common::{SourceView, source_view};
-pub(crate) use common::{collapse_history, collect_ids};
+pub(crate) use common::collect_ids;
+pub use common::{SourceView, collapse_history, source_view};
 pub use edit_menu::is_attribute_effect;
 use edit_menu::{apply_label, consolidate_duplicates, paste_attributes, remove_attributes, remove_unused, select_all_matching, select_label_group};
 use enabled::{

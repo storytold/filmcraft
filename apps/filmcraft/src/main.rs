@@ -7,9 +7,9 @@
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
 //! (the demo project), Open Most Recent, or an empty project.
 //!
-//! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
-//! `FILMCRAFT_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
-//! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
+//! The Craft Link socket is always on. `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) also
+//! binds loopback TCP; `FILMCRAFT_CONTROL_TOKEN` is required for it (see `docs/control-protocol.md`).
+//! See `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
 //! either source.
 //!
 //! Auto-save and the crash-recovery journal run in every session (data in `--data-dir`, else
@@ -503,8 +503,8 @@ fn app_creator(
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone()));
-        if control_input_only && let Some((_, _, Some(why))) = &control {
+        let control = control_server::start_with(None, control_port, cc.egui_ctx.clone());
+        if control_input_only && let Some(why) = &control.tcp_disabled {
             return Err(Box::new(control_server::ControlServerRequired(why.reason())));
         }
         // A fallback graphics mode says so in the window, with a button back to the default.
@@ -522,6 +522,7 @@ fn app_creator(
             }),
         );
         let mut session = Session::default();
+        filmcraft_link::commands::install(&mut session);
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);
             cfg.local_offset = local_offset;
@@ -647,6 +648,10 @@ fn app_creator(
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+        app.hooks.per_frame = Some(Box::new(move |ctx, session| {
+            filmcraft_link::ui::show_translated(ctx, session, &|text| filmcraft_ui_egui::i18n::t(text).to_string());
+        }));
+        app.hooks.dialog_label = Some(Box::new(filmcraft_link::prompt::dialog_name));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         app.hooks.clipboard_text = Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok()));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
@@ -681,27 +686,27 @@ fn app_creator(
             app.hooks.menu_changed = Some(update);
             app.ui.show_menu_bar = false;
         }
-        if let Some((rx, ready, disabled)) = control {
-            // A listener that never came up is reported where a user or agent will see it:
-            // the status bar and `ui.inspect` → `control` (#3313).
-            if let Some(port) = control_port {
-                app.control_status = Some(filmcraft_ui_egui::ControlStatus { port, error: disabled.as_ref().map(control_server::DisabledWhy::reason) });
-            }
-            app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
-            // Each cause is shown in the app as a fully translated sentence (the English
-            // `reason()` stays for the log and the input-only error).
-            match &disabled {
-                Some(control_server::DisabledWhy::Token) => {
-                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
-                }
-                Some(control_server::DisabledWhy::Bind { port, error }) => {
-                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Bind { port: *port, error: error.clone() });
-                }
-                None => {}
-            }
-            // From here the app drains the queue on its first pass: stop rejecting requests.
-            ready.store(true, Ordering::Relaxed);
+        app.hooks.on_exit = Some(Box::new(|| control_server::emit("app.closing", json!({}))));
+        let control_server::Started { requests, ready, tcp_disabled } = control;
+        // A listener that never came up is reported where a user or agent will see it:
+        // the status bar and `ui.inspect` -> `control` (#3313).
+        if let Some(port) = control_port {
+            app.control_status = Some(filmcraft_ui_egui::ControlStatus { port, error: tcp_disabled.as_ref().map(control_server::DisabledWhy::reason) });
         }
+        app = if control_port.is_some() && control_input_only { app.with_control_input_only(requests) } else { app.with_control(requests) };
+        // Each cause is shown in the app as a fully translated sentence (the English
+        // `reason()` stays for the log and the input-only error).
+        match &tcp_disabled {
+            Some(control_server::DisabledWhy::Token) => {
+                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+            }
+            Some(control_server::DisabledWhy::Bind { port, error }) => {
+                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Bind { port: *port, error: error.clone() });
+            }
+            None => {}
+        }
+        // From here the app drains the queue on its first pass: stop rejecting requests.
+        ready.store(true, Ordering::Relaxed);
         Ok(Box::new(app))
     })
 }

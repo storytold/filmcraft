@@ -61,9 +61,9 @@ fn ripple_delete_of_a_j_cut_clip_closes_one_gap() {
     assert_eq!(at, Some(f72), "a later marker moves up once, by the same amount");
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step restores it");
+    assert_eq!(**s.project, *before, "one undo step restores it");
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after);
+    assert_eq!(**s.project, *after);
 }
 
 /// The second clip's sound runs 12 frames under the next picture (an L cut).
@@ -190,9 +190,9 @@ fn ripple_delete_shifts_sync_locked_caption_tracks_and_restores_on_undo() {
 
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step restores caption track completely");
+    assert_eq!(**s.project, *before, "one undo step restores caption track completely");
 
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after, "redo restores rippled captions");
+    assert_eq!(**s.project, *after, "redo restores rippled captions");
     std::fs::remove_dir_all(dir).unwrap();
 }

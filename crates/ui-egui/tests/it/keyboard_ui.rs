@@ -53,7 +53,7 @@ fn rejected_pointer_counts_leave_the_ui_usable() {
         let response = reply.try_recv().expect("invalid counts must be answered without queuing input");
         assert_eq!(response["ok"], false, "{response}");
         assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
-        assert_eq!(*d.app().session.project, *project);
+        assert_eq!(**d.app().session.project, *project);
     }
     d.ok("ui.click", json!({"id": "tools.Razor", "count": null}));
     d.frames(3);
@@ -61,7 +61,7 @@ fn rejected_pointer_counts_leave_the_ui_usable() {
     d.ok("ui.click", json!({"id": "tools.Selection", "count": 2}));
     d.frames(3);
     assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
-    assert_eq!(*d.app().session.project, *project);
+    assert_eq!(**d.app().session.project, *project);
 }
 
 /// Ids added for keyboard parity (engine + UI).
@@ -396,7 +396,7 @@ fn alt_click_isolates_already_selected_linked_clip_before_delete() {
         assert!(q.find_item(selected).is_none());
         assert!(q.find_item(partner).is_some(), "Delete keeps the unselected linked partner");
         d.key("Cmd+Z");
-        assert_eq!(*d.app().session.project, *before, "one undo restores both sides");
+        assert_eq!(**d.app().session.project, *before, "one undo restores both sides");
     }
 }
 
@@ -420,6 +420,6 @@ fn shift_alt_click_toggles_only_the_clicked_linked_side() {
         d.frames(3);
         assert_eq!(d.app().session.state.selection, vec![partner, clicked], "Shift+Alt adds that side back");
         assert!(d.app().session.state.linked_selection);
-        assert_eq!(*d.app().session.project, *before, "selection does not edit the document");
+        assert_eq!(**d.app().session.project, *before, "selection does not edit the document");
     }
 }

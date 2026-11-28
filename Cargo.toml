@@ -43,6 +43,7 @@ filmcraft-scopes = { path = "crates/scopes" }
 filmcraft-export = { path = "crates/export" }
 filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }
+filmcraft-link = { path = "crates/link" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
 filmcraft-platform = { path = "crates/platform" }
@@ -111,6 +112,11 @@ egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "a4db799563c9ccd7217e1731ec34c58f6ba57248", features = ["ui"] }
 rfd = "0.17"
+# Craft Link. These two crates are in craft-libs pull requests that are still open: craft-command
+# (#431) and craft-ipc (#433). They are independent crates, so each pins its own PR head. Move both
+# to the merged commit.
+craft-command = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "81669a0c5c656207abf6df59ea2f93dcca328e24" }
+craft-ipc = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "a346c50303129490218ffc2e8f7e646435bd8efe" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
