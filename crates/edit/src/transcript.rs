@@ -359,6 +359,18 @@ pub struct CaptionBlock {
     pub words: std::ops::Range<usize>,
 }
 
+/// Where a caption block `a..i` that is full should end instead of before word `i`: after the last
+/// word in it that ends a sentence, else a clause (`,` `;` `:`), when the words before take at
+/// least a third of the block's `cap_chars`. None: no such word (the block ends before `i`).
+/// The break is always after `a`, so the caller makes progress.
+fn punctuation_break(words: &[SeqWord], a: usize, i: usize, cap_chars: usize) -> Option<usize> {
+    let block = words.get(a..i)?;
+    let chars_before = |k: usize| block.iter().take(k - a).map(|w| w.text.chars().count() + 1).sum::<usize>();
+    // through the block's last word: "Done now. Go." breaks after "Go." when the next word overflows
+    let after = |marks: &[char]| (a + 1..=i).rev().find(|&k| words.get(k - 1).is_some_and(|w| w.text.ends_with(marks)) && chars_before(k) * 3 >= cap_chars);
+    after(&['.', '?', '!', '…']).or_else(|| after(&[',', ';', ':']))
+}
+
 /// Lay words out as caption blocks: words fill lines of at most `max_chars` (a longer single word
 /// gets a line of its own) and blocks of `lines` lines; a new block starts at a speaker change,
 /// at a pause of `break_pause`, after `max_duration`, or after sentence-ending punctuation once the
@@ -371,7 +383,8 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
     let mut a = 0;
     let mut lines: Vec<usize> = vec![0];
-    for i in 0..words.len() {
+    let mut i = 0;
+    while i < words.len() {
         let w = &words[i];
         let len = w.text.chars().count();
         if i > a {
@@ -381,12 +394,23 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             let fits = fits_line || lines.len() < max_lines;
             let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
             let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
+            // a full block ends where the speech pauses in the text if it can: after the last
+            // sentence in it, else after the last clause, once a third of it is filled, so a
+            // caption does not stop on "… a little" and leave "video" for the next one
+            if !fits && let Some(k) = punctuation_break(words, a, i, cap_chars) {
+                groups.push(a..k);
+                a = k;
+                i = k;
+                lines = vec![0];
+                continue;
+            }
             let brk =
                 !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
             if brk {
                 groups.push(a..i);
                 a = i;
                 lines = vec![len];
+                i += 1;
                 continue;
             }
             if fits_line {
@@ -399,6 +423,7 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
         } else {
             lines = vec![len];
         }
+        i += 1;
     }
     if a < words.len() {
         groups.push(a..words.len());

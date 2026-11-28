@@ -128,6 +128,25 @@ fn remove_fillers_pauses_and_create_captions() {
     q.check().unwrap();
 }
 
+/// Captions made from a French transcript are a French caption track (subtitle files and video
+/// platforms read the track's language); they used to be marked English whatever was spoken.
+#[test]
+fn captions_take_the_language_of_the_transcript() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+    let mut t = (*s.project.transcripts[&item]).clone();
+    t.language = "fr".into();
+    s.execute("transcript.set", json!({"item": item.0, "transcript": t})).unwrap();
+    s.execute("transcript.createCaptions", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].language, "fr");
+    // a language tag that is not one leaves the default
+    let mut t = (*s.project.transcripts[&item]).clone();
+    t.language = "fr\n<script>".into();
+    s.execute("transcript.set", json!({"item": item.0, "transcript": t})).unwrap();
+    s.execute("transcript.createCaptions", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].language, "en");
+}
+
 #[test]
 fn set_delete_and_models() {
     let (mut s, item, _) = session();
@@ -178,4 +197,63 @@ fn generate_without_a_transcriber() {
     assert!(s.is_enabled("sequence.transcribe"), "an installed recogniser enables Transcribe Sequence");
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
+}
+
+/// Caption-track languages are well-formed BCP 47 tags: private-use and region subtags pass,
+/// malformed ones are refused (the track then keeps its default).
+#[test]
+fn caption_languages_are_well_formed_tags() {
+    use crate::transcript::valid_language_tag as ok;
+    for good in [
+        "fr",
+        "en",
+        "pt-BR",
+        "zh-Hant-TW",
+        "fr-Latn-FR-x-test",
+        "es-419",
+        "de-CH-1996",
+        "fr-x-a",
+        "en-a-bbb-x-a-ccc",
+        "fr-FR",
+        "zh-yue-HK",
+        "sl-rozaj-biske",
+        "x-whatever",
+        "en-US-u-islamcal",
+    ] {
+        assert!(ok(good), "{good}");
+    }
+    for bad in [
+        "",
+        "f",
+        "123",
+        "fr-x",
+        "fr--FR",
+        "fr-",
+        "-fr",
+        "fr_FR",
+        "fr-a-b",
+        "fr-FR-FR",
+        "fr-Latn-FR-Latn",
+        "fr-419-FR",
+        "en-u",
+        "en-x",
+        "en-a-x-y",
+        "fr\n<script>",
+        "abcdefghi",
+        "fr-abcdefghi",
+        &"a-".repeat(40),
+    ] {
+        assert!(!ok(bad), "{bad:?}");
+    }
+}
+
+/// Tags that differ only in case are one language: three "fr" and three "FR" words outvote four
+/// "en" ones.
+#[test]
+fn caption_language_counts_tags_case_insensitively() {
+    use crate::transcript::majority_language;
+    let tags = ["fr", "fr", "fr", "FR", "FR", "FR", "en", "en", "en", "en"];
+    assert_eq!(majority_language(tags.into_iter()).as_deref(), Some("fr"));
+    assert_eq!(majority_language(["en", "x!"].into_iter()).as_deref(), Some("en"));
+    assert_eq!(majority_language(std::iter::empty()), None);
 }
