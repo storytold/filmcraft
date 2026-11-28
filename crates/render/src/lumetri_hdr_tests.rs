@@ -181,3 +181,40 @@ fn hsl_refine_blur_softens_the_key() {
     let speck = img.get(3, 3);
     assert!(speck[0] > speck[1], "speckle left alone after denoise: {speck:?}");
 }
+
+/// #5204: a key limit at the end of its range includes that end. Saturation Min 0 keys greys,
+/// Luma Min 0 keys black and the darkest greys fully, and Luma Max 100 keys white; a limit inside
+/// the range still leaves the other side out.
+#[test]
+fn hsl_key_limits_at_the_range_ends_include_the_ends() {
+    // greys (hue 0, saturation 0) at these display levels
+    let levels = [0.0f32, 0.02, 0.05, 0.10, 0.5, 0.98, 1.0];
+    let key = |sat_min: f64, luma_min: f64, luma_max: f64| {
+        let mut img = Image::new(levels.len(), 1);
+        for (i, v) in levels.iter().enumerate() {
+            let l = filmcraft_color::srgb_to_linear(*v);
+            img.px[i * 4..i * 4 + 4].copy_from_slice(&[l, l, l, 1.0]);
+        }
+        let e = lumetri(&[
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", F(0.0)),
+            ("hsl_sat_min", F(sat_min)),
+            ("hsl_luma_min", F(luma_min)),
+            ("hsl_luma_max", F(luma_max)),
+            ("hsl_show_mask", ParamValue::Choice(3)),
+        ]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+        (0..levels.len()).map(|i| filmcraft_color::linear_to_srgb(img.get(i, 0)[1])).collect::<Vec<f32>>()
+    };
+    // the darks: black and the darkest greys are in, mid grey is out
+    let dark = key(0.0, 0.0, 20.0);
+    assert!(dark[..4].iter().all(|m| *m > 0.99), "black and dark greys keyed: {dark:?}");
+    assert!(dark[4] < 0.01, "mid grey out: {dark:?}");
+    // the lights: white and near white are in
+    let light = key(0.0, 80.0, 100.0);
+    assert!(light[5] > 0.99 && light[6] > 0.99 && light[4] < 0.01, "white keyed, mid grey out: {light:?}");
+    // limits inside the range still exclude: a Saturation Min above 0 leaves greys out, a Luma
+    // Min above 0 leaves black out
+    assert!(key(10.0, 0.0, 20.0).iter().all(|m| *m < 0.01), "greys out above Saturation Min 0");
+    assert!(key(0.0, 5.0, 20.0)[0] < 0.01, "black out above Luma Min 0");
+}
