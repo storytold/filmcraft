@@ -497,6 +497,12 @@ pub struct UiState {
     /// The window was already fullscreen before cinema mode started.
     #[serde(skip)]
     pub cinema_was_fullscreen: bool,
+    /// The window full screen the app last asked for. The toggle flips this instead of the
+    /// windowing system's report, which on Wayland only follows the compositor's last
+    /// configure and can lag behind, or never reflect, a state the app itself requested
+    /// (#4933).
+    #[serde(skip)]
+    pub window_fullscreen: bool,
     /// The panel that had focus before cinema mode started.
     #[serde(skip)]
     pub cinema_prev_focus: Option<PanelKind>,
@@ -1087,6 +1093,7 @@ impl Default for UiState {
             media_browser: Default::default(),
             fullscreen_program: false,
             cinema_was_fullscreen: false,
+            window_fullscreen: false,
             cinema_prev_focus: None,
         }
     }
