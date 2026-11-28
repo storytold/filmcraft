@@ -306,6 +306,11 @@ fn set_controls(s: &mut Session, clip: ClipId, values: &serde_json::Map<String, 
             }
         }
         set_props(s, clip, ei, &props, tl, "Change Template Property", None)?;
+        // a control that renames a layer hands the sync the same target `graphics.set` hands it
+        // (#5120), so the other instances of a source graphic follow the name too
+        if props.contains_key("name") {
+            s.graphic_rename_targets.push((clip, c.layer));
+        }
         n += 1;
     }
     Ok(n)
@@ -1011,9 +1016,28 @@ fn upgrade_to_source(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"clip": clip.0, "item": item.0}))
 }
 
+/// The name a renamed layer gives its clip: the layer `uid` of `clip`, when that clip is an instance
+/// of the source graphic `item` (#5120).
+fn renamed_layer_name(p: &Project, item: ItemId, clip: ClipId, uid: u64) -> Option<String> {
+    if uid == 0 {
+        return None;
+    }
+    let it = p.sequences().find_map(|q| match &q.kind {
+        ItemKind::Sequence(sq) => sq.find_item(clip).map(|(_, t)| t),
+        _ => None,
+    })?;
+    if it.item != item {
+        return None;
+    }
+    let layers = layer_indices(&it.effects);
+    let l = layers.iter().position(|&ei| layer_uid(&it.effects[ei]) == uid)?;
+    Some(layer_display_name(&it.effects[layers[l]], l))
+}
+
 /// After a `graphics.*` command: copy an edited instance of a source graphic to the shared
-/// layers and every other instance (in the same undo step).
-pub fn sync_source_graphics(s: &mut Session) {
+/// layers and every other instance (in the same undo step). The layers the command renamed
+/// (`graphic_rename_targets`) name the clips of their own graphic and no other (#5120).
+pub fn sync_source_graphics(s: &mut Session, renamed_targets: &[(ClipId, u64)]) {
     if s.project.source_graphics.is_empty() {
         return;
     }
@@ -1022,6 +1046,10 @@ pub fn sync_source_graphics(s: &mut Session) {
     for item in items {
         let master = p.source_graphics[&item].clone();
         let layers_of = |t: &TrackItem| t.effects.iter().filter(|e| graphic::is_layer(e)).cloned().collect::<Vec<_>>();
+        // the name the clips of this graphic get, from the layer the command renamed in one of its
+        // instances: read before the layers are copied over, and nothing is guessed from the diff.
+        // Back to front, so the last rename wins when one call renamed several layers (docs/graphics.md)
+        let renamed = renamed_targets.iter().rev().find_map(|&(clip, uid)| renamed_layer_name(p, item, clip, uid));
         // the first instance that differs from the master is the edited one
         let mut changed: Option<SourceGraphic> = None;
         for q in p.sequences() {
@@ -1052,6 +1080,9 @@ pub fn sync_source_graphics(s: &mut Session) {
                             fx.insert(at + k, l.clone());
                         }
                         t.effects = fx;
+                        if let Some(name) = &renamed {
+                            t.name = name.clone();
+                        }
                         t.graphic = new.meta.clone().map(Box::new);
                     }
                 }

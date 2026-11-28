@@ -589,6 +589,242 @@ fn source_graphics_share_edits() {
     assert_ne!(item(&s, c3).item.0, item_id);
 }
 
+/// #5120: an edit to one instance of a source graphic goes to every instance of it, and that
+/// includes the clip name a layer rename gives them.
+#[test]
+fn renaming_a_layer_renames_every_instance_of_a_source_graphic() {
+    let mut s = demo("gt-source-rename");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": c.0})).unwrap()["item"].as_u64().unwrap();
+    let v1 = s.active_sequence().unwrap().find_item(c).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v1.0, "time": Tick::from_seconds_f64(700.0).0})).unwrap();
+    let c2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.item.0 == item_id && i.id != c).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Shared".to_string(), "Shared".to_string()));
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"name": "Renamed"}})).unwrap();
+    assert_eq!(name(&s, c), "Renamed", "the edited instance is renamed");
+    assert_eq!(name(&s, c2), "Renamed", "and so is every other instance of the graphic");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Shared".to_string(), "Shared".to_string()), "undo renames both back");
+}
+
+/// #5120: only a layer rename renames the clips of a source graphic. Any other layer edit (a fill, a
+/// move) leaves the names the instances were given with `clip.rename` alone.
+#[test]
+fn editing_a_source_graphic_without_renaming_keeps_each_instance_s_name() {
+    let mut s = demo("gt-source-rename-no");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": c.0})).unwrap()["item"].as_u64().unwrap();
+    let v1 = s.active_sequence().unwrap().find_item(c).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v1.0, "time": Tick::from_seconds_f64(700.0).0})).unwrap();
+    let c2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.item.0 == item_id && i.id != c).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    s.execute("clip.rename", json!({"clip": c.0, "name": "Instance A"})).unwrap();
+    s.execute("clip.rename", json!({"clip": c2.0, "name": "Instance B"})).unwrap();
+    // edits that are not a rename: the fill, then a move of the layer
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"fill_color": "#ffcc00"}})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Instance A".to_string(), "Instance B".to_string()), "a fill keeps each instance's own name");
+    s.execute("graphics.moveLayers", json!({"clip": c.0, "layers": [0], "delta": [10, 5]})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Instance A".to_string(), "Instance B".to_string()), "a move keeps each instance's own name");
+    // renaming a layer is the one edit that renames every instance
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"name": "Title"}})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Title".to_string(), "Title".to_string()), "a rename renames both");
+}
+
+/// #5120: only a genuine layer rename renames the clips of a source graphic. Typing new text,
+/// adding, deleting or reordering layers must leave the names the instances were given with
+/// `clip.rename` alone, also when the visible name follows the text.
+#[test]
+fn typing_text_or_editing_layers_in_a_source_graphic_keeps_each_instance_s_name() {
+    let mut s = demo("gt-source-rename-text");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": c.0})).unwrap()["item"].as_u64().unwrap();
+    let v1 = s.active_sequence().unwrap().find_item(c).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v1.0, "time": Tick::from_seconds_f64(700.0).0})).unwrap();
+    let c2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.item.0 == item_id && i.id != c).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    s.execute("clip.rename", json!({"clip": c.0, "name": "Instance A"})).unwrap();
+    s.execute("clip.rename", json!({"clip": c2.0, "name": "Instance B"})).unwrap();
+    let kept = |s: &Session, what: &str| {
+        let got = (name(s, c), name(s, c2));
+        assert_eq!(got, ("Instance A".to_string(), "Instance B".to_string()), "{what} keeps each instance's own name");
+    };
+
+    // (a) typing text: with no Layer Name set, the visible name becomes the text
+    s.execute("graphics.setText", json!({"clip": c.0, "text": "Typed"})).unwrap();
+    kept(&s, "typing text");
+    // (b) adding a layer
+    s.execute("graphics.newText", json!({"text": "Second", "clip": c.0})).unwrap();
+    kept(&s, "adding a layer");
+    // (c) reordering two layers: the order really changes (back to front) and the names stay
+    let texts = |s: &mut Session| -> Vec<String> {
+        let list = s.execute("graphics.list", json!({"clip": c.0})).unwrap();
+        list["layers"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap_or_default().to_string()).collect()
+    };
+    assert_eq!(texts(&mut s), ["Typed", "Second"], "the new layer goes on top");
+    s.execute("graphics.arrangeLayer", json!({"clip": c.0, "layer": 0, "to": "front"})).unwrap();
+    assert_eq!(texts(&mut s), ["Second", "Typed"], "the back layer really moved to the front");
+    kept(&s, "reordering layers");
+    // (d) deleting the layer on top
+    s.execute("graphics.deleteLayer", json!({"clip": c.0, "layer": 0})).unwrap();
+    kept(&s, "deleting a layer");
+    // renaming a layer is the one edit that renames every instance
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"name": "Title"}})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Title".to_string(), "Title".to_string()), "a rename renames both");
+}
+
+/// #5120: the name a rename gives the clips comes from the renamed layer, not from whichever
+/// instance happens to differ from the shared layer set. Here one instance keeps a stale layer name
+/// (its rename came through `effects.setParam`, which does not sync source graphics) and a new clip
+/// name; editing the other instance's fill must not copy that stale clip name anywhere.
+#[test]
+fn a_stale_instance_does_not_lend_its_clip_name_to_the_others() {
+    let mut s = demo("gt-source-stale");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": c.0})).unwrap()["item"].as_u64().unwrap();
+    let v1 = s.active_sequence().unwrap().find_item(c).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v1.0, "time": Tick::from_seconds_f64(700.0).0})).unwrap();
+    let c2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.item.0 == item_id && i.id != c).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    s.execute("clip.rename", json!({"clip": c.0, "name": "Instance A"})).unwrap();
+    s.execute("clip.rename", json!({"clip": c2.0, "name": "Instance B"})).unwrap();
+    // B's layer name changes through Effect Controls, which does not reach the shared layers
+    let layer = |s: &Session, cl: ClipId| -> usize { item(s, cl).effects.iter().position(|e| e.effect == "graphic_text").unwrap() };
+    let b_layer = layer(&s, c2);
+    s.execute("effects.setParam", json!({"clip": c2.0, "effect": b_layer, "param": "name", "value": "Layer of B"})).unwrap();
+    assert_eq!(name(&s, c2), "Layer of B", "the instance edited through Effect Controls takes its layer's name");
+    assert_eq!(name(&s, c), "Instance A", "and the other instance is left alone, as the layers are");
+    s.execute("clip.rename", json!({"clip": c2.0, "name": "X"})).unwrap();
+    // an edit that is not a rename, on the other instance
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"fill_color": "#ffcc00"}})).unwrap();
+    assert_eq!(name(&s, c), "Instance A", "the edited instance keeps its own name: this was not a rename");
+    assert_eq!(name(&s, c2), "X", "and the stale instance keeps the name it was given");
+    // the shared layers lost B's stale layer name, so a later rename is the only thing that
+    // changes the clips' names again
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"name": "Title"}})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Title".to_string(), "Title".to_string()));
+}
+
+/// #5120: a Layer Name equal to the text still counts as a rename: the raw parameter went from ""
+/// to "Shared", so the clips of the graphic take that name.
+#[test]
+fn a_layer_name_equal_to_the_text_still_counts_as_a_rename() {
+    let mut s = demo("gt-source-same-name");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": c.0})).unwrap()["item"].as_u64().unwrap();
+    let v1 = s.active_sequence().unwrap().find_item(c).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v1.0, "time": Tick::from_seconds_f64(700.0).0})).unwrap();
+    let c2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.item.0 == item_id && i.id != c).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    s.execute("clip.rename", json!({"clip": c2.0, "name": "Instance B"})).unwrap();
+    s.execute("graphics.set", json!({"clip": c.0, "layer": 0, "props": {"name": "Shared"}})).unwrap();
+    assert_eq!((name(&s, c), name(&s, c2)), ("Shared".to_string(), "Shared".to_string()), "the rename reaches both, though it reads like the text");
+}
+
+/// #5120: renaming a layer of one source graphic names the clips of that graphic, and no other: a
+/// pending layer name another graphic got through Effect Controls is not a rename for it.
+#[test]
+fn two_source_graphics_do_not_lend_names_to_each_other() {
+    let mut s = demo("gt-source-two");
+    let a = clip_of(&s.execute("graphics.newText", json!({"text": "A text"})).unwrap());
+    s.execute("graphics.upgradeToSourceGraphic", json!({"clip": a.0})).unwrap();
+    let b = clip_of(&s.execute("graphics.newText", json!({"text": "B text", "seconds": 1, "time": Tick::from_seconds_f64(800.0).0})).unwrap());
+    s.execute("graphics.upgradeToSourceGraphic", json!({"clip": b.0})).unwrap();
+    // B keeps a layer name from Effect Controls (which does not sync) and its own clip name
+    let b_layer = item(&s, b).effects.iter().position(|e| e.effect == "graphic_text").unwrap();
+    s.execute("effects.setParam", json!({"clip": b.0, "effect": b_layer, "param": "name", "value": "Layer of B"})).unwrap();
+    s.execute("clip.rename", json!({"clip": b.0, "name": "Bee"})).unwrap();
+    // renaming a layer of A must not touch B
+    s.execute("graphics.set", json!({"clip": a.0, "layer": 0, "props": {"name": "Alpha"}})).unwrap();
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    assert_eq!(name(&s, a), "Alpha", "A's layer renamed its clip");
+    assert_eq!(name(&s, b), "Bee", "B's clip keeps its own name");
+}
+
+/// #5120: with several layers, the clip takes the name of the layer that was renamed, not of a layer
+/// that still holds a pending name from Effect Controls.
+#[test]
+fn the_renamed_layer_is_the_one_that_names_the_clip() {
+    let mut s = demo("gt-source-layers");
+    let clip = clip_of(&s.execute("graphics.newText", json!({"text": "First"})).unwrap());
+    s.execute("graphics.upgradeToSourceGraphic", json!({"clip": clip.0})).unwrap();
+    s.execute("graphics.newText", json!({"text": "Second", "clip": clip.0})).unwrap();
+    let text_layers: Vec<usize> = item(&s, clip).effects.iter().enumerate().filter(|(_, e)| e.effect == "graphic_text").map(|(i, _)| i).collect();
+    assert_eq!(text_layers.len(), 2);
+    // the back layer gets a name through Effect Controls, which does not sync
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": text_layers[0], "param": "name", "value": "Earlier"})).unwrap();
+    // the front one is renamed for real
+    s.execute("graphics.set", json!({"clip": clip.0, "layer": 1, "props": {"name": "Latest"}})).unwrap();
+    assert_eq!(item(&s, clip).name, "Latest", "the clip takes the name of the layer that was renamed");
+}
+
+/// #5120: the instance the command edited names the clips of its graphic, wherever the scan finds
+/// the pending differences.
+#[test]
+fn the_edited_instance_names_the_clip() {
+    let mut s = demo("gt-source-instance");
+    let a = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": a.0})).unwrap()["item"].as_u64().unwrap();
+    let v1 = s.active_sequence().unwrap().find_item(a).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v1.0, "time": Tick::from_seconds_f64(700.0).0})).unwrap();
+    let b = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.item.0 == item_id && i.id != a).unwrap().id;
+    // B's layer name comes from Effect Controls and stays pending
+    let b_layer = item(&s, b).effects.iter().position(|e| e.effect == "graphic_text").unwrap();
+    s.execute("effects.setParam", json!({"clip": b.0, "effect": b_layer, "param": "name", "value": "Earlier"})).unwrap();
+    // A's layer is renamed for real
+    s.execute("graphics.set", json!({"clip": a.0, "layer": 0, "props": {"name": "Latest"}})).unwrap();
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    assert_eq!((name(&s, a), name(&s, b)), ("Latest".to_string(), "Latest".to_string()), "both instances take the name of the layer A renamed");
+}
+
+/// #5120: a template control whose parameter is the Layer Name renames the layer through
+/// `graphics.template.set`, so the other instances of its source graphic take the name too.
+#[test]
+fn a_template_control_that_renames_a_layer_renames_every_instance() {
+    let mut s = demo("gt-template-rename");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    s.execute("graphics.template.export", json!({"clip": c.0, "name": "Rename Template", "controls": [{"layer": 0, "param": "name", "name": "Title"}]}))
+        .unwrap();
+    let t = clip_of(&s.execute("graphics.template.apply", json!({"template": "Rename Template"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": t.0})).unwrap()["item"].as_u64().unwrap();
+    let v = s.active_sequence().unwrap().find_item(t).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v.0, "time": Tick::from_seconds_f64(800.0).0})).unwrap();
+    let t2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|track| &track.items).find(|i| i.item.0 == item_id && i.id != t).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    // the control renames the layer, and the other instance follows
+    s.execute("graphics.template.set", json!({"clip": t.0, "control": "Title", "value": "Renamed"})).unwrap();
+    assert_eq!(name(&s, t), "Renamed", "the edited instance takes the layer's name");
+    assert_eq!(name(&s, t2), "Renamed", "the other instance of the source graphic follows");
+}
+
+/// #5120: when one call renames several layers, the last rename wins, as docs/graphics.md says. The
+/// values map is a `serde_json::Map`, a `BTreeMap` without the `preserve_order` feature, so the
+/// controls are applied in key order: "A Title" first, "Z Title" last.
+#[test]
+fn the_last_layer_rename_of_one_call_names_the_clip() {
+    let mut s = demo("gt-template-two-names");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
+    s.execute("graphics.newText", json!({"text": "Second", "clip": c.0})).unwrap();
+    s.execute(
+        "graphics.template.export",
+        json!({"clip": c.0, "name": "Two Names Template", "controls": [
+            {"layer": 0, "param": "name", "name": "A Title"},
+            {"layer": 1, "param": "name", "name": "Z Title"},
+        ]}),
+    )
+    .unwrap();
+    let t = clip_of(&s.execute("graphics.template.apply", json!({"template": "Two Names Template"})).unwrap());
+    let item_id = s.execute("graphics.upgradeToSourceGraphic", json!({"clip": t.0})).unwrap()["item"].as_u64().unwrap();
+    let v = s.active_sequence().unwrap().find_item(t).unwrap().0;
+    s.execute("timeline.place", json!({"item": item_id, "track": v.0, "time": Tick::from_seconds_f64(800.0).0})).unwrap();
+    let t2 = s.active_sequence().unwrap().video_tracks.iter().flat_map(|track| &track.items).find(|i| i.item.0 == item_id && i.id != t).unwrap().id;
+    let name = |s: &Session, cl: ClipId| item(s, cl).name.clone();
+    // one call renaming both layers: the second one applied is the one that names the clips
+    s.execute("graphics.template.set", json!({"clip": t.0, "values": {"A Title": "Alpha", "Z Title": "Zed"}})).unwrap();
+    assert_eq!(name(&s, t), "Zed", "the last renamed layer names the clip");
+    assert_eq!(name(&s, t2), "Zed", "and every instance of the graphic follows");
+}
+
 #[test]
 fn replace_fonts_in_project() {
     let mut s = demo("gt-fonts");

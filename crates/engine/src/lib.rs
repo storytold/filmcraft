@@ -599,6 +599,10 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    /// The layers the command just renamed, with their clip and layer uid: the source-graphic sync
+    /// names the clips of those layers' graphics and no other (#5120). Transient, never saved with
+    /// the project; the sync clears it.
+    pub graphic_rename_targets: Vec<(ClipId, u64)>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -694,6 +698,7 @@ impl Session {
             command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
+            graphic_rename_targets: Vec::new(),
         }
     }
 
@@ -891,9 +896,13 @@ impl Session {
         if self.exec_depth == 0 {
             source_monitor::track_history(self);
         }
-        // source graphics: an edited instance updates the shared layers and the other instances
-        if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
-            graphic_templates::sync_source_graphics(self);
+        // source graphics: an edited instance updates the shared layers and the other instances.
+        // The layers a command renamed are handed over, not guessed from the layer diff (#5120)
+        if journal && id.starts_with("graphics.") {
+            let renamed = std::mem::take(&mut self.graphic_rename_targets);
+            if r.is_ok() && !self.project.source_graphics.is_empty() {
+                graphic_templates::sync_source_graphics(self, &renamed);
+            }
         }
         if r.is_ok()
             && let Some(before) = transcription_before
