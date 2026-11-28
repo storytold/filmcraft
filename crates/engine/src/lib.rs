@@ -25,6 +25,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+pub mod link_sync;
 mod marker_edit;
 mod marker_export;
 pub mod masks;
@@ -1454,6 +1455,8 @@ mod interchange_auto_points_tests;
 mod interchange_bin_tests;
 #[cfg(test)]
 mod keyboard_tests;
+#[cfg(test)]
+mod link_sync_tests;
 #[cfg(test)]
 mod linked_speed_tests;
 #[cfg(test)]
