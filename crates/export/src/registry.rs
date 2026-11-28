@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::Ordering;
-use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg_factory, prores_factory};
+use super::encoders::{aac_factory, apv_factory, av1_factory, dnx_factory, h264_factory, mjpeg_factory, prores_factory};
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
 use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
@@ -86,7 +86,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 pub(crate) fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, av1_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
 }
 
 pub(crate) fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
@@ -296,11 +296,22 @@ pub fn hdr_available(format: Format) -> bool {
     probes.into_iter().any(|p| p())
 }
 
+/// Whether a registered probe says a hardware encoder of `format` works on this machine.
+pub fn hardware_available(format: Format) -> bool {
+    if !Format::ALL.contains(&format) {
+        return false;
+    }
+    // the probes run outside the lock: one may take a while
+    let probes: Vec<fn() -> bool> =
+        format_probes().read().unwrap_or_else(PoisonError::into_inner).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
+}
+
 /// Whether a format can currently be exported: it has a built-in encoder, or a registered probe
 /// says its encoder works here.
 pub fn available(format: Format) -> bool {
     if !Format::ALL.contains(&format) {
         return false;
     }
-    format.has_builtin_encoder() || format_probes().read().unwrap_or_else(PoisonError::into_inner).iter().any(|(f, probe)| *f == format && probe())
+    format.has_builtin_encoder() || hardware_available(format)
 }

@@ -71,8 +71,8 @@ fn combo_tips(
     chosen
 }
 
-/// Why a format cannot be exported on this machine, or None when it can. H.265 and AV1 have no
-/// software encoder: without a hardware one (NVENC on NVIDIA, VideoToolbox on macOS) they are
+/// Why a format cannot be exported on this machine, or None when it can. H.265 has no
+/// software encoder: without a hardware one (NVENC on NVIDIA, VideoToolbox on macOS) it is
 /// greyed out with the reason, instead of failing at export time.
 fn unavailable_why(format: Format) -> Option<&'static str> {
     if filmcraft_engine::export::available(format) {
@@ -82,7 +82,6 @@ fn unavailable_why(format: Format) -> Option<&'static str> {
         Format::Hevc => tl!(
             "H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead."
         ),
-        Format::Av1 => tl!("AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet."),
         _ => tl!("Not supported by FilmCraft's encoders yet"),
     })
 }
@@ -504,12 +503,18 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     }
     match s.video_format() {
         f @ (Format::H264 | Format::Hevc | Format::Av1) => {
-            // H.265 and AV1: hardware encoders only (one profile, level chosen by the encoder)
+            // H.265 (hardware-only) and AV1 (hardware when available, DC-only software baseline
+            // fallback): one profile, level chosen by the encoder.
             let hevc = f != Format::H264;
             if hevc {
                 if f == Format::Av1 {
                     row(ui, t, tl!("Profile"), |ui| ui.label(tl!("Main (8-bit)")));
-                    row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (AV1 has no software encoder)")));
+                    let encoder_label = if filmcraft_engine::export::hardware_available(Format::Av1) {
+                        tl!("Hardware (software AV1 baseline fallback)")
+                    } else {
+                        tl!("Software (AV1 baseline, DC-only)")
+                    };
+                    row(ui, t, tl!("Encoder"), |ui| ui.label(encoder_label));
                 } else {
                     // the hardware encoder writes Main (8-bit 4:2:0), or Main 10 for HDR sequences where it can; level chosen by the encoder
                     let label = match (filmcraft_engine::export::hdr_available(Format::Hevc), seq_hdr && !s.sdr) {
@@ -543,10 +548,20 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 });
             }
             row(ui, t, tl!("Bitrate Encoding"), |ui| {
-                // a hardware encoder has one pass and no constant-quality mode: H.265 offers neither
+                // Hardware H.265 is one pass with no constant-quality mode; AV1 supports CBR,
+                // 1-pass VBR and CRF (not two-pass).
                 let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf];
-                let labels: Vec<(String, bool)> =
-                    o.iter().map(|m| (m.label().to_string(), !(hevc && matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf)))).collect();
+                let labels: Vec<(String, bool)> = o
+                    .iter()
+                    .map(|m| {
+                        let disabled = match f {
+                            Format::Hevc => matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf),
+                            Format::Av1 => matches!(m, BitrateMode::Vbr2Pass),
+                            _ => false,
+                        };
+                        (m.label().to_string(), !disabled)
+                    })
+                    .collect();
                 if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
                     s.bitrate_mode = o[i];
                 }
@@ -599,7 +614,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             // The system's hardware encoder where there is one (VideoToolbox on macOS, NVENC on NVIDIA
             // GPUs on Windows, VA-API on Linux); everything it does not take (two-pass, HDR, MXF) and
             // every machine without one keeps the built-in encoder.
-            // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
+            // H.265 has only hardware encoders; AV1 prefers hardware when registered and falls back
+            // to the built-in software encoder automatically.
             if !hevc {
                 row(ui, t, "Hardware Encoding", |ui| {
                     let mut on = s.hardware_encoding == HardwareEncoding::Auto;

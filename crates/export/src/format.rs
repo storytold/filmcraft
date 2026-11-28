@@ -18,8 +18,9 @@ pub enum Format {
     /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR.
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
-    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
-    /// where a hardware encoder registers one.
+    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Uses a registered hardware encoder when
+    /// available ([`register_encoder`] / [`register_format_probe`]), falling back to the built-in
+    /// DC-only software baseline encoder (`filmcraft-av1enc`).
     #[serde(rename = "av1", alias = "Av1")]
     Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
@@ -204,7 +205,7 @@ impl Format {
     /// Whether the crate carries an encoder for the format; the others need one registered at runtime
     /// ([`register_format_probe`]).
     pub fn has_builtin_encoder(self) -> bool {
-        !matches!(self, Format::Hevc | Format::Av1)
+        !matches!(self, Format::Hevc)
     }
     /// Sound without picture: Waveform Audio, AIFF, AAC Audio, MP3 and FLAC.
     pub fn is_audio_only(self) -> bool {
@@ -515,9 +516,6 @@ impl ExportSettings {
         if self.bitrate_mode == BitrateMode::Crf {
             if self.format == Format::Hevc {
                 return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
-            }
-            if self.format == Format::Av1 {
-                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
             }
             if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
                 return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
