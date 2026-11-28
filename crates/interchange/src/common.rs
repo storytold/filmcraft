@@ -230,14 +230,12 @@ pub(crate) fn file_stem(path: &str) -> &str {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn extension(path: &str) -> String {
     let n = file_name(path);
     n.rfind('.').map(|i| n[i + 1..].to_ascii_lowercase()).unwrap_or_default()
 }
 
 /// Media kind guess from a file extension.
-#[cfg(test)]
 pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
     match extension(path).as_str() {
         "wav" | "aif" | "aiff" | "mp3" | "aac" | "m4a" | "flac" | "ogg" | "opus" | "bwf" => MediaKind::AudioOnly,
@@ -286,7 +284,6 @@ pub(crate) fn rate_from_timebase(timebase: i64, ntsc: bool) -> FrameRate {
 }
 
 /// Snap a floating rate (OTIO) to an exact rate.
-#[cfg(test)]
 pub(crate) fn rate_from_f64(r: f64) -> FrameRate {
     if r <= 0.0 || !r.is_finite() || r > MAX_RATE as f64 {
         return FrameRate::FPS_24;
@@ -453,7 +450,6 @@ impl Builder {
         id
     }
 
-    #[cfg(test)]
     pub fn generator_media(&mut self, key: &str, name: &str, g: Generator, spec: &MediaSpec, bin: Option<BinId>) -> ItemId {
         if let Some(id) = self.media.get(key) {
             return *id;
@@ -553,7 +549,6 @@ impl Builder {
 
     /// Place `item` on the first track at or after `preferred` where it does not overlap anything,
     /// creating tracks as needed. Returns the track index.
-    #[cfg(test)]
     pub fn place(&mut self, seq: &mut Sequence, kind: TrackKind, preferred: usize, item: TrackItem) -> Option<usize> {
         let mut i = preferred;
         loop {
