@@ -247,8 +247,11 @@ pub fn draw_run(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32), run: 
             if px < 0.5 {
                 continue;
             }
-            let xi = x.floor();
-            if let Some(gm) = glyph_mask(g, px, x - xi) {
+            // snap to the ¼-px phase grid first, so a phase that rounds up to a whole pixel moves
+            // the glyph a pixel on instead of back to phase 0 of the same pixel (#4896)
+            let xq = (x * 4.0).round() / 4.0;
+            let xi = xq.floor();
+            if let Some(gm) = glyph_mask(g, px, xq - xi) {
                 out.add(&gm.mask, xi as i32 + gm.left - ox, y.round() as i32 + gm.top - oy);
             } else {
                 // A huge glyph's mask would be mostly clipped away. Rasterise its outline straight
@@ -311,6 +314,34 @@ mod tests {
         assert!(row[1] > 0.9 && row[g.mask.w - 2] > 0.9, "{row:?}");
         assert!(row[g.mask.w / 2] < 0.1, "{row:?}");
         assert!(g.top < 0, "rises above the baseline");
+    }
+
+    /// #4896: a glyph moved in small steps moves smoothly. A phase of ⅞ px or more rounded to
+    /// phase 0 of the same whole pixel, so the glyph jumped back a pixel and then forward again.
+    #[test]
+    fn a_glyph_moved_in_eighth_pixel_steps_never_jumps() {
+        let l = layout("I", &TextStyle { size: 40.0, ..Default::default() }, &ParagraphStyle::default());
+        let centroid = |x: f32| {
+            let mut m = Mask::new(80, 80);
+            draw(&l, &at(x, 50.0), &mut m, (0, 0));
+            let (mut sum, mut wsum) = (0.0f64, 0.0f64);
+            for y in 0..m.h {
+                for xx in 0..m.w {
+                    let a = f64::from(m.get(xx, y));
+                    sum += a;
+                    wsum += a * (xx as f64 + 0.5);
+                }
+            }
+            wsum / sum
+        };
+        let base = centroid(10.0);
+        for i in 0..=24 {
+            let x = 10.0 + i as f32 / 8.0;
+            let moved = centroid(x) - base;
+            // positions are quantised to ¼ px
+            let want = f64::from((x * 4.0).round() / 4.0) - 10.0;
+            assert!((moved - want).abs() <= 0.05, "at x = {x}: moved {moved:.3} px, want {want:.3}");
+        }
     }
 
     #[test]
