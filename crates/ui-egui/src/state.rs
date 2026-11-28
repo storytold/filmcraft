@@ -327,6 +327,9 @@ pub struct MonitorView {
     pub safe_margins: bool,
     /// Transparency Grid: a checkerboard behind the picture shows its transparent areas.
     pub transparency_grid: bool,
+    /// Prompter (Program monitor): the section, talking points and script of the range marker at
+    /// the playhead, along the bottom of the picture; also shown in full-screen Program.
+    pub prompter: bool,
     pub show_transport: bool,
     /// Transport buttons hidden through the monitor's Button Editor. Stored per monitor.
     pub transport_hidden: Vec<String>,
@@ -354,6 +357,7 @@ impl Default for MonitorView {
             time_zoom: None,
             safe_margins: false,
             transparency_grid: false,
+            prompter: false,
             show_transport: true,
             // Optional buttons (Loop, Go to Previous/Next Edit Point) are available from the editor
             // without altering default layouts, as in Premiere.

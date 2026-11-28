@@ -4,8 +4,9 @@
 //! (Fit, 10%…1600%, the wheel zooming about the pointer, middle-button or Hand-tool panning),
 //! rulers, guides (dragged out of the rulers, Add
 //! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences), Snap in Program
-//! Monitor (graphic drags snap to guides, the frame edges and center) and Transparency Grid (a
-//! checkerboard behind the picture shows its transparent areas).
+//! Monitor (graphic drags snap to guides, the frame edges and center), Transparency Grid (a
+//! checkerboard behind the picture shows its transparent areas) and the Program monitor's Prompter
+//! (`crate::panels::prompter`).
 //!
 //! Everything is [`MonitorView`] state (serde: `ui.inspect`, `ui.set {"program": {…}}`) changed
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
@@ -150,6 +151,12 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let v = view_mut(app, w);
             v.transparency_grid = toggled(v.transparency_grid, params);
             Ok(json!({"monitor": pfx, "transparencyGrid": v.transparency_grid}))
+        }
+        // the Program monitor's only, whichever monitor has the focus
+        "prompter" => {
+            let v = &mut app.ui.program;
+            v.prompter = toggled(v.prompter, params);
+            Ok(json!({"monitor": "program", "prompter": v.prompter}))
         }
         "showRulers" => {
             let v = view_mut(app, w);
@@ -311,6 +318,7 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
         "highQualityPlayback" => Some(v.high_quality),
         "safeMargins" => Some(v.safe_margins),
         "transparencyGrid" => Some(v.transparency_grid),
+        "prompter" => Some(app.ui.program.prompter),
         "showRulers" => Some(v.show_rulers),
         "showGuides" => Some(v.show_guides),
         "lockGuides" => Some(v.lock_guides),
@@ -835,6 +843,9 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         pick(ui, &mut out, "snapInProgramMonitor", tl!("Snap in Program Monitor"), v.snap);
     }
     pick(ui, &mut out, "transparencyGrid", tl!("Transparency Grid"), v.transparency_grid);
+    if w == Which::Program {
+        pick(ui, &mut out, "prompter", tl!("Prompter"), v.prompter);
+    }
     ui.separator();
     let pfx = prefix(w);
     for (key, r, label, clicked) in out {
