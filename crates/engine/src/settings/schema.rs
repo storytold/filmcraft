@@ -298,6 +298,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             b("audio.scrubAudio", "Play audio while scrubbing in Source and Program Monitors", false),
             b("audio.maintainPitchShuttling", "Maintain pitch while shuttling", false),
             b("audio.muteInputDuringRecording", "Mute input during timeline recording", false),
+            b("audio.muteSequencePlaybackDuringRecording", "Mute sequence playback during timeline recording", true),
             b("audio.generateWaveformsOnImport", "Generate waveforms automatically during import", false),
             b("audio.multithreadedWaveforms", "Generate waveforms and conform audio using multithreading", false),
             b("audio.renderAudioWithVideo", "Render audio when rendering video", false),
