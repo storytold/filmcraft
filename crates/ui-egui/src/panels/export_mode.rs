@@ -69,6 +69,8 @@ pub struct ExportUi {
     pub range: String,
     pub custom_start: f64,
     pub custom_end: f64,
+    /// Frame Size: changing the width or the height sets the other to keep the sequence's shape.
+    pub keep_aspect: bool,
     /// Expanded settings sections.
     pub open_sections: Vec<String>,
     /// The sequence the file name was taken from.
@@ -96,6 +98,7 @@ impl Default for ExportUi {
             range: "entire".into(),
             custom_start: 0.0,
             custom_end: 10.0,
+            keep_aspect: true,
             open_sections: vec!["video".into(), "audio".into()],
             for_sequence: None,
             manager: None,

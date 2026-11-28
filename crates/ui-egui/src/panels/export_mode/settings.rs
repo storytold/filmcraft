@@ -344,7 +344,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             ui.add_space(8.0);
             let s = &mut ex.settings;
             if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-                video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+                video_section(ui, &mut reg, s, &mut ex.keep_aspect, &t, (seq_w, seq_h), seq_hdr);
             }
             if (s.has_audio()
                 || !s.has_video()
@@ -437,7 +437,16 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+/// The frame size after the width (`by_width`) or the height was set to `value`, with the sequence
+/// shape (`seq_w`×`seq_h`) kept: the other side follows, rounded to an even number as video
+/// encoders need, within the drag fields' range.
+pub(crate) fn linked_size(by_width: bool, value: u32, seq_w: u32, seq_h: u32) -> (u32, u32) {
+    let (sw, sh) = (f64::from(seq_w.max(1)), f64::from(seq_h.max(1)));
+    let even = |v: f64| (((v / 2.0).round() * 2.0) as u32).clamp(16, 8192);
+    if by_width { (value, even(f64::from(value) * sh / sw)) } else { (even(f64::from(value) * sw / sh), value) }
+}
+
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, keep_aspect: &mut bool, t: &Tokens, (seq_w, seq_h): (u32, u32), seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -451,7 +460,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             drag(ui, reg, "export.video.width", &mut fw, DragOptions { range: 16.0..=8192.0, speed: 1.0, suffix: "", decimals: 0 });
             ui.label("×");
             drag(ui, reg, "export.video.height", &mut fh, DragOptions { range: 16.0..=8192.0, speed: 1.0, suffix: "", decimals: 0 });
-            (*w, *h) = (fw as u32, fh as u32);
+            let (nw, nh) = (fw as u32, fh as u32);
+            (*w, *h) = match (nw != *w, nh != *h) {
+                (true, false) if *keep_aspect => linked_size(true, nw, seq_w, seq_h),
+                (false, true) if *keep_aspect => linked_size(false, nh, seq_w, seq_h),
+                _ => (nw, nh),
+            };
+            check(ui, reg, "export.video.keepAspect", keep_aspect, tl!("Keep aspect"));
         });
     }
     // frame rate

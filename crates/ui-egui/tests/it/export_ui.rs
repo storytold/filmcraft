@@ -634,3 +634,38 @@ fn the_export_range_follows_the_sequence_marks() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
 }
+
+/// #4631: with Keep aspect on, changing the output width or height sets the other to keep the
+/// sequence's shape; with it off, they stay independent.
+#[test]
+fn custom_frame_size_keeps_the_sequence_shape_unless_unlinked() {
+    let mut d = Driver::new("keep-aspect");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    let (seq_w, seq_h) = {
+        let q = d.app().session.active_sequence().unwrap();
+        (q.settings.width as f64, q.settings.height as f64)
+    };
+    d.click("export.video.matchSize");
+    d.frames(3);
+    let size = |d: &mut Driver| d.app().ui.export.settings.frame_size.expect("a custom size");
+    let (w0, h0) = size(&mut d);
+    let drag = |d: &mut Driver, id: &str, dx: f64| {
+        let [x, y, w, h] = crate::support::rect_of(&d.ok("ui.elements", json!({"prefix": id}))[0]);
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + dx, "y": cy}, "steps": 6}));
+        d.frames(3);
+    };
+    drag(&mut d, "export.video.width", -40.0);
+    let (w1, h1) = size(&mut d);
+    assert!(w1 < w0, "dragging left made the width smaller");
+    assert!(h1 < h0, "the height followed it: {h0} -> {h1}");
+    assert!((f64::from(w1) / f64::from(h1) - seq_w / seq_h).abs() < 0.02, "the shape is the sequence's: {w1}x{h1}");
+    assert_eq!(h1 % 2, 0, "an even height, as encoders need");
+    // unlinked: only the width moves
+    d.click("export.video.keepAspect");
+    d.frames(2);
+    drag(&mut d, "export.video.width", 30.0);
+    let (w2, h2) = size(&mut d);
+    assert!(w2 > w1 && h2 == h1, "unlinked, the height stays: {w1}x{h1} -> {w2}x{h2}");
+}
