@@ -1206,6 +1206,39 @@ mod tests {
         let (before, after) = (s(&dark_red), s(&img.px));
         assert!((after - before).abs() < 1e-3, "shadow saturation {before} became {after}");
     }
+
+    /// #4058: the panel stores a wheel offset in its own screen space (y down), so the ring's top is
+    /// a negative y. It tints blue-violet and the bottom green; swapped, every drag tints the wrong
+    /// way.
+    #[test]
+    fn wheel_offsets_follow_the_rings_screen_space() {
+        let top = wheel_rgb(Vec2::new(0.0, -1.0));
+        let bottom = wheel_rgb(Vec2::new(0.0, 1.0));
+        assert!(top[2] > 0.8 && top[1] < -0.8, "the ring's top is blue-violet: {top:?}");
+        assert!(bottom[1] > 0.8 && bottom[2] < -0.8, "the ring's bottom is green: {bottom:?}");
+        for (t, b) in top.iter().zip(&bottom) {
+            assert!((t + b).abs() < 1e-6, "{top:?} and {bottom:?} mirror each other");
+        }
+    }
+
+    /// The vertical fix leaves the horizontal axis alone: red at the ring's right, cyan at its left,
+    /// and a shorter offset still tints proportionally.
+    #[test]
+    fn wheel_offsets_keep_their_horizontal_colour() {
+        let right = wheel_rgb(Vec2::new(1.0, 0.0));
+        assert!((right[0] - 1.0).abs() < 1e-6 && (right[1] + 0.5).abs() < 1e-6 && (right[2] + 0.5).abs() < 1e-6, "{right:?}");
+        let left = wheel_rgb(Vec2::new(-1.0, 0.0));
+        assert!((left[0] + 1.0).abs() < 1e-6 && (left[1] - 0.5).abs() < 1e-6 && (left[2] - 0.5).abs() < 1e-6, "{left:?}");
+        let half = wheel_rgb(Vec2::new(0.0, 0.5));
+        assert!((half[2] - wheel_rgb(Vec2::new(0.0, 1.0))[2] / 2.0).abs() < 1e-6, "length scales the tint: {half:?}");
+    }
+
+    /// A wheel at its centre is the identity: the length guard must answer before any `atan2`.
+    #[test]
+    fn wheel_offset_at_the_centre_is_identity() {
+        assert_eq!(wheel_rgb(Vec2::new(0.0, 0.0)), [0.0; 3]);
+        assert_eq!(wheel_rgb(Vec2::new(2e-6, -3e-6)), [0.0; 3]);
+    }
 }
 
 /// Monotone cubic (Fritsch–Carlson) interpolation through sorted control points, as a LUT of `n`
@@ -1300,6 +1333,10 @@ pub(crate) fn wheel_rgb(v: Vec2) -> [f32; 3] {
     if len < 1e-5 {
         return [0.0; 3];
     }
+    // `v` is the Lumetri panel's screen-space offset (x right, y down, see `color_wheel` in
+    // `panels/lumetri.rs`) and the ring paints hue clockwise from red at 3 o'clock, so this angle
+    // is the ring's hue directly: a wheel dragged up carries a negative y and tints towards the
+    // top of the ring (#4058).
     let a = (v.y).atan2(v.x) as f32;
     let tau = std::f32::consts::TAU;
     [a.cos() * len, (a - tau / 3.0).cos() * len, (a + tau / 3.0).cos() * len]

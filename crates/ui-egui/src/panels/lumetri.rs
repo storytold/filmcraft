@@ -655,6 +655,18 @@ fn without_point(pts: &[[f32; 2]], i: usize, hue: bool) -> Option<Vec<[f32; 2]>>
     Some(rest)
 }
 
+/// The offset a colour wheel stores for a pointer at `d` screen points from its centre (y down):
+/// the offset itself, clamped to the ring, and kept in screen space because that is how the
+/// renderer reads it (`wheel_rgb` in `filmcraft-render`). A drag towards the ring's top is
+/// therefore a negative y, and tints towards the hue painted there (#4058).
+fn wheel_offset(d: egui::Vec2) -> egui::Vec2 {
+    let len = d.length();
+    if len < 1e-6 {
+        return egui::Vec2::ZERO;
+    }
+    d / len.max(1.0)
+}
+
 /// Colour wheel: hue ring, draggable puck (offset), lightness slider on the left.
 #[allow(clippy::too_many_arguments)]
 fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &str, size: f32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) {
@@ -682,15 +694,13 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
     p.circle_filled(c, r_in - 1.0, Color32::from_rgb(0x16, 0x16, 0x16));
     p.line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], Stroke::new(1.0, t.text_faint));
     p.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(1.0, t.text_faint));
-    let puck = c + vec2(v.x as f32, -v.y as f32) * (r_in - 4.0);
+    let puck = c + vec2(v.x as f32, v.y as f32) * (r_in - 4.0);
     p.circle_stroke(puck, 5.0, Stroke::new(1.5, Color32::WHITE));
     if (resp.dragged() || resp.clicked())
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let d = (pos - c) / (r_in - 4.0);
-        let len = d.length().min(1.0);
-        let dir = if d.length() > 1e-6 { d / d.length() } else { d };
-        actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": [dir.x * len, -dir.y * len]}));
+        let o = wheel_offset((pos - c) / (r_in - 4.0));
+        actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": [o.x, o.y]}));
     }
     if resp.double_clicked() {
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": [0.0, 0.0]}));
@@ -757,7 +767,26 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
 
 #[cfg(test)]
 mod tests {
-    use super::without_point;
+    use super::{wheel_offset, without_point};
+
+    /// #4058: the ring paints red at 3 o'clock and violet at 12, and the wheel stores its offset in
+    /// screen space (y down), which is what the renderer reads. A pointer above the centre must be a
+    /// negative y — stored the other way round, every vertical drag tints towards the wrong edge of
+    /// the ring.
+    #[test]
+    fn a_wheel_offset_keeps_the_pointer_direction_and_stops_at_the_ring() {
+        let up = wheel_offset(egui::vec2(0.0, -0.5));
+        assert!(up.y < 0.0 && up.x.abs() < 1e-6, "above the centre is a negative y: {up:?}");
+        let down = wheel_offset(egui::vec2(0.0, 0.5));
+        assert!(down.y > 0.0, "below the centre is a positive y: {down:?}");
+        let right = wheel_offset(egui::vec2(0.25, 0.0));
+        assert!((right.x - 0.25).abs() < 1e-6 && right.y.abs() < 1e-6, "{right:?}");
+        // a pointer past the ring keeps its direction and is clamped to a full-strength offset
+        let outside = wheel_offset(egui::vec2(3.0, -4.0));
+        assert!((outside.length() - 1.0).abs() < 1e-6, "clamped to the ring: {outside:?}");
+        assert!(outside.x > 0.0 && outside.y < 0.0, "the direction is kept: {outside:?}");
+        assert_eq!(wheel_offset(egui::Vec2::ZERO), egui::Vec2::ZERO);
+    }
 
     #[test]
     fn a_curve_point_is_removed_by_position_not_by_list_order() {
