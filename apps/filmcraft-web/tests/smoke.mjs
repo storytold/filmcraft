@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkImportBins } from "./import-bins.mjs";
 import { checkImportCollision } from "./import-collision.mjs";
+import { checkOpenProjectPrompt } from "./open-project-prompt.mjs";
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -177,6 +178,8 @@ try {
     },
   });
   if (!report.steps.importCollision.ok) throw new Error("import collision regression: " + JSON.stringify(report.steps.importCollision.gates));
+  report.steps.openProjectPrompt = await checkOpenProjectPrompt({evaluate: js});
+  if (!report.steps.openProjectPrompt.ok) throw new Error("open project prompt regression: " + JSON.stringify(report.steps.openProjectPrompt.gates));
   // still alive? (a panicked app never answers)
   await Promise.race([js("filmcraft.inspect().then(() => true)"), sleep(5000).then(() => { throw new Error("app stopped answering"); })]);
   const fatal = logs.filter((l) => /panicked at|RuntimeError|EXCEPTION/.test(l));
