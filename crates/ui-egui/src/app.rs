@@ -71,6 +71,7 @@ impl FilmcraftApp {
             dock_focus: None,
             control_input_only: false,
             native_window_focused: None,
+            window_geometry: Default::default(),
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
             ui_requests: Vec::new(),
@@ -135,6 +136,13 @@ impl FilmcraftApp {
             workspaces,
             menu_workspaces: Default::default(),
         }
+    }
+
+    /// Whether this window's position and size are the ones remembered for the next launch
+    /// (#1994). Off by default, and left off for a window started for an agent, which opens where
+    /// the user's window was and must not change that record (see [`crate::window_geometry`]).
+    pub fn set_window_remembered(&mut self, on: bool) {
+        self.window_geometry.set_remembered(on);
     }
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
@@ -454,6 +462,9 @@ impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         crate::framework::before_input(ctx, self);
         self.native_window_focused = Some(raw_input.focused);
+        if let Some(info) = raw_input.viewports.get(&egui::ViewportId::ROOT) {
+            self.window_geometry.observe(info, ctx.zoom_factor());
+        }
         capture::note_raw_geometry(self, ctx, raw_input);
         // (the runtime makes a macOS Control+Click a secondary click in every viewport, and drops a
         // hosted window's input under `--control-input-only`; the main window's is the app's to drop)
@@ -515,6 +526,24 @@ impl eframe::App for FilmcraftApp {
         self.logic_inner(ctx);
         self.finish_ime_reset_logic(ctx);
         crate::framework::close_path(ctx, self);
+    }
+
+    /// The desktop app persists only the window geometry (#1994): the UI state has its own
+    /// storage, and egui's memory (open menus, scroll offsets, …) starts fresh.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
+    /// Soon after the window is moved or resized, so little is lost if the app ends without its
+    /// closing save (see [`crate::window_geometry`]); eframe's 30 s otherwise.
+    fn auto_save_interval(&self) -> std::time::Duration {
+        self.window_geometry.interval()
+    }
+
+    /// eframe has just written its window record; while maximized that holds an older normal
+    /// geometry, so the one seen last replaces it.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window_geometry.record(storage);
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset

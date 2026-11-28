@@ -34,7 +34,8 @@ filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard"] }
+# persistence: reading and correcting the stored window record (#1994, `window_geometry`).
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "persistence"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
@@ -64,6 +65,8 @@ filmcraft-interchange = { workspace = true }
 # test root needs explicitly so glyph and accessibility assertions run against the bundled faces.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
+# eframe's own window record type, to hold `window_geometry`'s copy of its format to it.
+egui-winit = { version = "0.37", default-features = false, features = ["serde"] }
 tempfile = "3"
 
 # build.rs bakes contributors/contributors.json into the binary (About ▸ Contributors).
