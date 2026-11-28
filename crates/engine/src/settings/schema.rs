@@ -240,6 +240,7 @@ pub(super) static CATEGORIES: &[Category] = &[
                     ("ja", "日本語"),
                     ("zh-cn", "简体中文"),
                     ("ko", "한국어"),
+                    ("ka", "ქართული"),
                 ]),
                 true,
             ),
