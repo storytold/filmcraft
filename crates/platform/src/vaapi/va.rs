@@ -241,6 +241,18 @@ impl Display {
         &self.vendor
     }
 
+    /// The DRM render node the display decodes on, `(major, minor)`: what a Vulkan device describes
+    /// itself with (`VK_EXT_physical_device_drm`), so a DMABUF import can tell whether the two are
+    /// the same GPU.
+    pub fn render_node(&self) -> Option<(u32, u32)> {
+        use std::os::unix::fs::MetadataExt;
+        let rdev = self._device.metadata().ok()?.rdev();
+        // glibc's `major` / `minor` (makedev/major/minor), without a libc dependency
+        let major = ((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfff);
+        let minor = (rdev & 0xff) | ((rdev >> 12) & !0xff);
+        Some((u32::try_from(major).ok()?, u32::try_from(minor).ok()?))
+    }
+
     /// Make `count` decode surfaces of `rt_format` at `size` (no attributes). The caller destroys
     /// them with [`destroy_surfaces`](Self::destroy_surfaces) or hands them to a session.
     pub fn create_surfaces(&self, rt_format: c_uint, size: (u32, u32), count: usize) -> Result<Vec<VASurfaceID>, String> {
