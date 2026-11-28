@@ -1,0 +1,43 @@
+# PhotoMotion — Step 0: Android viability check
+# Put this file at .github/workflows/android-check.yml in YOUR fork, then
+# GitHub > Actions > "Android viability check" > Run workflow.
+# It tries to compile each engine crate for Android (arm64) one by one,
+# so we see exactly which crates build and which need a fix.
+name: Android viability check
+on: workflow_dispatch
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Check crates one by one
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          rustc --version
+          : > report.txt
+          for c in photocraft-geom photocraft-color photocraft-raster photocraft-ops \
+                   photocraft-compose photocraft-paint photocraft-vector photocraft-text \
+                   photocraft-algo photocraft-tablet photocraft-io photocraft-gpu \
+                   photocraft-engine; do
+            if cargo ndk -t arm64-v8a check -p "$c" 2> "log-$c.txt"; then
+              echo "OK    $c" | tee -a report.txt
+            else
+              echo "FAIL  $c" | tee -a report.txt
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-check-report
+          path: |
+            report.txt
+            log-*.txt
