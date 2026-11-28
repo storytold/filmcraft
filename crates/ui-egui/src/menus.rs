@@ -244,6 +244,14 @@ fn export_preview_command<'a>(app: &FilmcraftApp, id: &'a str, params: &Value) -
     }
 }
 
+/// Shows a routed command's error in the status bar and returns the result unchanged.
+fn status_on_error(app: &mut FilmcraftApp, r: Result<Value, String>) -> Result<Value, String> {
+    if let Err(e) = &r {
+        app.ui.status = e.clone();
+    }
+    r
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     app.ui.script.sync_project(&app.session.project_instance);
@@ -451,10 +459,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     if let Some(r) = crate::panels::multicam::route(app, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
         return r;
@@ -466,40 +471,28 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
+    }
+    if let Some(r) = crate::panels::misc::route_work_area_delete(app, ctx, id, &params) {
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::settings::route(app, id) {
         return r;
     }
     if let Some(r) = crate::panels::graphics_templates::route(app, ctx, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     // The dialogs answer only the menu (#1540): from `engine.execute` the command goes on to the
     // engine with the parameters given, and answers an error when it needs some. The UI commands
     // the menu-dialog route also carries (dynamic waveforms, reveal, …) answer either way.
     if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, menu) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if menu && let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     if let Some(r) = crate::panels::monitor_view::route(app, id, &params) {
-        if let Err(e) = &r {
-            app.ui.status = e.clone();
-        }
-        return r;
+        return status_on_error(app, r);
     }
     match id {
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
@@ -854,6 +847,9 @@ pub(crate) fn saved_status(app: &mut FilmcraftApp, id: &str, path: &str) {
 /// the keyboard, in the main window or a floating panel's own window, the field gets the key
 /// and the project command does not run.
 pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Result<Value, String> {
+    // The native menu keeps the items it was built with, so an In/Out render or delete item stands
+    // in for its work-area command while the Work Area Bar is on, and the other way around.
+    let id = shown_render_command(&app.session, id);
     // Select All of a graphic's text is already handled in `invoke`
     if text_field_window(ctx).is_none() && app.ui.gfx_edit.is_some() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") {
         return Ok(graphic_text_command(app, ctx, id));
@@ -1167,11 +1163,43 @@ pub fn default_menu_items() -> Vec<MenuItem> {
     v
 }
 
+/// Each In/Out render or delete command and the work-area command that takes its place in the
+/// Sequence menu, and runs from its keys, while the Work Area Bar is on.
+const WORK_AREA_COMMANDS: [(&str, &str); 3] = [
+    ("sequence.renderEffectsInToOut", "sequence.renderEffectsInWorkArea"),
+    ("sequence.renderInToOut", "sequence.renderEntireWorkArea"),
+    ("sequence.deleteRenderFilesInToOut", "sequence.deleteWorkAreaRenderFiles"),
+];
+
+/// The other command of `id`'s In/Out and work-area pair, for the three render and delete pairs.
+pub fn work_area_counterpart(id: &str) -> Option<&'static str> {
+    WORK_AREA_COMMANDS.iter().find_map(|&(in_out, work_area)| {
+        if id == in_out {
+            Some(work_area)
+        } else if id == work_area {
+            Some(in_out)
+        } else {
+            None
+        }
+    })
+}
+
+/// The command a key or native menu item bound to `id` runs: the work-area command of an In/Out
+/// render or delete command while the Work Area Bar is on, the In/Out command of a work-area
+/// command while it is off, and `id` itself otherwise.
+pub fn shown_render_command<'a>(session: &filmcraft_engine::Session, id: &'a str) -> &'a str {
+    let work_area = session.active_sequence().is_some_and(|q| q.work_area.is_some());
+    let hidden = if work_area { WORK_AREA_COMMANDS.iter().any(|(in_out, _)| *in_out == id) } else { WORK_AREA_COMMANDS.iter().any(|(_, w)| *w == id) };
+    if hidden { work_area_counterpart(id).unwrap_or(id) } else { id }
+}
+
 /// Menu entries with their live shortcuts and enablement.
 pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     let mut out = Vec::new();
+    let work_area = session.active_sequence().is_some_and(|q| q.work_area.is_some());
     for c in filmcraft_engine::command_specs() {
-        if c.menu.is_empty() {
+        let in_out = WORK_AREA_COMMANDS.iter().find(|(_, w)| *w == c.id).map(|(in_out, _)| *in_out);
+        if c.menu.is_empty() || (work_area && WORK_AREA_COMMANDS.iter().any(|(i, _)| *i == c.id)) || (!work_area && in_out.is_some()) {
             continue;
         }
         // Edit ▸ Label items carry the names from Settings ▸ Labels
@@ -1183,7 +1211,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             id: c.id.into(),
             label,
             path: c.menu.iter().map(|s| s.to_string()).collect(),
-            shortcut: session.shortcuts.primary(c.id),
+            shortcut: session.shortcuts.primary(c.id).or_else(|| work_area_counterpart(c.id).and_then(|id| session.shortcuts.primary(id))),
             enabled: session.is_enabled(c.id),
             checked: None,
         });
