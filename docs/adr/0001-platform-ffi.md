@@ -66,6 +66,7 @@ remain in effect; implementation differences are not exceptions to those rules.
 | macOS | [`videotoolbox_encode`](../../crates/platform/src/videotoolbox_encode.rs) | VideoToolbox H.264/HEVC encoding and its output callback; `dlsym` resolves an optional VideoToolbox property. |
 | Windows | [`media_foundation::gpu`](../../crates/platform/src/media_foundation/gpu.rs), [`media_foundation::mft`](../../crates/platform/src/media_foundation/mft.rs) | COM, Media Foundation, D3D11 device setup and surface readback. |
 | Windows / 64-bit Linux | [`nvenc::ffi`](../../crates/platform/src/nvenc/ffi.rs), [`nvenc::session`](../../crates/platform/src/nvenc/session.rs), [`nvenc::device`](../../crates/platform/src/nvenc/device.rs) | NVENC declarations and calls, driver loading, D3D11 or CUDA device/context operations. |
+| Windows | [`amf::ffi`](../../crates/platform/src/amf/ffi.rs), [`amf::session`](../../crates/platform/src/amf/session.rs) | AMD AMF declarations, `amfrt64.dll` loading, encoder sessions and host-surface writes (see the AMF addendum). |
 | 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
 | Linux | [`vaapi::va`](../../crates/platform/src/vaapi/va.rs) | libva/libva-drm loading, displays, decoding, surface readback and logging. |
 | Windows | [`cursor::cursor_screen_position`](../../crates/platform/src/cursor.rs) (function only) | `GetCursorPos`; a non-media deviation, discussed below. |
@@ -259,3 +260,27 @@ checked, so an error closes them all and none leaks. The driver's counts are cla
 and every plane's object index is checked. The public result (`SurfaceDmabuf`) is plain data and
 owned descriptors, no raw pointers. Nothing imports it yet, so the readback stays the only path and
 the fallback guarantee is unchanged.
+## Addendum (2026-11-17): AMD AMF hardware encoding on Windows
+
+H.264 and H.265 (Main, Main 10) encoding on AMD GPUs through AMF (`amf/`, #880; AV1 export is
+deferred to a follow-up PR). The rules
+above hold:
+
+- **Two allowance scopes**, both private modules: `amf::ffi` (the declarations and the run-time
+  loading of `amfrt64.dll` from System32; no SDK is linked or bundled) and `amf::session` (the
+  encoder session: properties, host surfaces, output buffers). `amf::export`, the export factory,
+  is safe code. The public API is `amf::export::factory`, the availability probes and the safe
+  `Session` / `Config` / `Packet` types; no AMF type or raw pointer is public.
+- **The declarations are transcribed from AMD's MIT-licensed AMF SDK headers** (the notice is kept in
+  `ffi.rs`, the version is named there and in `ATTRIBUTION.md`), and `amf/abi_tests.rs` checks their
+  sizes, alignments, offsets and constants against a C compiler's view of those headers, as for NVENC.
+- **Driver results are checked before they are used:** plane pointers, pitches and row counts
+  before the host surface is written, buffer pointers before they become slices, and the size
+  (nonzero, even, within `amf_int32`) before a session opens. Every AMF object has one owner that
+  releases it on every path.
+- **No callbacks:** AMF is driven synchronously (`SubmitInput` / `QueryOutput`), and registers no
+  Rust code.
+- **The same factory rules as NVENC:** an export AMF would encode differently from what was asked
+  (CRF, all-intra H.264, two-pass, non-square pixels, interlacing, a colour other than BT.709 SDR or
+  BT.2020 PQ / HLG) is declined before a session opens, and on a machine with both, H.264 and
+  H.265 go to NVENC.

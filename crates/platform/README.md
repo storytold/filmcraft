@@ -80,6 +80,17 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
+- **Windows: AMD AMF H.264 and H.265 (HEVC Main / Main 10) encoding** (`amf/`, #880) for Export
+  (AV1 export is deferred to a follow-up PR).
+  `amfrt64.dll`, installed with AMD's driver, is loaded from System32 at run time (no SDK is linked
+  or bundled), so machines without an AMD GPU start as before. Pictures go in as host NV12 (8-bit) or
+  P010 (10-bit) surfaces from the CPU's 4:2:0 conversion. HEVC streams carry their colour
+  description (BT.709, or BT.2020 with PQ / HLG) and, for PQ, the HDR10 static metadata the `mdcv` /
+  `clli` boxes carry. H.264 is used
+  with Export ▸ Hardware encoding on (Auto); H.265 needs no opt-in. The factory declines what
+  NVENC declines (CRF, all-intra H.264, two-pass, non-square pixels, interlacing, other colour
+  signals, odd or zero sizes), and leaves H.264 and H.265 to NVENC where an NVIDIA GPU has it. The bindings are private (`amf::ffi`,
+  `amf::session`); see the AMF addendum of [ADR 0001](../../docs/adr/0001-platform-ffi.md).
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the

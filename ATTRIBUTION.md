@@ -175,6 +175,7 @@ the original copyright and permission notice in its header.
 
 | File | Author | Source | Licence |
 |---|---|---|---|
+| `crates/platform/src/amf/ffi.rs` | Advanced Micro Devices, Inc. (AMF SDK headers); FilmCraft contributors (Rust transcription) | Vtables (`AMFFactory`, `AMFContext`, `AMFComponent`, `AMFSurface`, `AMFPlane`, `AMFBuffer`), `AMFVariantStruct`, `AMFHDRMetadata`, component ids, result / memory / surface / variant codes and the colour-profile, primaries, transfer and output-type constants, transcribed from `amf/public/include` of the AMF SDK v1.5.3 (https://github.com/GPUOpen-LibrariesAndSDKs/AMF, commit 57ee0cfb0e1a); property names in `amf/session.rs` come from the same headers | MIT (Copyright (c) 2018-2026 Advanced Micro Devices, Inc.; notice kept in the file header) |
 | `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures (including `NV_ENC_CONFIG_HEVC` and its bit-field masks, `NV_ENC_PIC_PARAMS_HEVC`, `NV_ENC_SEI_PAYLOAD`, `NV_ENC_TIME_CODE`), function table, codec / profile GUIDs (H.264, HEVC Main, HEVC Main 10) and constants (`NV_ENC_LEVEL_HEVC_*`, tier, CU size, `NV_ENC_BUFFER_FORMAT_YUV420_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, BT.2020 / PQ / HLG VUI codes) transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
 
 ## Downloaded at runtime
