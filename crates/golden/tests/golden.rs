@@ -1007,3 +1007,98 @@ fn gpu_effect_chains_match_cpu_render() {
     }
     assert!(failures.is_empty(), "GPU effect chains differ from the CPU render:\n{}", failures.join("\n"));
 }
+
+/// Ultra Key + downstream colour chain (matching the real vertical-webcam clip setup) plans as a
+/// GPU effect layer, tracks keyframes, and matches the CPU output at 1× and ½× resolution; a
+/// choke + soften multi-pass variant exercises the blur passes end to end.
+#[test]
+fn gpu_ultra_key_chain_matches_cpu_render() {
+    let Some((dev, q)) = device("gpu ultra_key chain", true) else {
+        return;
+    };
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+
+    // Real publi-test parameters: soften 1.5 gives σ = 0.15 ≤ 0.3, a single FULL dispatch (no blur).
+    let mut b = Builder::new(2);
+    let (bg, fg) = (b.demo(DemoScene::OceanSunset), b.media(Generator::BarsAndTone));
+    b.place(0, bg, 0, 48);
+    let v2 = b.place(1, fg, 0, 48);
+    b.effect(
+        v2,
+        "ultra_key",
+        &[
+            ("setting", ParamValue::Choice(3)),
+            ("key_color", ParamValue::Color([0.3137255, 0.7764706, 0.5686275, 1.0])),
+            ("tolerance", fl(100.0)),
+            ("soften", fl(1.5)),
+            ("pedestal", fl(65.75)),
+            ("spill", fl(100.0)),
+            ("contrast", fl(15.0)),
+            ("desaturate", fl(23.5)),
+            ("highlight", fl(0.0)),
+            ("shadow", fl(100.0)),
+            ("range", fl(93.25)),
+        ],
+    );
+    if let Some(p) = b.clip(v2).effects.last_mut().and_then(|e| e.params.get_mut("key_color")) {
+        p.put_keyframe(Tick::ZERO, ParamValue::Color([0.0, 0.75, 0.0, 1.0]));
+        p.put_keyframe(RATE.tick_of(24), ParamValue::Color([0.3137255, 0.7764706, 0.5686275, 1.0]));
+    }
+    add_ultra_key_chain(&mut b, v2);
+    let s = b.at(0);
+    ultra_key_chain_matches(&mut c, &s, "soften 1.5", &[(0, 1.0f32), (12, 1.0), (24, 1.0), (12, 0.5)]);
+
+    // Multi-pass variant: choke 25 + soften 35 -> MATTE, choke box blur, CHOKE, soften box blur, FINAL.
+    let mut b = Builder::new(2);
+    let (bg, fg) = (b.demo(DemoScene::OceanSunset), b.media(Generator::BarsAndTone));
+    b.place(0, bg, 0, 48);
+    let v2 = b.place(1, fg, 0, 48);
+    b.effect(
+        v2,
+        "ultra_key",
+        &[
+            ("setting", ParamValue::Choice(3)),
+            ("key_color", ParamValue::Color([0.3137255, 0.7764706, 0.5686275, 1.0])),
+            ("choke", fl(25.0)),
+            ("soften", fl(35.0)),
+        ],
+    );
+    add_ultra_key_chain(&mut b, v2);
+    let s = b.at(0);
+    ultra_key_chain_matches(&mut c, &s, "choke 25 soften 35", &[(0, 1.0f32), (12, 1.0)]);
+}
+
+/// Append the standard downstream colour chain after Ultra Key.
+fn add_ultra_key_chain(b: &mut Builder, v2: ClipId) {
+    b.effect(v2, "brightness_contrast", &[("brightness", fl(-2.0)), ("contrast", fl(14.0))]);
+    b.effect(v2, "color_balance", &[("shadow_b", fl(4.0)), ("mid_r", fl(5.0)), ("mid_b", fl(-5.0)), ("hi_r", fl(3.0)), ("hi_b", fl(-3.0))]);
+    b.effect(v2, "levels", &[("in_black", fl(8.0)), ("gamma", fl(94.0))]);
+    b.effect(v2, "horizontal_flip", &[]);
+    b.effect(v2, "lumetri", &[("exposure", fl(0.2)), ("contrast", fl(2.5))]);
+}
+
+/// At each (frame, scale) the clip must plan as a GPU layer with the whole 6-op chain on the GPU
+/// and match the CPU render to PSNR ≥ 52 dB with a max channel difference of at most 2/255.
+fn ultra_key_chain_matches(c: &mut filmcraft_gpu::GpuCompositor, s: &Scene, label: &str, frames: &[(i64, f32)]) {
+    for &(frame, scale) in frames {
+        let opts = RenderOptions { scale, ..RenderOptions::default() };
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), opts, c.caps(), &s.sources);
+        let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else {
+            panic!("{label}: planned as a CPU image at frame {frame} scale {scale}");
+        };
+        assert_eq!(layers.len(), 2, "{label}: frame {frame}");
+        let Some(fx) = layers[1].fx.as_ref() else {
+            panic!("{label}: Ultra Key chain fell back to CPU at frame {frame} scale {scale}");
+        };
+        assert_eq!(fx.ops.len(), 6, "{label}: frame {frame}");
+        c.composite(&plan);
+        let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+        let gpu = Rgba8::new(gw, gh, px);
+        let img = render_sequence(&s.project, s.seq, RATE.tick_of(frame), opts, &s.sources);
+        let cpu = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
+        let d = diff(&cpu, &gpu).unwrap();
+        eprintln!("ultra_key chain ({label}) @ frame {frame} scale {scale}: {d}");
+        assert!(d.psnr >= 52.0 && d.max_abs <= 2, "{label} @ frame {frame} scale {scale}: {d}");
+    }
+}

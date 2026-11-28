@@ -486,7 +486,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         // Adjust / Color / Image Control / Keying / Utility colour
         "lighting_effects" => color::lighting(img, e, cx),
         "logo_cutout" => color::logo_cutout(img, e, cx),
-        "ultra_key" => color::ultra_key(img, e, cx),
         "track_matte" => color::track_matte(img, e, cx),
         "cineon_converter" => color::cineon(img, e, cx),
         "noise" | "noise_legacy" => color::noise(img, e, cx),

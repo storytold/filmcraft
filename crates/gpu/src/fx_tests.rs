@@ -359,6 +359,43 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        // Ultra Key: Default, Relaxed, Aggressive presets; output modes; Custom choke/soften/CC;
+        // dominant R/G/B; real publi-test params.
+        ("ultra_key", vec![], false),
+        ("ultra_key", vec![("setting", ch(1))], false),
+        ("ultra_key", vec![("setting", ch(2))], false),
+        ("ultra_key", vec![("setting", ch(2)), ("output", ch(1))], false),
+        ("ultra_key", vec![("setting", ch(2)), ("output", ch(2))], false),
+        // setting = 0 overrides sliders; verify GPU mirrors preset override identically
+        ("ultra_key", vec![("setting", ch(0)), ("tolerance", fl(100.0)), ("choke", fl(50.0))], false),
+        (
+            "ultra_key",
+            vec![
+                ("setting", ch(3)),
+                ("key_color", col(0.3137255, 0.7764706, 0.5686275)),
+                ("tolerance", fl(100.0)),
+                ("soften", fl(1.5)),
+                ("pedestal", fl(65.75)),
+                ("spill", fl(100.0)),
+                ("contrast", fl(15.0)),
+                ("mid_point", fl(50.0)),
+                ("desaturate", fl(23.5)),
+                ("highlight", fl(0.0)),
+                ("shadow", fl(100.0)),
+                ("range", fl(93.25)),
+            ],
+            false,
+        ),
+        ("ultra_key", vec![("setting", ch(3)), ("choke", fl(25.0)), ("soften", fl(0.0))], false),
+        ("ultra_key", vec![("setting", ch(3)), ("choke", fl(0.0)), ("soften", fl(35.0))], false),
+        ("ultra_key", vec![("setting", ch(3)), ("choke", fl(35.0)), ("soften", fl(35.0)), ("contrast", fl(40.0))], false),
+        ("ultra_key", vec![("setting", ch(3)), ("choke", fl(1.0)), ("soften", fl(0.0))], false),
+        (
+            "ultra_key",
+            vec![("setting", ch(3)), ("key_color", col(0.85, 0.15, 0.15)), ("cc_hue", fl(35.0)), ("cc_saturation", fl(125.0)), ("cc_luminance", fl(90.0))],
+            false,
+        ),
+        ("ultra_key", vec![("setting", ch(3)), ("key_color", col(0.1, 0.2, 0.9)), ("spill", fl(80.0)), ("spill_luma", fl(75.0))], false),
     ]
 }
 
@@ -560,6 +597,81 @@ fn keyframed_effects_follow_time() {
         assert_ne!(last.as_ref(), Some(&gpu), "t = {s}: the keyframes change the picture");
         last = Some(gpu);
     }
+
+    let mut uk = effect("ultra_key", &[("setting", ch(3))]);
+    if let Some(p) = uk.params.get_mut("key_color") {
+        p.put_keyframe(Tick::ZERO, col(0.0, 0.8, 0.2));
+        p.put_keyframe(Tick::from_seconds_f64(1.0), col(0.2, 0.3, 0.9));
+    }
+    if let Some(p) = uk.params.get_mut("tolerance") {
+        p.put_keyframe(Tick::ZERO, fl(15.0));
+        p.put_keyframe(Tick::from_seconds_f64(1.0), fl(95.0));
+    }
+    let mut last_uk: Option<Vec<f32>> = None;
+    for s in [0.0, 0.3, 0.75, 1.0] {
+        let cx = cx(Tick::from_seconds_f64(s), 1.0);
+        let op = FxOp::eval(&uk, &cx, w as usize, h as usize).expect("ultra_key op");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst < EXACT && flips == 0.0, "ultra_key t = {s}: {worst}, {flips}");
+        assert_ne!(last_uk.as_ref(), Some(&gpu), "ultra_key t = {s}: keyframes must change output");
+        last_uk = Some(gpu);
+    }
+}
+
+/// Key colour touching image borders with large soften/choke (zero-padded box blur) and alpha = 0/1
+/// boundaries match the CPU bit-for-bit within `EXACT`, without leaking RGB into transparent pixels.
+#[test]
+fn gpu_ultra_key_borders_and_alpha_boundaries() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (80u32, 60u32);
+    let mut px = vec![0.0f32; (w * h * 4) as usize];
+    let key = [0.3137255f32, 0.7764706, 0.5686275].map(filmcraft_color::srgb_to_linear);
+    let fg = [0.75f32, 0.25, 0.2].map(filmcraft_color::srgb_to_linear);
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            if y < 6 {
+                // transparent border strip: must remain [0, 0, 0, 0] even after soften
+                continue;
+            }
+            // foreground (a non-zero matte) abuts the left, right and bottom borders, so the box
+            // blur's zero-padding differs from repeat-edge there.
+            let col = if x < 30 || y >= 45 { fg } else { key };
+            px[i..i + 4].copy_from_slice(&[col[0], col[1], col[2], 1.0]);
+        }
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let e = effect("ultra_key", &[("setting", ch(3)), ("key_color", col(0.3137255, 0.7764706, 0.5686275)), ("choke", fl(30.0)), ("soften", fl(40.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("ultra_key op");
+    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px };
+    op.apply(&mut cpu);
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+    let (worst, flips) = compare(&cpu.px, &gpu);
+    assert!(worst < EXACT && flips == 0.0, "ultra_key borders: {worst}, {flips}");
+    for p in gpu.as_chunks::<4>().0.iter().take((w * 6) as usize) {
+        assert_eq!(*p, [0.0; 4], "transparent strip leaked non-zero values: {p:?}");
+    }
+}
+
+/// A hand-built `UltraKey` with an out-of-range `dom` (the fields are public) must not panic in the
+/// CPU reference: `apply` clamps the channel index instead of indexing out of bounds.
+#[test]
+fn ultra_key_apply_clamps_out_of_range_dom() {
+    let (w, h) = (8usize, 8usize);
+    let e = effect("ultra_key", &[("setting", ch(3)), ("key_color", col(0.3137255, 0.7764706, 0.5686275))]);
+    let mut op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h).expect("ultra_key op");
+    if let FxOp::UltraKey { dom, .. } = &mut op {
+        *dom = 3;
+    }
+    let mut img = filmcraft_render::Image::filled(w, h, [0.5, 0.4, 0.3, 1.0]);
+    op.apply(&mut img);
 }
 
 /// Hostile values: non-finite parameters stay on the CPU (`gpu_ok` is false), huge radii and
@@ -593,6 +705,15 @@ fn hostile_parameters_are_bounded() {
         effect("lumetri", &[("temperature", fl(f64::INFINITY))]),
         effect("lumetri", &[("contrast", fl(f64::NAN))]),
         effect("lumetri", &[("vignette_amount", fl(f64::NAN))]),
+        effect("ultra_key", &[("setting", ch(3)), ("tolerance", fl(f64::NAN))]),
+        effect("ultra_key", &[("setting", ch(3)), ("choke", fl(f64::INFINITY))]),
+        effect("ultra_key", &[("setting", ch(3)), ("choke", fl(200.0))]),
+        effect("ultra_key", &[("setting", ch(3)), ("choke", fl(150.0))]),
+        effect("ultra_key", &[("setting", ch(3)), ("contrast", fl(150.0))]),
+        effect("ultra_key", &[("setting", ch(3)), ("contrast", fl(f64::INFINITY))]),
+        effect("ultra_key", &[("setting", ch(3)), ("contrast", fl(f64::NAN))]),
+        effect("ultra_key", &[("setting", ch(3)), ("cc_hue", fl(f64::NAN))]),
+        effect("ultra_key", &[("key_color", ParamValue::Color([f32::NAN, 0.8, 0.2, 1.0]))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);

@@ -55,6 +55,10 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_ULTRA_KEY_FULL: u32 = 40u;
+const OP_ULTRA_KEY_MATTE: u32 = 41u;
+const OP_ULTRA_KEY_CHOKE: u32 = 42u;
+const OP_ULTRA_KEY_FINAL: u32 = 43u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -645,6 +649,119 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return dec(v);
 }
 
+fn rgb_to_ycbcr_709(v: vec3<f32>) -> vec3<f32> {
+    let kr = 0.2126;
+    let kb = 0.0722;
+    let kg = 0.7152;
+    let y = kr * v.x + kg * v.y + kb * v.z;
+    return vec3(y, (v.z - y) / (2.0 * (1.0 - kb)), (v.x - y) / (2.0 * (1.0 - kr)));
+}
+
+fn ultra_key_matte(o: vec4<f32>) -> f32 {
+    if o.a <= 1e-6 {
+        return 0.0;
+    }
+    let v = enc(o.rgb / o.a);
+    let y = rgb_to_ycbcr_709(v);
+    let k = u.p0.xyz;
+    let inv_kmag2 = u.p0.w;
+    let inv_kmag = u.p1.x;
+    let tol = u.p1.y;
+    let gain = u.p1.z;
+    let hl2 = u.p1.w;
+    let sh2 = u.p2.x;
+    let pedestal = u.p2.y;
+    let inv_1m_pedestal = u.p2.z;
+    let proj = (y.y * k.y + y.z * k.z) * inv_kmag2;
+    let d1 = y.y - proj * k.y;
+    let d2 = y.z - proj * k.z;
+    let perp = sqrt(d1 * d1 + d2 * d2) * inv_kmag;
+    let keyness = clamp(proj, 0.0, 1.5) * (1.0 - smoothstep_fx(0.0, tol, perp));
+    var m = clamp(1.0 - keyness * gain, 0.0, 1.0);
+    let kn1 = min(keyness, 1.0);
+    m += max(y.x - k.x, 0.0) * hl2 * kn1;
+    m += max(k.x - y.x, 0.0) * sh2 * kn1;
+    return clamp((clamp(m, 0.0, 1.0) - pedestal) * inv_1m_pedestal, 0.0, 1.0);
+}
+
+fn ultra_key_choke_apply(a0: f32, blurred: f32) -> f32 {
+    let choke_c = u.p2.w;
+    let inv_1m_choke = u.p3.x;
+    return min(a0, clamp((blurred - choke_c) * inv_1m_choke, 0.0, 1.0));
+}
+
+fn ultra_key_finish(o: vec4<f32>, a_in: f32) -> vec4<f32> {
+    var a = a_in;
+    let flags = u.i1.z;
+    if (flags & 1u) != 0u {
+        let contrast_g = u.p3.y;
+        let mid = u.p3.z;
+        a = clamp((a - mid) * contrast_g + mid, 0.0, 1.0);
+    }
+    let src_a = o.a;
+    let straight = select(o.rgb / src_a, vec3(0.0), src_a <= 1e-6);
+    var v = enc(straight);
+    let dom = u.i1.x;
+    var v_dom: f32;
+    var o1: f32;
+    var o2: f32;
+    if dom == 1u {
+        v_dom = v.y;
+        o1 = v.z;
+        o2 = v.x;
+    } else if dom == 2u {
+        v_dom = v.z;
+        o1 = v.x;
+        o2 = v.y;
+    } else {
+        v_dom = v.x;
+        o1 = v.y;
+        o2 = v.z;
+    }
+    let spill = u.p3.w;
+    let desat = u.p4.x;
+    let range = u.p4.y;
+    let sluma = u.p4.z;
+    let limit = max(o1, o2) * (1.0 - range) + (o1 + o2) * 0.5 * range;
+    let excess = max(v_dom - limit, 0.0);
+    if excess > 0.0 && (flags & 2u) != 0u {
+        let l0 = luma709(v);
+        let dv = excess * spill;
+        if dom == 1u {
+            v.y -= dv;
+        } else if dom == 2u {
+            v.z -= dv;
+        } else {
+            v.x -= dv;
+        }
+        let l1 = luma709(v);
+        v = vec3(l1) + (v - vec3(l1)) * (1.0 - desat * min(excess * 4.0, 1.0));
+        let comp = (l0 - l1) * sluma;
+        v = v + vec3(comp);
+    }
+    if (flags & 4u) != 0u {
+        let cc_h = u.p4.w;
+        let cc_s = u.p5.x;
+        let cc_l = u.p5.y;
+        var hsl = rgb_to_hsl(clamp(v, vec3(0.0), vec3(1.0)));
+        hsl.x = fract_euclid(hsl.x + cc_h);
+        hsl.y = clamp(hsl.y * cc_s, 0.0, 1.0);
+        hsl.z = clamp(hsl.z * cc_l, 0.0, 1.0);
+        v = hsl_to_rgb(hsl.x, hsl.y, hsl.z);
+    }
+    let l = dec(v);
+    let output = u.i1.y;
+    if output == 1u {
+        let g = srgb_to_linear1(a);
+        return vec4(vec3(g * src_a), src_a);
+    }
+    if output == 2u {
+        return vec4(l * src_a, src_a);
+    }
+    let na = a * src_a;
+    return vec4(l * na, na);
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -831,6 +948,35 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let c = o.rgb / a;
             let res = lumetri_op(c, p);
             return vec4(res * a, a);
+        }
+        case OP_ULTRA_KEY_FULL: {
+            let o = ld(p);
+            var a = ultra_key_matte(o);
+            if (u.i1.z & 8u) != 0u {
+                a = ultra_key_choke_apply(a, a);
+            }
+            return ultra_key_finish(o, a);
+        }
+        case OP_ULTRA_KEY_MATTE: {
+            let o = ld(p);
+            var a = ultra_key_matte(o);
+            if (u.i1.z & 8u) != 0u {
+                a = ultra_key_choke_apply(a, a);
+            }
+            return vec4(a, 0.0, 0.0, 0.0);
+        }
+        case OP_ULTRA_KEY_CHOKE: {
+            let o = textureLoad(aux, p, 0);
+            let b = ld(p).x;
+            return vec4(ultra_key_choke_apply(ultra_key_matte(o), b), 0.0, 0.0, 0.0);
+        }
+        case OP_ULTRA_KEY_FINAL: {
+            let o = textureLoad(aux, p, 0);
+            var a = ld(p).x;
+            if u.i1.w != 0u {
+                a = ultra_key_choke_apply(ultra_key_matte(o), a);
+            }
+            return ultra_key_finish(o, a);
         }
         default: {
             let o = ld(p);
