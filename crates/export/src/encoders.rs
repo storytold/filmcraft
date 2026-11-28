@@ -512,6 +512,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         BitrateMode::Cbr => craft_video::h264::RateControl::Cbr { kbps },
         // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default
         BitrateMode::Crf => craft_video::h264::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
+        BitrateMode::Cqp => return Some(Err(ExportError::Unsupported("the software H.264 encoder does not support CQP: choose CBR, VBR or CRF".into()))),
         _ => craft_video::h264::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
     };
     cfg.pass = match &s.h264_pass {

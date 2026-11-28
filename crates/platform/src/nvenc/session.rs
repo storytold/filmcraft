@@ -12,17 +12,18 @@ use super::ffi::{
     CreateInstanceFn, Guid, H264_OUTPUT_AUD, H264_REPEAT_SPSPPS, HEVC_CHROMA_FORMAT_MASK, HEVC_CHROMA_FORMAT_SHIFT, HEVC_DISABLE_SPSPPS,
     HEVC_ENABLE_INTRA_REFRESH, HEVC_OUTPUT_AUD, HEVC_PIXEL_BIT_DEPTH_MASK, HEVC_PIXEL_BIT_DEPTH_SHIFT, HEVC_REPEAT_SPSPPS, Handle, MaxSupportedVersionFn,
     NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_YUV420_10BIT, NV_ENC_CAPS_HEIGHT_MAX, NV_ENC_CAPS_HEIGHT_MIN,
-    NV_ENC_CAPS_NUM_MAX_BFRAMES, NV_ENC_CAPS_PARAM, NV_ENC_CAPS_PARAM_VER, NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, NV_ENC_CAPS_WIDTH_MAX, NV_ENC_CAPS_WIDTH_MIN,
-    NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_CONFIG_VER, NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_BITSTREAM_BUFFER_VER,
-    NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT, NV_ENC_H264_ENTROPY_CODING_MODE_CABAC,
-    NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID, NV_ENC_HEVC_CUSIZE_AUTOSELECT,
-    NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_LEVEL_AUTOSELECT,
-    NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS,
-    NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID,
-    NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN,
-    NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709,
-    NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
+    NV_ENC_CAPS_NUM_MAX_BFRAMES, NV_ENC_CAPS_PARAM, NV_ENC_CAPS_PARAM_VER, NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, NV_ENC_CAPS_SUPPORT_LOOKAHEAD,
+    NV_ENC_CAPS_WIDTH_MAX, NV_ENC_CAPS_WIDTH_MIN, NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_CONFIG_VER,
+    NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_BITSTREAM_BUFFER_VER, NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT,
+    NV_ENC_H264_ENTROPY_CODING_MODE_CABAC, NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID,
+    NV_ENC_HEVC_CUSIZE_AUTOSELECT, NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER,
+    NV_ENC_LEVEL_AUTOSELECT, NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER,
+    NV_ENC_MEMORY_HEAP_SYSMEM_CACHED, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR,
+    NV_ENC_PARAMS_RC_CONSTQP, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME,
+    NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID, NV_ENC_QP, NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD,
+    NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN, NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709,
+    NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709, NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST,
+    NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus, RC_ENABLE_AQ, RC_ENABLE_LOOKAHEAD,
 };
 
 /// The driver's entry points (loaded once).
@@ -145,6 +146,8 @@ impl Default for Signal {
 pub struct Caps {
     /// 10-bit encoding (Main 10) is supported.
     pub ten_bit: bool,
+    /// Rate-control lookahead is supported.
+    pub lookahead: bool,
     pub max_bframes: u32,
     pub min_size: (u32, u32),
     pub max_size: (u32, u32),
@@ -160,6 +163,11 @@ pub struct Params {
     pub bitrate: u32,
     pub max_bitrate: u32,
     pub cbr: bool,
+    pub cqp: bool,
+    pub qp: u32,
+    pub multipass: bool,
+    pub spatial_aq: bool,
+    pub lookahead: Option<u32>,
     pub gop: u32,
     /// H.264 only: 0 baseline, 1 main, 2 high (HEVC is Main, or Main 10 with `ten_bit`).
     pub profile: u8,
@@ -315,8 +323,9 @@ impl Session {
             }
         };
         Ok(Caps {
-            // a failing query means no 10-bit encoder
+            // a failing query means no 10-bit / lookahead support
             ten_bit: get(NV_ENC_CAPS_SUPPORT_10BIT_ENCODE).unwrap_or(0) != 0,
+            lookahead: get(NV_ENC_CAPS_SUPPORT_LOOKAHEAD).unwrap_or(0) != 0,
             max_bframes: get(NV_ENC_CAPS_NUM_MAX_BFRAMES)?,
             min_size: (get(NV_ENC_CAPS_WIDTH_MIN)?, get(NV_ENC_CAPS_HEIGHT_MIN)?),
             max_size: (get(NV_ENC_CAPS_WIDTH_MAX)?, get(NV_ENC_CAPS_HEIGHT_MAX)?),
@@ -375,12 +384,31 @@ impl Session {
             cfg.frameIntervalP = 1 + p.bframes as i32;
             let rc = &mut cfg.rcParams;
             rc.version = NV_ENC_RC_PARAMS_VER;
-            rc.rateControlMode = if p.cbr { NV_ENC_PARAMS_RC_CBR } else { NV_ENC_PARAMS_RC_VBR };
-            rc.averageBitRate = p.bitrate.saturating_mul(1000);
-            rc.maxBitRate = if p.cbr { rc.averageBitRate } else { p.max_bitrate.max(p.bitrate).saturating_mul(1000) };
-            // a one-second buffer, the usual for streaming-style rate control
-            rc.vbvBufferSize = rc.maxBitRate;
-            rc.vbvInitialDelay = rc.vbvBufferSize;
+            if p.cqp {
+                rc.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+                let qp = p.qp.min(51);
+                rc.constQP = NV_ENC_QP { qpInterP: qp, qpInterB: qp, qpIntra: qp };
+            } else {
+                rc.rateControlMode = if p.cbr { NV_ENC_PARAMS_RC_CBR } else { NV_ENC_PARAMS_RC_VBR };
+                rc.averageBitRate = p.bitrate.saturating_mul(1000);
+                rc.maxBitRate = if p.cbr { rc.averageBitRate } else { p.max_bitrate.max(p.bitrate).saturating_mul(1000) };
+                // a one-second buffer, the usual for streaming-style rate control
+                rc.vbvBufferSize = rc.maxBitRate;
+                rc.vbvInitialDelay = rc.vbvBufferSize;
+            }
+            if !p.cqp {
+                if p.spatial_aq {
+                    rc.flags |= RC_ENABLE_AQ;
+                }
+                if let Some(la) = p.lookahead {
+                    let max_la = 31u32.saturating_sub(p.bframes);
+                    rc.flags |= RC_ENABLE_LOOKAHEAD;
+                    rc.lookaheadDepth = la.clamp(1, max_la) as u16;
+                }
+                if p.multipass {
+                    rc.multiPass = 2;
+                }
+            }
             match p.codec {
                 Codec::H264 => {
                     let h = &mut cfg.encodeCodecConfig.h264Config;

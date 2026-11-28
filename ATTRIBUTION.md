@@ -175,7 +175,7 @@ the original copyright and permission notice in its header.
 
 | File | Author | Source | Licence |
 |---|---|---|---|
-| `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures (including `NV_ENC_CONFIG_HEVC` and its bit-field masks, `NV_ENC_PIC_PARAMS_HEVC`, `NV_ENC_SEI_PAYLOAD`, `NV_ENC_TIME_CODE`), function table, codec / profile GUIDs (H.264, HEVC Main, HEVC Main 10) and constants (`NV_ENC_LEVEL_HEVC_*`, tier, CU size, `NV_ENC_BUFFER_FORMAT_YUV420_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, BT.2020 / PQ / HLG VUI codes) transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
+| `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures (including `NV_ENC_CONFIG_HEVC` and its bit-field masks, `NV_ENC_PIC_PARAMS_HEVC`, `NV_ENC_SEI_PAYLOAD`, `NV_ENC_TIME_CODE`), function table, codec / profile GUIDs (H.264, HEVC Main, HEVC Main 10) and constants (`NV_ENC_LEVEL_HEVC_*`, tier, CU size, `NV_ENC_BUFFER_FORMAT_YUV420_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, `NV_ENC_CAPS_SUPPORT_LOOKAHEAD`, BT.2020 / PQ / HLG VUI codes) transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
 
 ## Downloaded at runtime
 

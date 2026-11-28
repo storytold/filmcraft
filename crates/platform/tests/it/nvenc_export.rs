@@ -154,3 +154,72 @@ fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
     // the decoded file of a declined export is fine
     assert_eq!(decode(&tmp(&dir, "odd.mp4")).len(), 24);
 }
+
+#[test]
+fn cqp_multipass_lookahead_and_spatial_aq_encode_for_h264_and_hevc() {
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    filmcraft_platform::register();
+    if !filmcraft_platform::nvenc::available() {
+        eprintln!("no NVENC here: skipping rate-control hardware matrix");
+        return;
+    }
+    let (p, seq, m) = project(640, 360, 24);
+    let dir = tmp_dir();
+    let check_ffmpeg = |path: &str| {
+        if let Some(ff) = filmcraft_testkit::ffmpeg() {
+            let out = std::process::Command::new(ff).args(["-v", "error", "-i", path, "-f", "null", "-"]).output().unwrap();
+            assert!(out.stderr.is_empty(), "ffmpeg ({path}): {}", String::from_utf8_lossy(&out.stderr));
+        }
+    };
+
+    for (codec_label, fmt) in [("h264", Format::H264), ("hevc", Format::Hevc)] {
+        if fmt == Format::Hevc && !filmcraft_platform::nvenc::hevc_available() {
+            continue;
+        }
+        // H.265 hides the Hardware Encoding toggle and defaults to Off in the UI panel.
+        let hw_mode = if fmt == Format::Hevc { HardwareEncoding::Off } else { HardwareEncoding::Auto };
+        // 1. CQP at two QPs (18 vs 36)
+        let mut cqp18 = settings(tmp(&dir, &format!("{codec_label}_cqp18.mp4")), hw_mode);
+        cqp18.format = fmt;
+        cqp18.bitrate_mode = BitrateMode::Cqp;
+        cqp18.qp = Some(18);
+        let b0 = hw_encode_stats();
+        let r18 = export(&p, seq, &cqp18, &m, &Progress::default()).unwrap();
+        assert_eq!(hw_encode_stats().frames - b0.frames, 24);
+        assert!(r18.warnings.is_empty(), "{codec_label} CQP 18 warnings: {:?}", r18.warnings);
+
+        let mut cqp36 = settings(tmp(&dir, &format!("{codec_label}_cqp36.mp4")), hw_mode);
+        cqp36.format = fmt;
+        cqp36.bitrate_mode = BitrateMode::Cqp;
+        cqp36.qp = Some(36);
+        let b1 = hw_encode_stats();
+        let r36 = export(&p, seq, &cqp36, &m, &Progress::default()).unwrap();
+        assert_eq!(hw_encode_stats().frames - b1.frames, 24);
+        assert!(r36.warnings.is_empty(), "{codec_label} CQP 36 warnings: {:?}", r36.warnings);
+
+        let (f18, f36) = (decode(&cqp18.path), decode(&cqp36.path));
+        assert_eq!((f18.len(), f36.len()), (24, 24));
+        check_ffmpeg(&cqp18.path);
+        check_ffmpeg(&cqp36.path);
+        let (sz18, sz36) = (std::fs::metadata(&cqp18.path).unwrap().len(), std::fs::metadata(&cqp36.path).unwrap().len());
+        eprintln!("{codec_label} CQP: qp=18 -> {sz18} bytes, qp=36 -> {sz36} bytes");
+        assert!(sz18 > sz36, "{codec_label} CQP 18 ({sz18} B) should exceed CQP 36 ({sz36} B)");
+
+        // 2. VBR 1-pass with multipass / lookahead / spatial AQ off vs on
+        for (tag, mp, aq, la) in [("off", false, false, None), ("on", true, true, Some(8))] {
+            let mut vbr = settings(tmp(&dir, &format!("{codec_label}_rc_{tag}.mp4")), hw_mode);
+            vbr.format = fmt;
+            vbr.multipass = mp;
+            vbr.spatial_aq = aq;
+            vbr.lookahead = la;
+            let b = hw_encode_stats();
+            let rep = export(&p, seq, &vbr, &m, &Progress::default()).unwrap();
+            assert_eq!(hw_encode_stats().frames - b.frames, 24);
+            assert!(rep.warnings.is_empty(), "{codec_label} rc {tag} warnings: {:?}", rep.warnings);
+            assert_eq!(decode(&vbr.path).len(), 24);
+            check_ffmpeg(&vbr.path);
+            let sz = std::fs::metadata(&vbr.path).unwrap().len();
+            eprintln!("{codec_label} VBR (multipass={mp}, spatial_aq={aq}, lookahead={la:?}): {sz} bytes");
+        }
+    }
+}
