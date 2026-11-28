@@ -107,6 +107,8 @@ fn motion_scale_and_position() {
     assert_eq!(img.get(200, 120)[3], 0.0, "rest transparent");
 }
 
+/// A rendered Cross Dissolve half-way through (default eases, encoded mix), and an Iris Round
+/// forwards and reversed.
 #[test]
 fn cross_dissolve_midpoint() {
     let (mut p, red, _o, seq, map) = setup();
@@ -144,9 +146,21 @@ fn cross_dissolve_midpoint() {
         reverse: false,
     };
     p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(tr);
-    let img = render_sequence(&p, seq, r.tick_of(24), RenderOptions::default(), &map);
-    let c = img.get(10, 10);
-    assert!((c[0] - 0.5).abs() < 0.05 && (c[2] - 0.5).abs() < 0.05, "{c:?}");
+    // Premiere 26's Cross Dissolve (#4477), default eases 34/34, mixing the encoded pictures. Frame
+    // 24 is the middle (progress 0.5, encoded 0.5 / 0.5); frame 21 is progress 0.25, where the curve
+    // has mixed 0.1633 (encoded red 0.8367, blue 0.1633). Expected values in linear light, worked
+    // out independently of the code under test (Bézier handles 0.915 × 0.34; FilmCraft's Rec. 709
+    // decode curve, the sRGB function).
+    let at = |p: &Project, frame: i64| render_sequence(p, seq, r.tick_of(frame), RenderOptions::default(), &map).get(10, 10);
+    for (frame, red, blue) in [(24, 0.2140, 0.2140), (21, 0.6679, 0.0228)] {
+        let c = at(&p, frame);
+        assert!((c[0] - red).abs() < 0.005 && (c[2] - blue).abs() < 0.005, "frame {frame}: {c:?} vs {red} / {blue}");
+    }
+    // a wide-gamut sequence mixes the same curve in linear light
+    p.sequence_mut(seq).unwrap().settings.color.wide_gamut = true;
+    let c = at(&p, 21);
+    assert!((c[0] - 0.8367).abs() < 0.005 && (c[2] - 0.1633).abs() < 0.005, "wide gamut: {c:?}");
+    p.sequence_mut(seq).unwrap().settings.color.wide_gamut = false;
     // Iris Round at 50 %: B opens in the centre; reversed, A closes into the centre instead.
     for reverse in [false, true] {
         let trs = &mut p.sequence_mut(seq).unwrap().video_tracks[0].transitions;
