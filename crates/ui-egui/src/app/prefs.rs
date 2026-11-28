@@ -129,10 +129,14 @@ impl FilmcraftApp {
             } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
+            } else if language == i18n::Language::He && !i18n::hebrew_font_available() {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Hebrew font is installed on this system; the interface stays in English").into();
             } else {
                 self.ui.language = language;
             }
             i18n::set_current(self.ui.language);
+            theme::apply_direction(ctx, self.ui.language);
             ctx.set_language(Some(self.ui.language.bcp47().to_owned()));
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));

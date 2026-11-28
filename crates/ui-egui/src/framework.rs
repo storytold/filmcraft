@@ -80,7 +80,8 @@ pub fn install_headless_with(ctx: &Context, system: Arc<dyn WindowSystem>) {
 /// the app's `raw_input_hook` drops the main window's.
 pub fn before_input(ctx: &Context, app: &FilmcraftApp) {
     let mode = if app.ui.dark { Mode::Dark } else { Mode::Light };
-    let root = RootEnv::new().mode(mode).scale(Scale::new(ctx.zoom_factor()));
+    let direction = if app.ui.language.is_rtl() { craft_ui::runtime::env::Direction::Rtl } else { craft_ui::runtime::env::Direction::Ltr };
+    let root = RootEnv::new().mode(mode).scale(Scale::new(ctx.zoom_factor())).direction(direction);
     let window_input = if app.control_input_only { WindowInput::Dropped } else { WindowInput::Live };
     embed::before_input(ctx, |_output| {
         FrameInput::new(root).commands(CommandInput::new().overrides(Arc::clone(&OVERRIDES))).host(Arc::clone(&HOST)).window_input(window_input)
