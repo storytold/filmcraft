@@ -203,6 +203,9 @@ pub struct Candidate {
 /// Check `path` as the new file of media item `item`. Opening the file (needed for duration,
 /// timecode and metadata) is skipped when a cheap check already failed.
 pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) -> Result<Candidate> {
+    if crate::export_tools::exporting_to(s, path) {
+        return Err(EngineError::Other(format!("{path}: {}", crate::export_tools::EXPORTING)));
+    }
     let it = s.project.item(item).ok_or_else(|| bad("media.relink", format!("no item {}", item.0)))?;
     let m = it.as_media().ok_or_else(|| bad("media.relink", format!("item {} is not media", item.0)))?;
     let old = match &m.media {

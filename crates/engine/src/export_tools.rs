@@ -508,6 +508,58 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     Ok(Some(path))
 }
 
+/// Why import and relink refuse a file an export is writing.
+pub(crate) const EXPORTING: &str = "an export is writing this file; use it once the export ends";
+
+/// What one export writes, while its job has no result (#3551). Media taken from there would turn
+/// into the export's output when it finishes, for every later open of the project.
+#[derive(Clone)]
+pub struct ExportTarget {
+    path: PathBuf,
+    format: Format,
+    result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>,
+}
+
+impl ExportTarget {
+    pub(crate) fn new(path: &str, format: Format, result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>) -> Self {
+        Self { path: resolved(path), format, result }
+    }
+
+    fn running(&self) -> bool {
+        self.result.lock().unwrap_or_else(|e| e.into_inner()).is_none()
+    }
+
+    /// `path`, already [`resolved`], is the destination, one of an image sequence's numbered frames
+    /// or one of OP-Atom's audio files beside it.
+    fn writes(&self, path: &Path) -> bool {
+        if path == self.path {
+            return true;
+        }
+        if path.parent() != self.path.parent() || path.extension() != self.path.extension() {
+            return false;
+        }
+        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let (name, base) = (stem(path), stem(&self.path));
+        let Some(rest) = name.strip_prefix(&base) else { return false };
+        let numbered = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        (self.format.is_image_sequence() && numbered(rest)) || (self.format == Format::MxfOpAtom && rest.strip_prefix("_A").is_some_and(numbered))
+    }
+}
+
+/// `path` with links and folders resolved, so two spellings of a file compare equal. An export's
+/// destination may not exist yet: then only its folder can be.
+fn resolved(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    p.canonicalize().or_else(|_| dir.canonicalize().map(|d| d.join(p.file_name().unwrap_or_default()))).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Whether an export in progress is writing `path`.
+pub(crate) fn exporting_to(s: &Session, path: &str) -> bool {
+    let path = resolved(path);
+    s.export_targets.iter().any(|t| t.running() && t.writes(&path))
+}
+
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
     let format = settings.format;
@@ -524,6 +576,8 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     write_sidecar(s, &project, seq, &settings)?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
+    let target = ExportTarget::new(&settings.path, format, job.result.clone());
+    s.export_targets.retain(ExportTarget::running);
     // Export always renders full-resolution media, whatever the proxy toggle says, from its own
     // copies of the files so the monitors keep their decoders.
     let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources().recording();
@@ -533,6 +587,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         // No threads: the host advances the export between UI frames (`Session::pump_jobs`).
         let mut exporter = filmcraft_export::Exporter::new(project, seq, &settings, &prog).map_err(|e| EngineError::Other(e.to_string()))?;
         exporter.set_batch(1);
+        s.export_targets.push(target);
         s.jobs.push(job);
         s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
         return Ok(id);
@@ -548,11 +603,15 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
+    s.export_targets.push(target);
     s.jobs.push(job);
     if wait || cfg!(target_arch = "wasm32") {
         run();
     } else {
-        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| {
+            s.export_targets.pop();
+            EngineError::Other(e.to_string())
+        })?;
     }
     Ok(id)
 }
