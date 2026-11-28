@@ -20,6 +20,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
 | `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
+| `view.prompter` | Program wrench menu ▸ Prompter | the [Prompter](#prompter) at the bottom of the Program picture; off by default, Program monitor only, also shown in full-screen Program; takes `{"enabled": bool}` |
 | `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
 | `view.guideTemplates.save`, `.manage`, `.apply`, `.delete` | Guide Templates ▸ Save Guides as Template… / Manage Guides… | templates are stored in the user preferences (`guides.templates`) |
 
@@ -27,10 +28,73 @@ Guides are in frame pixels. Drag out of the top ruler for a horizontal guide or 
 a vertical one; drag a guide to move it (unless locked) and drop it outside the picture to remove it.
 
 Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.settings.<command suffix>`
-(wrench menu items, e.g. `program.settings.display.alpha`), `<monitor>.ruler.top|left`,
+(wrench menu items, e.g. `program.settings.display.alpha`), `program.prompter`, `<monitor>.ruler.top|left`,
 `<monitor>.guide.<n>`, `program.compare.reference|prev|next|set`, `source.waveform`, and in the
 dialogs `guides.add.vertical|horizontal|position|ok|cancel`, `guides.save.name|ok|cancel`,
 `guides.manage.row.<n>|apply|delete|close`.
+
+## Prompter
+
+For narration recorded to picture (voice-over recording) and for rehearsing it with normal
+playback, the Program monitor can show a prompter at the bottom of the picture: Program wrench
+menu ▸ Prompter, or `view.prompter`. It is off by default. It only reads the sequence: it does not
+change playback, recording or the project, it is drawn by the monitor and never rendered or
+exported, and it stays on in full-screen Program (`view.fullScreenProgram`), where the other
+overlays are turned off.
+
+**Sections are range markers.** A marker with a duration is a section: its name is the section's
+name and its range is the section. Point markers are not sections. Where range markers overlap,
+the one that started last is shown while it lasts, so a marker inside another interrupts it and
+the outer one comes back after it; of markers starting together, the shorter is shown first.
+
+**The marker's comment is the section's text.**
+
+- A line starting with `-`, `*` or `•` and a space is a talking point. It can end in a duration in
+  brackets, `[m:ss]` or `[h:mm:ss]`: `- Third line of the graph [0:30]`. Points without a duration
+  share the time the others leave, equally. A bracket that is not such a duration stays part of the
+  point's text.
+- Every other line is script. It runs from the start of the section to its end, in proportion to
+  its characters, so it finishes when the section does.
+
+**What it shows** at the playhead, on a card centred at the bottom of the picture (inside the
+action-safe margin, at most 45% of the picture's height):
+
+- a header with the section's marker flag in the marker's colour, the section's name, and the time
+  elapsed and the section's length; under it a progress bar in the marker's colour, split where
+  one talking point ends and the next begins;
+- the current talking point as the largest line, in bold on a highlight with ▶, its length in a
+  badge and a bar under it showing how far through it you are; the last finished point above it,
+  smaller, with ✓; up to three next points, each with a dot and its length; and how many more
+  follow;
+- the script, larger than the other text, with the line you are reading on a highlighted reading
+  line marked by a bar, what is already read dimmed; it moves up a line at a time;
+- the next section, with its marker's flag and how soon it starts, in the last 10 seconds of a
+  section (the second half of a section shorter than 20 seconds) and between sections;
+- warnings, each on its own block with ⚠: when the talking points' durations add up to more than
+  the section or leave no time for the points without one, and when a comment was cut;
+- the caption at the playhead, from the top caption track that is turned on, drawn as the Timeline
+  draws captions: the track's badge (C1) beside the caption text in a caption block.
+
+Talking points and script side by side share the card, points on the left; on a narrow card the
+script goes under the points. The card's text and spacing grow with the picture, from the small
+Program panel to full screen on a large display. When the picture is too small for everything, the
+card keeps the header and the current point (on one line if two do not fit; the card grows to
+hold it), or two script lines, and then, in this order, what fits: the next point, the next section, the
+warnings, the caption, more script, the other points, the last finished point, the count. Between
+sections it says so, and a sequence without range markers says how to make sections. Only the
+first 64 KiB of a comment and its first 100 talking points are read.
+
+**Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
+node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`
+returns the same content for the active sequence at any time (default: the playhead): `section`
+(marker, name, start, duration, elapsed, remaining, progress, `points` with their text, written
+duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
+characters, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
+`sections` (the number of range markers). It is disabled when no sequence is open. Code:
+A time that is given but cannot be read (`{"timecode": "invalid"}`) is refused, not answered for the
+playhead. `crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`
+(drawing). Tests: `cargo test -p filmcraft-engine prompter_tests::` and
+`cargo test -p filmcraft-ui-egui --test it prompter_ui::`.
 
 ## Source playback
 

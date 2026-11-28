@@ -46,6 +46,7 @@ pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
+pub mod prompter;
 pub mod proxies;
 pub mod relink;
 pub mod remix;
@@ -1498,6 +1499,8 @@ mod previews_tests;
 mod project_manager_tests;
 #[cfg(test)]
 mod project_panel_tests;
+#[cfg(test)]
+mod prompter_tests;
 #[cfg(test)]
 mod proxies_tests;
 #[cfg(test)]

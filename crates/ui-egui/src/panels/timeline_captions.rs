@@ -20,8 +20,9 @@ use crate::theme::Tokens;
 
 /// Height of one caption track row.
 pub const ROW_H: f32 = 28.0;
-/// Caption block colours (fill, selected fill).
-const FILL: Color32 = Color32::from_rgb(0x6b, 0x4f, 0x8f);
+/// Caption block colours (fill, selected fill). The Program monitor's Prompter draws its caption
+/// line in the same fill.
+pub(crate) const FILL: Color32 = Color32::from_rgb(0x6b, 0x4f, 0x8f);
 const FILL_SEL: Color32 = Color32::from_rgb(0x8c, 0x6c, 0xb4);
 
 /// Row rects (full width incl. header) for each caption track, top first.

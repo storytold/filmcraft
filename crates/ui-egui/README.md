@@ -162,6 +162,146 @@ Source range handles use transient gesture previews and the engine's integer-fra
 `source_monitor::adjust_range`; release dispatches one mark edit. Monitor command routing
 keeps Source navigation, markers and marked-range playback separate from Program.
 
+## Prompter overlay
+
+`panels/prompter.rs` draws the Program monitor's Prompter (`view.prompter`, Program wrench menu,
+off by default; [monitor documentation](../../docs/monitors.md#prompter)). It draws only what
+`filmcraft_engine::prompter::prompt_at` returns for the playhead; `prompter.inspect` returns the
+same result over automation. The model's decisions (in `crates/engine/src/prompter.rs`):
+
+- **Sections** are range markers; point markers are not. Where range markers overlap, the one that
+  started last is shown while it lasts, so a nested marker interrupts its parent and the parent
+  comes back after it; of markers starting together the shorter is shown first, then the first
+  listed. "Next" is what is shown after the current section: a section starting inside it, a parent
+  that resumes, or the next one after a gap.
+- **Talking points** are lines starting with `-`, `*` or `•` and a space, optionally ending in
+  `[m:ss]` or `[h:mm:ss]`; a bracket that is not such a duration stays in the text. Points without
+  a duration share what the others leave equally and end with the section.
+- **Overrun** is reported when the written durations exceed the section, or fill it and leave the
+  untimed points no time. Points keep their written lengths; they are not squeezed.
+- **Script** is every other line. Its position is linear in characters over the whole section.
+- **Caption** is the one at the playhead on the top caption track that is turned on.
+- **Next section** is announced in the last 10 s of a section (the second half of a shorter one)
+  and always between sections.
+- **Limits:** only the first 64 KiB of a comment and its first 100 points are read, and a point is
+  cut at 500 characters; the overlay and the query say so (`truncated`).
+
+The overlay's decisions:
+
+- **Shape and edge:** a card centred at the bottom of the visible picture, inset from its edges by
+  the action-safe band the Safe Margins draw (5% of the picture's shorter side, 8 to 40 pt), at
+  most 60 base type sizes wide and 45% of the picture tall. It has a window's look: `panel_bg`,
+  opaque, a 1 pt `field_border` edge, the theme's popup shadow and `radius_sm` corners scaled with
+  the type. Opaque, so no picture (a burned-in caption included) shows through its text. It can
+  repeat only a caption on one of the sequence's caption tracks (the top one turned on), and only
+  when it has room for that row; text that is part of the picture itself, such as a title or a
+  caption burned into the media, is covered and not repeated. The voice-over
+  countdown at the top of the window stays clear. It is drawn with the monitor's painter only
+  (never rendered or exported) and stays on in full-screen Program.
+- **Regions, top to bottom:** a header (the marker's flag, the section name, the time; room is left
+  before the time for a short readout), the progress bar, the body (talking points, script, or both
+  side by side with the points on the left), then a footer (the next section, warnings, the caption).
+  Beside the script the points take 42% of the width, more where that would leave the current
+  point less than 10 of its type sizes; where that leaves the script less than 10 of its type
+  sizes, the script goes under the points, across the card.
+- **Hierarchy:** the current talking point is the most prominent line, semibold at 1.4 times the
+  base size on the current-point highlight; the script is 1.3 times the base size with its reading
+  line on the same highlight. The section name (semibold) and the time (tabular figures,
+  `text_dim`) are at the base size. Upcoming points are at the base size in `text_dim`; the last
+  finished point is smaller, with ✓. Points not listed are counted ("N more").
+- **Talking points:** ▶ (the Play icon) marks the current point, ✓ finished ones, a hollow dot the
+  upcoming ones, so state never rests on colour. Each listed point has its length (written or its
+  share) in an outlined badge; the current point wraps to two lines (one where two do not fit) and
+  has a bar under it showing how far through it the narrator is. Long names and points are cut
+  with an ellipsis.
+- **Progress:** a 0.4-em bar on a `control_well` groove, split into segments where one talking
+  point ends and the next begins (a single bar when the segments would be too short).
+- **Script:** the line holding the narrator's position sits on a reading line (the highlight and a
+  bar at its left), the second of three lines or the first while the first line is read; what is
+  already read is dimmed. The script moves up a whole line at a time, eased over the theme's
+  animation time, so no line is shown cut in half; with animation turned off in Settings ▸
+  Appearance it moves without easing. It is laid out once for its text and width; the reading
+  position only changes which part is drawn dimmed, so reading on never lays it out again.
+- **Marker colour:** the section's marker colour (its custom colour, else its label's) is the
+  accent of the flag and the bars' fill. A marker can have any colour, so its lightness is moved,
+  hue kept, just enough for 3:1 against the card and the groove (`craft_theme::ensure_contrast`).
+  No text is ever drawn on it, and it is never the only signal: the name is beside the flag. The
+  next section's flag has the next marker's colour.
+- **Caption line:** drawn as the Timeline draws captions: the track's badge (C1) and the caption
+  text in a block, both in the Timeline's caption block colour with white text.
+- **Warnings:** bold text with ⚠ on a `pill_active_bg` block, one row each.
+- **Scaling:** the base size is 3% of the picture's height (2.2% of its width for a narrow picture),
+  from 11 pt (the theme's small text, the normal layout's Program panel) to 19 pt; spacing and
+  radius are the theme's `gap` and `radius_sm` scaled by the same factor. When the card would pass
+  45% of the picture, it keeps the header and the current point (or two script lines), then adds in
+  this order what fits: the next point, the next section, the warnings, the caption, a third script
+  line, the other upcoming points (three at most), the last finished point, the "N more" count.
+  With the script under the points, two script lines come right after the current point. Where the
+  header and a two-line current point do not fit in 45%, the point takes one line, and the card
+  grows past 45% to hold that line, up to the picture's inset; on a picture too small even for
+  that, the card holds the header alone. Between sections the card is only as wide as its message.
+- **Accessibility text:** the section, its time, the last finished point, the current point and
+  up to three next points (the rows the card lists when it has room), the count of the rest, a
+  script excerpt, then the footer's notices. Rows the card leaves out for space are still in it.
+- **Colours** are theme tokens: `panel_bg`, `field_border`, `text`, `text_dim`, `control_well`,
+  `pill_active_bg`, and for the current-point highlight `row_selected`, or `pill_active_bg` or
+  `hover` where `row_selected` does not stand apart from the card (Dark) or gives `text_dim` less
+  than 4.5:1 (Light). The caption uses the Timeline's caption block colour.
+- **Times:** lengths and countdowns round up to whole seconds, elapsed time rounds down.
+- **Accessibility:** the automation element `program.prompter` and one `Label` node carry the
+  overlay's text in reading order (a label node keeps its text in its value). What is dropped from
+  the card for lack of room stays in that text.
+
+Tests:
+
+- Engine, `crates/engine/src/prompter_tests.rs`:
+  `list_lines_are_talking_points_with_their_durations_and_the_rest_is_script`,
+  `points_without_a_duration_share_what_the_timed_ones_leave_and_end_with_the_section`,
+  `points_that_need_more_time_than_the_section_are_reported`,
+  `the_current_point_and_the_script_position_follow_the_time`,
+  `a_nested_section_interrupts_its_parent_and_next_names_what_is_shown_after`,
+  `the_next_section_is_announced_near_the_end_and_between_sections`,
+  `the_caption_line_comes_from_the_top_enabled_track_with_a_caption_there`,
+  `prompter_inspect_reports_the_section_at_a_time_and_changes_nothing`,
+  `hostile_comments_markers_and_times_never_panic`.
+- Unit, `panels::prompter::tests`:
+  `the_prompter_text_keeps_its_contrast_over_any_picture_in_every_theme` (in all three themes, with
+  and without accessible contrast: the card is opaque; 4.5:1 for text and dimmed text on the card,
+  on the current-point highlight and on the warning block, and for the caption's white on its
+  block; 3:1 for the reading bar and a bar without a marker colour; the highlight stands apart from
+  the card; and 3:1 against the card and the groove for the accent of 216 marker colours spread
+  over the RGB cube) and `a_marker_colour_that_already_reads_is_kept_as_it_is` (the accent is the
+  marker's own colour when it reads, and keeps its hue when it is lightened).
+- Headless UI, `tests/it/prompter_ui.rs`:
+  `the_prompter_is_off_by_default_and_the_view_command_toggles_it`,
+  `the_prompter_follows_the_playhead_through_points_and_sections`,
+  `the_prompter_runs_along_the_bottom_of_the_picture_and_stays_in_full_screen_program`,
+  `points_longer_than_their_section_are_reported_on_the_overlay`,
+  `the_accessibility_text_names_every_point_the_card_lists`.
+- Unit, `panels::prompter::tests`: `the_current_point_stays_inside_the_card_on_a_small_picture`,
+  `the_current_point_beside_a_script_shows_its_first_words` (pictures from 213×120 to 1600×900),
+  `reading_on_through_the_script_lays_it_out_once`.
+
+Results on Linux (2026-11-25): all 10 engine and 10 UI prompter tests pass, and the 4 headless tests
+from the first version fail with the overlay's draw call removed. In the full UI suite, 1211 of
+1212 passed under heavy load; the one that failed, `perf_ui::queued_frames_do_not_poll_the_ui`, is
+a known intermittent test outside the prompter that fails the same way on `main` on the same
+machine, and it passed 3 of 3 runs alone. The contrast unit tests fail when the current-point
+highlight is `row_selected` in every theme, or when the accent ignores the marker's colour. The
+review fixes' tests fail on the code before them: the card was 54 pt tall for a 101 pt current
+point on a 213×120 picture, the current point beside a script showed "S…", the script was laid out
+157 times for 157 reading positions, and the accessibility text named one of the three next
+points.
+
+Limitations: changes on the overlay, and turning it on or off by shortcut, are not announced
+through a live region (no shared helper yet). The script's line-by-line easing follows the app's
+animation setting, not a system reduced-motion setting. The card's text size follows the picture,
+not the system text size. In the normal layout's small Program panel the card has room for the
+header, the current point and one or two more rows, so the script beside points, and the caption,
+are often among what it leaves out; it is then still in the accessibility text, and the burned-in caption under the card is not
+visible. Right after a seek, the monitor shows the nearest cached picture until the new
+frame renders, while the prompter already shows the new time.
+
 ## Pane layout controls
 
 The panels use `craft-ui::docking` with its split-tree settings: craft-ui draws the frames, tab
