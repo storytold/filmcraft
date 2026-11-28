@@ -3644,3 +3644,125 @@
 	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
 	Color Grading Section	Renk Derecelendirme Bölümü
 	Read Video Scopes	Video Ölçümlerini Oku
+	1 frame ({seconds} s)	1 kare ({seconds} sn)
+	1/2	1/2
+	A range marker needs a positive duration	Aralık işaretçisi için pozitif bir süre gerekir
+	Add Custom Color	Özel Renk Ekle
+	Add Track	İz Ekle
+	Add and apply	Ekle ve uygula
+	Add color	Renk ekle
+	Add custom color	Özel renk ekle
+	Add custom color…	Özel renk ekle…
+	Audio Names	Ses Adları
+	Author	Yazar
+	Caption Export Settings	Altyazı Dışa Aktarma Ayarları
+	Center at Cut	Kesimde Ortala
+	Change Sequence Settings	Sekans Ayarlarını Değiştir
+	Change the sequence to match the clip's settings?	Sekans, klibin ayarlarıyla eşleşecek şekilde değiştirilsin mi?
+	Chapter	Bölüm
+	Chapter Marker	Bölüm İşaretçisi
+	Check for Updates…	Güncellemeleri Denetle…
+	Checking for updates…	Güncellemeler denetleniyor…
+	Choose Color…	Renk Seç…
+	Choose color with system picker	Sistem seçicisiyle renk seç
+	Clip Mismatch Warning	Klip Uyuşmazlığı Uyarısı
+	Clip: {settings}	Klip: {settings}
+	Color picker	Renk seçici
+	Color selected markers	Seçili işaretçileri renklendir
+	Comment Marker	Yorum İşaretçisi
+	Could not check for updates:\n{error}	Güncellemeler denetlenemedi:\n{error}
+	Custom Color…	Özel Renk…
+	Custom Start	Özel Başlangıç
+	Delete Marker	İşaretçiyi Sil
+	Delete Markers	İşaretçileri Sil
+	Delete Track	İzi Sil
+	Delete selected markers	Seçili işaretçileri sil
+	Duration (frames):	Süre (kare):
+	Edit Custom Color	Özel Rengi Düzenle
+	Edit Marker	İşaretçiyi Düzenle
+	Edit Markers	İşaretçileri Düzenle
+	Edit Marker…	İşaretçiyi Düzenle…
+	Edit color	Rengi düzenle
+	Editing or removing a swatch leaves assigned colors unchanged.	Bir renk örneğini düzenlemek veya kaldırmak, atanmış renkleri değiştirmez.
+	End at Cut	Kesimde Bitir
+	Enter a positive duration within the supported speed range.	Desteklenen hız aralığında pozitif bir süre girin.
+	Enter a valid HH:MM:SS:FF timecode	Geçerli bir HH:MM:SS:FF zaman kodu girin
+	Enter a valid HTTP or HTTPS URL without credentials	Kimlik bilgileri içermeyen geçerli bir HTTP veya HTTPS URL'si girin
+	Enter six hex digits, for example FF80C0.	Altı haneli hex kodu girin, örneğin FF80C0.
+	Exported {path} as {format}, from its file extension	{path} dosyası, dosya uzantısına göre {format} biçiminde dışa aktarıldı
+	FilmCraft Updates	FilmCraft Güncellemeleri
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} şu anda mevcut en yeni sürümdür.
+	Flash Cue Point	Flash İşaret Noktası
+	From preset file:	Hazır ayar dosyasından:
+	Hex	Hex
+	Hex color	Hex rengi
+	Imported {n} preset(s)	{n} hazır ayar içe aktarıldı
+	Imported {n} preset(s); not imported: {error}	{n} hazır ayar içe aktarıldı; içe aktarılamayan: {error}
+	Imported {n} preset(s); {skipped} skipped	{n} hazır ayar içe aktarıldı; {skipped} atlandı
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} hazır ayar içe aktarıldı; {skipped} atlandı, {warnings} tanesinde desteklenmeyen parametreler var
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} hazır ayar içe aktarıldı; {warnings} tanesinde desteklenmeyen parametreler var
+	In:	Giriş:
+	Invalid duration: {error}	Geçersiz süre: {error}
+	Keep Existing Settings	Mevcut Ayarları Koru
+	Looks for a newer FilmCraft release and offers to update.	Daha yeni bir FilmCraft sürümü arar ve güncelleme sunar.
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	MPEG ses (.mp3), birleşik stereo 48 kHz, 320 kbps
+	Manage Colors	Renkleri Yönet
+	Manage Colors…	Renkleri Yönet…
+	Marker Color:	İşaretçi Rengi:
+	Marker changed or was removed. Reopen it to continue.	İşaretçi değiştirildi veya kaldırıldı. Devam etmek için yeniden açın.
+	Marker owner is unavailable	İşaretçi sahibi kullanılamıyor
+	Next	Sonraki
+	No markers	İşaretçi yok
+	No matching markers	Eşleşen işaretçi yok
+	No presets folder: the app has no data directory	Hazır ayar klasörü yok: uygulamanın veri dizini bulunmuyor
+	No saved colors	Kayıtlı renk yok
+	No sequence open	Açık sekans yok
+	No source clip open	Açık kaynak klip yok
+	Notes	Notlar
+	Open Link	Bağlantıyı Aç
+	Open Presets Folder	Hazır Ayarlar Klasörünü Aç
+	Opens this address in your web browser	Bu adresi web tarayıcınızda açar
+	Options:	Seçenekler:
+	Preset library is up to date	Hazır ayar kitaplığı güncel
+	Preset library updated	Hazır ayar kitaplığı güncellendi
+	Preset library updated: {imported} loaded, {removed} removed	Hazır ayar kitaplığı güncellendi: {imported} yüklendi, {removed} kaldırıldı
+	Previous	Önceki
+	Project Colors	Proje Renkleri
+	Range marker	Aralık işaretçisi
+	Remove Custom Color	Özel Rengi Kaldır
+	Remove saved color	Kayıtlı rengi kaldır
+	Replace	Değiştir
+	Replace File	Dosyayı Değiştir
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Duyarlı Tasarım – Zaman: grafiğin katman anahtar karelerini yeniden eşler; Opaklık ve Hareket gibi klip efektleri medya zamanını korur
+	Save color	Rengi kaydet
+	Scan Presets Folder	Hazır Ayarlar Klasörünü Tara
+	Search markers	İşaretçilerde ara
+	Search name, notes, author	Ad, notlar ve yazara göre ara
+	Segmentation Marker	Bölümleme İşaretçisi
+	Select all	Tümünü seç
+	Select all visible markers	Görünür tüm işaretçileri seç
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Yeniden adlandırmak için Zaman Çizelgesi'nde bir klip (veya bağlı bir klip) ya da Proje panelinde bir öğe seçin
+	Sequence: {name}	Sekans: {name}
+	Sequence: {settings}	Sekans: {settings}
+	Set Work Area Bar In Point	Çalışma Alanı Çubuğu Giriş Noktasını Ayarla
+	Set Work Area Bar Out Point	Çalışma Alanı Çubuğu Çıkış Noktasını Ayarla
+	Set as Default Transition	Varsayılan Geçiş Olarak Ayarla
+	Show Audio Names	Ses Adlarını Göster
+	Show Video Names	Video Adlarını Göster
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Kaynak Giriş/Çıkış yalnızca 1 kare. Sekansın tamamını dışa aktarmak için Tüm Kaynak'ı seçin.
+	Source: {name}	Kaynak: {name}
+	Source: {name} (shared source markers)	Kaynak: {name} (paylaşılan kaynak işaretçileri)
+	Start at Cut	Kesimde Başlat
+	System color picker unavailable: {error}	Sistem renk seçicisi kullanılamıyor: {error}
+	This clip does not match the sequence settings.	Bu klip sekans ayarlarıyla eşleşmiyor.
+	Time is outside the supported range	Zaman desteklenen aralığın dışında
+	URL	URL
+	Video Names	Video Adları
+	Web Link	Web Bağlantısı
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Etkinleştirildiğinde, GIF saydamlığı açık/kapalı olur: 128'in altındaki alfa saydamdır; 128 ve üzeri opaktır.
+	{count} selected	{count} seçili
+	{frames} frames ({seconds} s)	{frames} kare ({seconds} sn)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} zaten var, bu nedenle hiçbir şey dışa aktarılmadı. Değiştirmek için kaydetme iletişim kutusundan seçin.
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}”, “{folder}” içinde zaten var. Değiştirmek istiyor musunuz?
