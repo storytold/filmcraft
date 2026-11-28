@@ -37,6 +37,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("bitstream", 0),
     ("isobmff", 0),
+    ("insta360", 0),
     ("matroska", 0),
     ("cfb", 0),
     ("riff", 0),

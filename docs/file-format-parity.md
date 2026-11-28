@@ -45,6 +45,7 @@ only). "Tested" names the evidence.
 | FLV / F4V | read + write | no | no | — | 0% |
 | DCP | write (Wraptor) | no | no | — | 0% |
 | APV raw / Y4M | — | yes | APV in MOV | — | ahead |
+| Insta360 INSV (`.insv`) | via the Insta360 Reframe plugin | yes (MP4 + trailer, dual fisheye stitched to equirect, spanned multi-part clips joined; the camera's `LRV_…_.lrv` proxies attach automatically) | no | synthetic + real-footage tests | 85% (no gyro / flow seam) |
 | Ogg (Opus / Vorbis) | — | yes | no | granule-seek tests | ahead |
 | Camera folder structures (XDCAM, P2, AVCHD, Canon XF, RED) | Media Browser reads them | AVCHD files yes; spanned clips and metadata no | — | — | 30% |
 

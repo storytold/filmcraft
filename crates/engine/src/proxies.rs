@@ -448,6 +448,27 @@ fn check_proxy(s: &Session, item: ItemId, path: &str, source_duration: Option<Ti
     Ok(())
 }
 
+/// The camera's own proxy for a file being imported, when it wrote one beside it
+/// (Insta360 records an `LRV_…_.lrv` chain next to each `VID_…_.insv` recording): the
+/// twin's path, once it opens and matches the just-opened source `src` (duration within
+/// one frame, same frame rate, has video). None when there is no twin or it does not
+/// match — importing then behaves exactly as before the twin existed.
+pub fn camera_proxy_for(s: &Session, path: &str, src: &SharedSource) -> Option<String> {
+    let twin = crate::spanned::camera_proxy(path, &*s.services)?;
+    let ps = s.media.open_file(&twin, &*s.services).ok()?;
+    let (pi, ci) = (ps.info(), src.info());
+    let fd = ci.frame_rate().frame_duration();
+    if (pi.duration - ci.duration).0.abs() > fd.0 || pi.video.is_none() && ci.video.is_some() {
+        return None;
+    }
+    if let (Some(a), Some(b)) = (&pi.video, &ci.video)
+        && a.frame_rate != b.frame_rate
+    {
+        return None;
+    }
+    Some(twin)
+}
+
 /// Attach proxies (checked unless `force`). One undo step.
 pub fn attach(s: &mut Session, pairs: &[(ItemId, String)], force: bool) -> Result<Value> {
     attach_checked(s, pairs, force, &[])
@@ -759,6 +780,39 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default()),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
+        },
+        CommandSpec {
+            id: "media.attachCameraProxies",
+            label: "Attach Camera Proxies",
+            menu: &["Clip", "Proxy"],
+            shortcut: None,
+            params: r#"{"items":[id]?}"#,
+            enabled: has_file_media,
+            run: |s, p| {
+                let mut items = items_param(s, p);
+                if items.is_empty() {
+                    // nothing selected: every file item (a project-level utility)
+                    items = s.project.items.values().filter(|i| i.as_media().is_some_and(|m| matches!(m.media, MediaRef::File { .. }))).map(|i| i.id).collect();
+                }
+                let mut pairs = Vec::new();
+                for &i in &items {
+                    if let Some((_, path, _)) = media_path(&s.project, i)
+                        && s.project.item(i).and_then(|it| it.as_media()).is_some_and(|m| m.proxy.is_none())
+                        && let Ok(file) = s.media.follow(&path)
+                        && let Some(src) = s.media.full_res_source(&s.project, i, &*s.services)
+                        && let Some(twin) = camera_proxy_for(s, &file, &src)
+                    {
+                        s.media.allow(&twin);
+                        pairs.push((i, twin));
+                    }
+                }
+                if pairs.is_empty() {
+                    return Err(EngineError::Other("no camera proxies (Insta360 LRVs) were found beside the selected clips".into()));
+                }
+                attach(s, &pairs, true)
+            },
+            journal: true,
             named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {

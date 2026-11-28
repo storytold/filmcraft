@@ -2966,6 +2966,7 @@ dependencies = [
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-frame",
+ "filmcraft-insta360",
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
@@ -3032,6 +3033,7 @@ dependencies = [
  "filmcraft-format",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-insta360",
  "filmcraft-interchange",
  "filmcraft-isobmff",
  "filmcraft-media",
@@ -3157,6 +3159,13 @@ dependencies = [
  "rayon",
  "tempfile",
  "wgpu",
+]
+
+[[package]]
+name = "filmcraft-insta360"
+version = "0.20.1"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]

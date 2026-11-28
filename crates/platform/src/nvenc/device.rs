@@ -3,6 +3,8 @@ use std::ffi::c_void;
 
 #[cfg(target_os = "linux")]
 pub use cuda::Device;
+#[cfg(target_os = "linux")]
+pub use cuda::Pinned;
 #[cfg(target_os = "windows")]
 pub use directx::Device;
 
@@ -76,6 +78,8 @@ mod cuda {
     type Push = unsafe extern "C" fn(*mut c_void) -> i32;
     type Pop = unsafe extern "C" fn(*mut *mut c_void) -> i32;
     type CopyToHost = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
+    type MemAllocHost = unsafe extern "C" fn(*mut *mut c_void, usize) -> i32;
+    type MemFreeHost = unsafe extern "C" fn(*mut c_void) -> i32;
 
     /// A thread-local context stack entry; it cannot move to another thread.
     pub struct Current<'a> {
@@ -143,21 +147,85 @@ mod cuda {
             }
         }
 
-        /// Copy a driver-owned device address into a bounded host slice. CUDA validates
-        /// the source device range; the destination is always a live writable Rust slice.
-        pub fn copy_to_host(&self, source: u64, destination: &mut [u8]) -> Result<(), String> {
+        /// Copy a driver-owned device address into page-locked host memory. DMA
+        /// transfers into locked pages directly, without the driver staging through a
+        /// buffer of its own; callers unmap the surface after, so nothing stays held.
+        pub fn copy_out(&self, source: u64, destination: &mut [u8]) -> Result<(), String> {
             let _current = self.push_current()?;
             source.checked_add(u64::try_from(destination.len()).map_err(|_| "CUDA copy length overflows")?).ok_or("CUDA copy address overflows")?;
             // SAFETY: the synchronous copy writes at most destination.len() bytes to its
-            // live buffer. The CUDA context and library remain live through the call.
-            let st = unsafe {
+            // live buffer; the context and library are live through the call.
+            unsafe {
                 let copy: CopyToHost = *self._library.get(b"cuMemcpyDtoH_v2\0").map_err(|e| e.to_string())?;
-                copy(destination.as_mut_ptr().cast(), source, destination.len())
-            };
-            if st != 0 {
-                return Err(format!("cuMemcpyDtoH failed ({st})"));
+                let st = copy(destination.as_mut_ptr().cast(), source, destination.len());
+                if st != 0 {
+                    return Err(format!("cuMemcpyDtoH failed ({st})"));
+                }
             }
             Ok(())
+        }
+
+        /// A page-locked host buffer of `len` bytes: a destination the DMA engine can
+        /// write directly, without the driver staging through a buffer of its own.
+        pub fn pinned(&self, len: usize) -> Result<Pinned, String> {
+            let _current = self.push_current()?;
+            // SAFETY: driver API signatures; the context is current for the call's
+            // duration and the library outlives the resolved symbols it hands back.
+            unsafe {
+                let alloc: MemAllocHost = *self._library.get(b"cuMemAllocHost_v2\0").map_err(|e| e.to_string())?;
+                let free: MemFreeHost = *self._library.get(b"cuMemFreeHost\0").map_err(|e| e.to_string())?;
+                let mut address = std::ptr::null_mut();
+                let st = alloc(&mut address, len);
+                if st != 0 {
+                    return Err(format!("cuMemAllocHost failed ({st})"));
+                }
+                if address.is_null() {
+                    return Err("cuMemAllocHost returned a null pointer".into());
+                }
+                Ok(Pinned { address, len, free })
+            }
+        }
+    }
+
+    /// A page-locked host buffer for device-to-host DMA (see [`Device::pinned`]).
+    pub struct Pinned {
+        address: *mut c_void,
+        len: usize,
+        free: MemFreeHost,
+    }
+
+    impl Pinned {
+        pub fn len(&self) -> usize {
+            self.len
+        }
+
+        /// The buffer's bytes, whole: a copy into it is complete once `copy_out`
+        /// returned, and nothing writes it while borrowed.
+        pub fn as_slice(&self) -> &[u8] {
+            // SAFETY: live allocation of `len` bytes, read-only for the borrow's life.
+            unsafe { std::slice::from_raw_parts(self.address.cast::<u8>(), self.len) }
+        }
+
+        /// The buffer for a copy to land into; exclusive for the borrow's life.
+        pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+            // SAFETY: live allocation of `len` bytes, single exclusive borrow.
+            unsafe { std::slice::from_raw_parts_mut(self.address.cast::<u8>(), self.len) }
+        }
+    }
+
+    // SAFETY: page-locked allocations are context resources without thread affinity;
+    // every use pushes the context first, and the free logs its error if none runs.
+    unsafe impl Send for Pinned {}
+    // SAFETY: as for Send.
+    unsafe impl Sync for Pinned {}
+
+    impl Drop for Pinned {
+        fn drop(&mut self) {
+            // SAFETY: owns one successful cuMemAllocHost_v2 and frees it exactly once.
+            let st = unsafe { (self.free)(self.address) };
+            if st != 0 {
+                log::warn!("cuMemFreeHost failed ({st})");
+            }
         }
     }
 

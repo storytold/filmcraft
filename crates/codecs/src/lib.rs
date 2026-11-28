@@ -15,6 +15,13 @@
 //!   audio, AAC (ADTS / LATM), AC-3 and LPCM.
 //! - [`AviSource`]: AVI (OpenDML included): Motion JPEG, H.264, HEVC and uncompressed video; PCM,
 //!   MP3 / MP2 and AC-3 audio.
+//! - [`InsvSource`]: Insta360 INSV (`.insv`): an MP4 with a metadata trailer; its two fisheye
+//!   lens tracks are stitched to equirectangular with the trailer's factory calibration
+//!   ([`stitch`]), or stacked side by side when a file has no usable calibration.
+//! - [`LrvSource`]: Insta360 LRV (`.lrv`): the camera's low-resolution proxy beside an
+//!   INSV recording — one track with the two lens circles side by side (in the reverse
+//!   of the INSV's track order), stitched to equirectangular with the same trailer
+//!   calibration and attached as the main clip's proxy on import.
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
 //! - [`Y4mSource`]: uncompressed YUV4MPEG2 (`.y4m`) video, frames read on demand.
 //! - [`openers`]: the openers to register with the engine's media pool.
@@ -27,11 +34,14 @@ pub mod avi;
 pub mod gop;
 pub mod hw;
 mod hw_frame;
+pub mod insta360;
 pub mod mkv;
 pub mod mp4;
 pub mod mpeg;
 pub mod mxf;
 pub mod ogg;
+pub mod spanned;
+pub mod stitch;
 mod stream_color;
 pub mod video;
 mod webm_alpha;
@@ -43,11 +53,14 @@ pub use apv::ApvSource;
 pub use audio::AudioFileSource;
 pub use avi::AviSource;
 pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders, release_idle};
+pub use insta360::InsvSource;
+pub use insta360::LrvSource;
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use mpeg::MpegSource;
 pub use mxf::MxfSource;
 pub use ogg::OggSource;
+pub use spanned::SpannedSource;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
 pub use y4m::Y4mSource;
 
@@ -144,13 +157,27 @@ fn undecodable_codec(entry: &filmcraft_isobmff::SampleEntry) -> String {
 /// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
 /// MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
+    vec![
+        insta360::opener,
+        insta360::lrv_opener,
+        mp4::opener,
+        mkv::opener,
+        mxf::opener,
+        ogg::opener,
+        mpeg::opener,
+        apv::opener,
+        avi::opener,
+        y4m::opener,
+        audio::opener,
+    ]
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
     static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
     R.get_or_init(|| {
         RwLock::new(vec![
+            insta360::reader_opener,
+            insta360::lrv_reader_opener,
             mp4::reader_opener,
             mkv::reader_opener,
             mxf::reader_opener,
@@ -184,6 +211,15 @@ pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
 pub(crate) struct Src(pub filmcraft_media::SharedReader);
 
 impl filmcraft_isobmff::ByteSource for Src {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.0.read_at(offset, buf)
+    }
+}
+
+impl filmcraft_insta360::ByteSource for Src {
     fn len(&self) -> u64 {
         self.0.len()
     }

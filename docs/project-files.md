@@ -371,6 +371,7 @@ be read, such as "no decoder for Apple Intermediate Codec video".
 |---|---|---|
 | `media.createProxies {items?, preset?, destination?, attach?=true, wait?}` | Clip ▸ Proxy ▸ Create Proxies… | background job; attaches when done |
 | `media.attachProxies {item, path}` / `{items, paths}` | Attach Proxies… | duration within one frame and the same frame rate are required; size and aspect may differ |
+| `media.attachCameraProxies {items?}` | Clip ▸ Proxy ▸ Attach Camera Proxies | finds each clip's own camera proxy beside it (an Insta360 `LRV_…_.lrv` chain for a spanned or single `.insv`); with nothing selected every file item is offered; errors when no twins are found |
 | `media.detachProxies {items?}` | Detach Proxies | |
 | `media.reconnectFullRes {item, path}` | Reconnect Full Resolution Media… | link the full-resolution file of a clip that has a proxy |
 | `media.toggleProxies {enabled?}` | View ▸ Toggle Proxies, monitor button | Preferences ▸ Media ▸ `media.enableProxies` |

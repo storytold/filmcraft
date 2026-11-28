@@ -1,0 +1,15 @@
+[package]
+name = "filmcraft-insta360"
+description = "Clean-room Insta360 INSV trailer demuxer (metadata and lens calibration)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+filmcraft-testkit = { workspace = true }

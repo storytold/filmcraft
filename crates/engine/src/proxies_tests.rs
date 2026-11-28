@@ -479,3 +479,55 @@ fn a_finished_job_of_a_replaced_project_applies_nothing() {
     crate::proxies::poll(&mut s);
     assert_ne!(s.project.item(items[0]).unwrap().as_media().unwrap().media, before);
 }
+/// Importing an Insta360 recording whose camera wrote its LRV proxy chain beside it
+/// attaches the LRVs as the item's proxy, and toggling proxies then plays the
+/// recording from them (the same sphere, at proxy resolution).
+#[test]
+fn importing_a_recording_with_lrvs_attaches_them_as_the_proxy() {
+    use filmcraft_media::FrameRequest;
+    use filmcraft_time::FrameRate;
+
+    let root = tmp_dir("proxy-lrv");
+    let rate = FrameRate::FPS_25;
+    let first = "/DCIM/Camera01/VID_20261010_205908_00_054.insv";
+    for (i, seg) in [54u32, 55, 56].iter().enumerate() {
+        let insv = filmcraft_codecs::insta360::synthetic_insv_circles(Some(first), 2, i % 2 == 1, 64, 64).expect("build insv");
+        let lrv = filmcraft_codecs::insta360::synthetic_lrv(Some(first), 2, i % 2 == 1).expect("build lrv");
+        std::fs::write(root.join(format!("VID_20261010_205908_00_{seg:03}.insv")), insv).unwrap();
+        std::fs::write(root.join(format!("LRV_20261010_205908_01_{seg:03}.lrv")), lrv).unwrap();
+    }
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [root.join("VID_20261010_205908_00_054.insv").to_string_lossy()]})).unwrap();
+    let item = filmcraft_project::ItemId(r["items"][0].as_u64().unwrap());
+    let m = s.project.item(item).unwrap().as_media().unwrap().clone();
+    assert!(m.info.container.ends_with("(spanned)"), "the main chain joined: {}", m.info.container);
+    assert_eq!(
+        m.proxy,
+        Some(filmcraft_project::MediaRef::File { path: root.join("LRV_20261010_205908_01_054.lrv").to_string_lossy().into_owned() }),
+        "the LRV chain is the item's proxy"
+    );
+    // the proxy resolves and plays: same duration and equirect size as the main chain
+    s.execute("media.toggleProxies", json!({"enabled": true})).unwrap();
+    let src = s.media.source_for(&s.project, item, &*s.services).expect("a source with proxies on");
+    assert_eq!(src.info().duration, m.info.duration, "the proxy chain is as long as the recording");
+    let f = src.video_frame(FrameRequest::full(rate.tick_of(3))).expect("a frame across the part join");
+    let full =
+        s.media.full_res_source(&s.project, item, &*s.services).expect("full res").video_frame(FrameRequest::full(rate.tick_of(3))).expect("the same frame");
+    assert_eq!((f.width, f.height), (full.width, full.height), "the proxy reports the recording's size");
+    // the same scene from both chains: the layout agrees (the proxy's circles are one
+    // shade dimmer on purpose, so a frame that is dimmer proves the LRV is what played)
+    let (pl, fl) = (f.luma8(), full.luma8());
+    assert_eq!(pl.len(), fl.len());
+    let mean = |l: &[u8]| -> u64 { l.iter().map(|&x| u64::from(x)).sum::<u64>() / l.len() as u64 };
+    let (pm, fm) = (mean(&pl), mean(&fl));
+    assert!(pm < fm && fm - pm > 4, "the frame came from the LRV chain (proxy mean {pm} < full {fm})");
+    let diff = pl.iter().zip(&fl).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs()).max().unwrap_or(0);
+    assert!(diff <= 40, "the LRV proxy shows the INSV's picture: max luma diff {diff}");
+    // detaching and re-attaching through the command finds the twins again
+    s.execute("media.detachProxies", json!({"items": [item.0]})).unwrap();
+    assert_eq!(s.project.item(item).unwrap().as_media().unwrap().proxy, None, "detached");
+    let r = s.execute("media.attachCameraProxies", json!({"items": [item.0]})).unwrap();
+    assert_eq!(r["attached"].as_array().map(|a| a.len()), Some(1), "the command found the chain again: {r}");
+    assert_eq!(s.project.item(item).unwrap().as_media().unwrap().proxy, m.proxy, "the same proxy as on import");
+    let _ = std::fs::remove_dir_all(&root);
+}

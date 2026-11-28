@@ -516,3 +516,35 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     assert_eq!(df30(1, 0, 0), None);
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
 }
+
+/// #714's rebase, on a file with two unedited video tracks that do not share a
+/// media timescale (as a dual-lens INSV's streams are indexed with their own):
+/// every track must move back by the same real-time amount, converted into its
+/// own timescale — a shift taken from the primary's units would misalign the
+/// others, so each track's first picture lands at time zero and the one-second
+/// spacing of its samples survives the move.
+#[test]
+fn unedited_tracks_in_different_timescales_rebase_together() {
+    let mut fr = craft_video::prores::Frame::new(64, 32, craft_video::prores::ChromaFormat::Yuv422, 10, false).expect("valid ProRes test frame");
+    fr.y.fill(120);
+    let mut enc = craft_video::prores::Encoder::new(craft_video::prores::Profile::Hq, 64, 32);
+    let data = enc.encode(&fr).expect("encode");
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).expect("writer");
+    for ts in [90_000u32, 30_000] {
+        let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), ts)).expect("track");
+        for _ in 0..2 {
+            // one second per sample, and the track starts one second in: a delay
+            // with no edit list, as the rebase rule treats it
+            mux.write_sample(t, WriteSample { data: &data, duration: ts, composition_offset: ts as i32, is_sync: true }).expect("sample");
+        }
+    }
+    let bytes = mux.finish().expect("finish").into_inner();
+    let mut file = filmcraft_isobmff::open(&bytes).expect("demux");
+    let mut audios: Vec<Mp4Audio> = Vec::new();
+    rebase_unedited_video(&mut file, Some(0), &[0, 1], &mut audios);
+    for (t, ts) in file.tracks.iter().zip([90_000i64, 30_000]) {
+        let shown: Vec<i64> = t.samples.iter().map(|s| s.pts + t.edit_offset).collect();
+        assert_eq!(shown.first(), Some(&0), "track at timescale {} starts at its first picture (got {shown:?})", t.timescale);
+        assert_eq!(shown.get(1), Some(&ts), "track at timescale {} keeps its one-second spacing", t.timescale);
+    }
+}

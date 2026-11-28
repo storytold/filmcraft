@@ -1,5 +1,5 @@
 //! Synchronous NVDEC parser callbacks and CUDA readback. All driver handles stay here.
-use std::cell::Cell;
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -14,7 +14,7 @@ use super::ffi::{
     cudaVideoCodec_HEVC, cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat_NV12, cudaVideoSurfaceFormat_P016,
 };
 use crate::biplanar::{Biplanar, Geometry, to_frame};
-use crate::nvenc::device::Device;
+use crate::nvenc::device::{Device, Pinned};
 
 const MAX_SURFACES: u32 = 64;
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
@@ -115,11 +115,52 @@ struct State {
     geometry: Geometry,
     delay: u32,
     surfaces: u32,
-    mapped: Cell<Option<u64>>,
+    /// Landed pictures awaiting their frames: page-locked staging buffers a
+    /// synchronous copy filled while the surface was mapped, oldest first. Frames are
+    /// built from host bytes that cannot change any more, so no surface is ever held
+    /// past its copy (this driver recycles unmapped surfaces under a live map).
+    copies: VecDeque<Copy>,
+    /// Staging buffers retired by past conversions, reused whole at the same size.
+    slots: Vec<Pinned>,
     pending: Vec<CUVIDPARSERDISPINFO>,
     ready: Vec<(i64, VideoFrame)>,
     error: Option<String>,
 }
+
+/// Landed pictures held for their frames: convert one while the next copies out. Each
+/// pins a picture of host pages, so the queue bounds memory at COPIES_IN_FLIGHT frames.
+const COPIES_IN_FLIGHT: u32 = 2;
+
+/// Driver calls on the session's boxed device, reached through the raw pointer State holds,
+/// so an operation's `&mut State` borrow does not fight with a `&Device` derived from it.
+#[derive(Clone, Copy)]
+struct DeviceRef(*const Device);
+
+impl DeviceRef {
+    // SAFETY for every method below: Session boxes the device before State is made and frees
+    // it only after State, so the pointer is valid while any State operation runs; the driver
+    // calls it makes push (or already run under) the session's CUDA context, and the returned
+    // handles (pinned buffers) are self-contained once created.
+    fn pinned(self, len: usize) -> Result<Pinned, String> {
+        // SAFETY: callers obtained this through State::device, which rejects the null the
+        // device-free tests leave here; the boxed Device outlives the State holding it.
+        unsafe { (&*self.0).pinned(len) }
+    }
+    fn copy_out(self, source: u64, destination: &mut [u8]) -> Result<(), String> {
+        // SAFETY: as for `pinned`: a non-null device outlives
+        // the State holding this reference.
+        unsafe { (&*self.0).copy_out(source, destination) }
+    }
+}
+
+/// One picture's bytes in page-locked memory, with the surface geometry converting it
+/// needs. The surface itself went back to the driver when the copy completed.
+struct Copy {
+    timestamp: i64,
+    pitch: u32,
+    staged: Pinned,
+}
+
 impl State {
     fn sequence(&mut self, format: &CUVIDEOFORMAT) -> Result<i32, String> {
         // The driver rounds the coded size up to its own block size (HEVC 640x360 comes back as
@@ -168,6 +209,8 @@ impl State {
         info.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
         info.ulTargetWidth = info.ulWidth;
         info.ulTargetHeight = info.ulHeight;
+        // Every copy lands before its surface is unmapped, so one output surface is
+        // enough: the next picture is written only after the last reading copy ends.
         info.ulNumOutputSurfaces = 1;
         // SAFETY: the context is current throughout the parser call; info and the out-pointer
         // are live. The decoder is owned by Session until explicitly destroyed.
@@ -195,6 +238,9 @@ impl State {
         Ok(1)
     }
     fn drain(&mut self) -> Result<(), String> {
+        // Landed pictures get their frames first: conversion happens after the surface
+        // is already back with the driver, so this only costs host time.
+        self.convert_copies()?;
         // Copy queued displays before another decode can recycle their picture indices.
         for info in std::mem::take(&mut self.pending) {
             self.map_picture(&info)?;
@@ -202,6 +248,12 @@ impl State {
         Ok(())
     }
     fn map_picture(&mut self, info: &CUVIDPARSERDISPINFO) -> Result<(), String> {
+        let device = self.device().ok_or("NVDEC CUDA device is missing")?;
+        if self.copies.len() as u32 >= COPIES_IN_FLIGHT {
+            // No free staging buffer: land the oldest picture's frame first. It is
+            // host bytes at this point; the surface it came from is already free.
+            self.convert_one(device)?;
+        }
         // SAFETY: this C struct contains integers and nullable pointers only.
         let mut proc: CUVIDPROCPARAMS = unsafe { std::mem::zeroed() };
         proc.progressive_frame = 1;
@@ -209,41 +261,98 @@ impl State {
         let (mut address, mut pitch) = (0u64, 0u32);
         // SAFETY: the validated picture index belongs to the live decoder. Both output
         // pointers and proc are writable, and Session has pushed the context on this thread.
-        status(unsafe { (self.api.map)(self.decoder, info.picture_index, &mut address, &mut pitch, &mut proc) }, "cuvidMapVideoFrame64")?;
-        self.mapped.set(Some(address));
-        let mapped = Mapped { api: self.api, decoder: self.decoder, address, outstanding: &self.mapped, active: true };
-        let frame = self.readback(address, pitch);
-        mapped.unmap()?;
-        let frame = frame?;
-        self.ready.try_reserve(1).map_err(|e| format!("NVDEC output allocation failed: {e}"))?;
-        self.ready.push((info.timestamp, frame));
-        Ok(())
-    }
-    fn readback(&self, address: u64, pitch: u32) -> Result<VideoFrame, String> {
+        let mst = unsafe { (self.api.map)(self.decoder, info.picture_index, &mut address, &mut pitch, &mut proc) };
+        status(mst, "cuvidMapVideoFrame64")?;
         if address == 0 {
+            // SAFETY: address is the null map of a picture the driver did not supply; the
+            // context is current in the enclosing call.
+            let _ = status(unsafe { (self.api.unmap)(self.decoder, address) }, "cuvidUnmapVideoFrame64");
             return Err("NVDEC returned a null mapped address".into());
         }
-        let (luma_size, total) = mapped_layout(self.coded, self.geometry.bits, pitch)?;
+        let (_, total) = mapped_layout(self.coded, self.geometry.bits, pitch)?;
+        address.checked_add(u64::try_from(total).map_err(|_| "NVDEC mapped size overflows")?).ok_or("NVDEC mapped address overflows")?;
+        // The copy is synchronous into page-locked memory, so the DMA lands while the
+        // surface is held and the unmap below returns it: what a deferred copy could
+        // not do on this driver, which recycles unmapped surfaces even under a live
+        // map and overwrites pictures still waiting to be read.
+        let mut destination = self.take_slot(device, total)?;
+        let copied = device.copy_out(address, destination.as_bytes_mut());
+        // SAFETY: the map above is live and unmoved; the context is current as in `map`.
+        // The surface returns on every path: the driver wants it for the next picture
+        // whether or not our copy succeeded.
+        let ust = status(unsafe { (self.api.unmap)(self.decoder, address) }, "cuvidUnmapVideoFrame64");
+        copied?;
+        ust?;
+        self.copies.try_reserve(1).map_err(|e| format!("NVDEC copy queue allocation failed: {e}"))?;
+        self.copies.push_back(Copy { timestamp: info.timestamp, pitch, staged: destination });
+        Ok(())
+    }
+    /// A staging buffer of `len` bytes, retired from a past conversion when one fits
+    /// at the same size; the driver calls happen on the current-context path of the
+    /// enclosing operation.
+    fn take_slot(&mut self, device: DeviceRef, len: usize) -> Result<Pinned, String> {
+        match self.slots.iter().position(|pinned| pinned.len() == len) {
+            Some(i) => Ok(self.slots.swap_remove(i)),
+            None => device.pinned(len),
+        }
+    }
+    /// Turn every landed copy into a frame (oldest first; displays arrive in
+    /// presentation order). Bytes only: no driver handles, no surfaces, no waiting.
+    fn convert_copies(&mut self) -> Result<(), String> {
+        if self.copies.is_empty() {
+            return Ok(());
+        }
+        let device = self.device().ok_or("NVDEC CUDA device is missing while copies are outstanding")?;
+        while !self.copies.is_empty() {
+            self.convert_one(device)?;
+        }
+        Ok(())
+    }
+    /// Convert the oldest landed picture into a frame and retire its staging buffer.
+    fn convert_one(&mut self, _device: DeviceRef) -> Result<(), String> {
+        let Some(copy) = self.copies.pop_front() else { return Ok(()) };
+        let (timestamp, frame, staged) = self.read_back(copy)?;
+        if self.ready.len() >= MAX_SURFACES as usize {
+            return Err("NVDEC output queue exceeds its surface limit".into());
+        }
+        self.ready.try_reserve(1).map_err(|e| format!("NVDEC output allocation failed: {e}"))?;
+        self.ready.push((timestamp, frame));
+        if self.slots.len() < usize::try_from(COPIES_IN_FLIGHT).map_err(|_| "NVDEC copy count overflows")? {
+            self.slots.push(staged);
+        }
+        Ok(())
+    }
+    fn read_back(&self, copy: Copy) -> Result<(i64, VideoFrame, Pinned), String> {
+        let (luma_size, total) = mapped_layout(self.coded, self.geometry.bits, copy.pitch)?;
+        if total != copy.staged.len() {
+            return Err("NVDEC copy queue is smaller than a surface".into());
+        }
         let picture_bytes = (self.coded.0 as usize)
             .checked_mul(self.coded.1 as usize)
             .and_then(|n| n.checked_mul(if self.geometry.bits == 10 { 3 } else { 2 }))
             .ok_or("NVDEC output size overflows")?;
-        if self.ready.len() >= MAX_SURFACES as usize
-            || self.ready.len().checked_add(1).and_then(|n| n.checked_mul(picture_bytes)).is_none_or(|n| n > MAX_READY_BYTES)
-        {
+        if self.ready.len().checked_add(1).and_then(|n| n.checked_mul(picture_bytes)).is_none_or(|n| n > MAX_READY_BYTES) {
             return Err("NVDEC output queue exceeds its memory limit".into());
         }
-        address.checked_add(u64::try_from(total).map_err(|_| "NVDEC mapped size overflows")?).ok_or("NVDEC mapped address overflows")?;
-        let mut host = Vec::new();
-        host.try_reserve_exact(total).map_err(|e| format!("NVDEC readback allocation failed: {e}"))?;
-        host.resize(total, 0);
-        // SAFETY: Session's separately boxed device outlives State and every synchronous callback;
-        // it is immutable, and the CUDA context is current. No mutable Device references exist.
-        let device = unsafe { self.device.as_ref() }.ok_or("NVDEC CUDA device is missing")?;
-        device.copy_to_host(address, &mut host)?;
+        // The copy that filled this buffer finished before its surface was unmapped;
+        // page-locked host bytes do not change underneath a borrow.
+        let host = copy.staged.as_slice();
         let luma = host.get(..luma_size).ok_or("NVDEC luma range is invalid")?;
         let chroma = host.get(luma_size..).ok_or("NVDEC chroma range is invalid")?;
-        to_frame(&Biplanar { luma, chroma, stride: pitch as usize, chroma_stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
+        let frame =
+            to_frame(&Biplanar { luma, chroma, stride: copy.pitch as usize, chroma_stride: copy.pitch as usize, rows: self.coded.1 as usize }, &self.geometry)?;
+        Ok((copy.timestamp, frame, copy.staged))
+    }
+    /// Drop the landed pictures awaiting conversion: the teardown path (a seek or a
+    /// failing stream), where the pictures are worthless. Nothing to hand back to the
+    /// driver: every surface went home with its copy.
+    fn discard_copies(&mut self) {
+        self.copies.clear();
+    }
+    /// The session's CUDA device; null only in device-free tests, whose paths stop
+    /// before driver calls.
+    fn device(&self) -> Option<DeviceRef> {
+        (!self.device.is_null()).then_some(DeviceRef(self.device))
     }
 }
 fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32) -> Result<(usize, usize), String> {
@@ -257,36 +366,6 @@ fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32) -> Result<(usize, usi
         return Err("NVDEC mapped frame exceeds its memory limit".into());
     }
     Ok((luma, total))
-}
-struct Mapped<'a> {
-    api: Api,
-    decoder: *mut c_void,
-    address: u64,
-    outstanding: &'a Cell<Option<u64>>,
-    active: bool,
-}
-impl Mapped<'_> {
-    fn unmap(mut self) -> Result<(), String> {
-        self.active = false;
-        // SAFETY: this guard owns one successful mapping on this decoder, and the context is
-        // still current. No GPU-memory references escape the synchronous host copy.
-        status(unsafe { (self.api.unmap)(self.decoder, self.address) }, "cuvidUnmapVideoFrame64")?;
-        self.outstanding.set(None);
-        Ok(())
-    }
-}
-impl Drop for Mapped<'_> {
-    fn drop(&mut self) {
-        if self.active {
-            // SAFETY: balances a successful map on every early return or caught panic;
-            // the enclosing parser operation retains the current context and driver library.
-            let st = unsafe { (self.api.unmap)(self.decoder, self.address) };
-            match status(st, "cuvidUnmapVideoFrame64") {
-                Ok(()) => self.outstanding.set(None),
-                Err(e) => log::warn!("{e}"),
-            }
-        }
-    }
 }
 
 /// Callback state is exclusively accessed by synchronous callbacks while parse is running.
@@ -388,7 +467,8 @@ impl Session {
             geometry,
             delay,
             surfaces: 0,
-            mapped: Cell::new(None),
+            copies: VecDeque::new(),
+            slots: Vec::new(),
             pending: Vec::new(),
             ready: Vec::new(),
             error: None,
@@ -427,6 +507,8 @@ impl Session {
         // after parser destruction (Drop), and the library is retained by Session.
         status(unsafe { (api.create_parser)(&mut self.parser, &mut params) }, "cuvidCreateVideoParser")?;
         if self.parser.is_null() {
+            // The state owns page-locked buffers, whose frees want a current context.
+            let _current = self.device.push_current();
             return Err("NVDEC returned a null parser".into());
         }
         Ok(())
@@ -456,7 +538,8 @@ impl Session {
             return Err(error.clone());
         }
         status(st, "cuvidParseVideoData")?;
-        match catch_unwind(AssertUnwindSafe(|| state.drain())) {
+        let r = catch_unwind(AssertUnwindSafe(|| state.drain()));
+        match r {
             Ok(result) => result?,
             Err(_) => return Err("NVDEC readback panicked".into()),
         }
@@ -473,9 +556,27 @@ impl Session {
         result
     }
     pub fn flush(&mut self) -> Result<Vec<(i64, VideoFrame)>, String> {
-        let result = self.parse(&[], 0, CUVID_PKT_ENDOFSTREAM);
-        self.restart()?;
-        result
+        let mut out = match self.parse(&[], 0, CUVID_PKT_ENDOFSTREAM) {
+            Ok(out) => out,
+            // The stream ends in error (a failed feed). Pictures that landed before
+            // the failure are still complete output, and the software replay on the
+            // other side of the fallback needs them; their bytes are host-stable.
+            Err(e) => {
+                log::warn!("NVDEC end of stream after an error: {e}");
+                Vec::new()
+            }
+        };
+        {
+            let state = self.state();
+            state.error = None;
+            state.convert_copies()?;
+            out.append(&mut std::mem::take(&mut state.ready));
+            state.pending.clear();
+        }
+        match self.restart() {
+            Ok(()) => Ok(out),
+            Err(e) => Err(e),
+        }
     }
     /// Destroy the parser and, unless `keep_decoder`, the decoder (a seek keeps it: creating one
     /// costs tens of milliseconds, and the next parser's sequence callback takes it as it is).
@@ -486,13 +587,13 @@ impl Session {
         // run, and they invoke no parser callbacks.
         let state = unsafe { self.state.as_mut() };
         let mut error = None;
-        if let Some(address) = state.mapped.get() {
-            // SAFETY: retry an outstanding map before releasing its decoder; context is current.
-            match status(unsafe { (state.api.unmap)(state.decoder, address) }, "cuvidUnmapVideoFrame64") {
-                Ok(()) => state.mapped.set(None),
-                Err(e) => {
-                    error = Some(e);
-                }
+        // Landed pictures nobody converted die with the session; their surfaces are
+        // already the driver's again.
+        match state.convert_copies() {
+            Ok(()) => {}
+            Err(e) => {
+                error.get_or_insert(e);
+                state.discard_copies();
             }
         }
         if !keep_decoder && !state.decoder.is_null() {
@@ -502,7 +603,6 @@ impl Session {
                 Ok(()) => {
                     state.decoder = ptr::null_mut();
                     state.surfaces = 0;
-                    state.mapped.set(None);
                 }
                 Err(e) => {
                     error.get_or_insert(e);
@@ -527,6 +627,7 @@ impl Session {
         let state = self.state();
         state.ready.clear();
         state.pending.clear();
+        state.copies.clear();
         state.error = None;
         let result = self.destroy(true).and_then(|()| self.create_parser());
         if let Err(error) = &result {
@@ -652,7 +753,8 @@ mod tests {
             geometry: geometry(),
             delay: 2,
             surfaces: 0,
-            mapped: Cell::new(None),
+            copies: VecDeque::new(),
+            slots: Vec::new(),
             pending: Vec::new(),
             ready: Vec::new(),
             error: None,
@@ -703,28 +805,22 @@ mod tests {
         assert_eq!(state.display(&picture).unwrap(), 1);
         assert_eq!(state.pending.iter().map(|p| (p.picture_index, p.timestamp)).collect::<Vec<_>>(), vec![(0, 17), (1, -9)]);
     }
-    unsafe extern "C" fn test_unmap_ok(_: *mut c_void, _: u64) -> i32 {
-        0
-    }
     #[test]
-    fn mapping_guard_tracks_cleanup_on_success_failure_and_unwind() {
-        let outstanding = Cell::new(Some(123));
-        let mut api = test_state().api;
-        api.unmap = test_unmap_ok;
-        drop(Mapped { api, decoder: ptr::null_mut(), address: 123, outstanding: &outstanding, active: true });
-        assert_eq!(outstanding.get(), None);
-        outstanding.set(Some(123));
-        assert!(
-            catch_unwind(AssertUnwindSafe(|| {
-                let _mapped = Mapped { api, decoder: ptr::null_mut(), address: 123, outstanding: &outstanding, active: true };
-                panic!("synthetic readback panic");
-            }))
-            .is_err()
-        );
-        assert_eq!(outstanding.get(), None);
-        outstanding.set(Some(123));
-        api.unmap = test_unmap;
-        assert!(Mapped { api, decoder: ptr::null_mut(), address: 123, outstanding: &outstanding, active: true }.unmap().is_err());
-        assert_eq!(outstanding.get(), Some(123));
+    fn the_readback_pipeline_stops_before_the_driver_without_its_inputs() {
+        // map_picture needs the device before anything else: it must report a missing
+        // one without mapping, queueing, or calling the 999-stubs on the mock api.
+        let mut state = test_state();
+        state.decoder = ptr::dangling_mut::<c_void>();
+        state.surfaces = 4;
+        // SAFETY: POD display metadata tolerates all-zero initialization.
+        let mut picture: CUVIDPARSERDISPINFO = unsafe { std::mem::zeroed() };
+        picture.picture_index = 2;
+        picture.progressive_frame = 1;
+        picture.timestamp = 5;
+        assert!(state.map_picture(&picture).unwrap_err().contains("device"));
+        assert!(state.copies.is_empty());
+        // Retiring an empty landing queue must not touch the (absent) device at all.
+        assert!(state.convert_copies().is_ok());
+        state.discard_copies();
     }
 }

@@ -18,6 +18,7 @@ filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-isobmff = { workspace = true }
+filmcraft-insta360 = { workspace = true }
 filmcraft-matroska = { workspace = true }
 craft-media = { workspace = true, features = ["avi", "mpegts", "mxf", "ogg"] }
 filmcraft-bitstream = { workspace = true }

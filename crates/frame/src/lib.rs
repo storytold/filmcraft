@@ -128,6 +128,14 @@ impl VideoFrame {
         }
     }
 
+    /// The frame's chroma subsampling (packed RGBA formats are 4:4:4).
+    pub fn chroma(&self) -> Chroma {
+        match &self.data {
+            PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => *chroma,
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => Chroma::C444,
+        }
+    }
+
     /// Approximate memory footprint in bytes (for caches).
     pub fn byte_size(&self) -> usize {
         match &self.data {
