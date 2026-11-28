@@ -400,3 +400,12 @@ fn mp4_with_average_durations_just_off_a_standard_rate_read_as_it() {
     assert_eq!(read(&[3005; 90]), Some(FrameRate::FPS_29_97), "29.95 fps");
     assert_eq!(read(&[3010; 90]), Some(FrameRate::new(299, 10)), "29.9 fps stays 29.9");
 }
+
+/// At 90 kHz, ten millisecond-rounded 30 fps frames average 2997 units per frame.
+/// The resulting 30.03003 fps falls just outside the 0.1% window.
+#[test]
+fn mp4_short_ms_rounded_track_keeps_its_average_rate() {
+    let durations = [2970, 3060, 2970, 2970, 3060, 2970, 2970, 3060, 2970, 2970];
+    let src = crate::open_bytes("synthetic.mov", mp4_90k(&durations)).unwrap();
+    assert_eq!(src.info().video.as_ref().unwrap().frame_rate, FrameRate::new(3003, 100));
+}
