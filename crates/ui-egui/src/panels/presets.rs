@@ -112,6 +112,13 @@ fn preset_folder_row(
     open
 }
 
+/// Display label for a preset row inside the nested Presets folder tree: only the leaf segment
+/// after the last `" ▸ "` bin separator, since ancestor segments are already rendered as parent
+/// folders. Falls back to `name` when there is no separator or no non-empty segment.
+fn preset_leaf_name(name: &str) -> &str {
+    name.rsplit(" ▸ ").map(str::trim).find(|s| !s.is_empty()).unwrap_or(name)
+}
+
 fn preset_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: &EffectPreset, depth: usize, action: &mut Option<(String, String)>) {
     let t = app.tokens;
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click_and_drag());
@@ -121,7 +128,8 @@ fn preset_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: &EffectPreset, depth
     // inside the Presets folder (or sub-folder): icon and label one level deeper than it (#2329)
     let x = r.min.x + crate::panels::effects::tree_x(depth + 1) + 18.0;
     icons::paint(ui.painter(), Rect::from_center_size(pos2(x, r.center().y), vec2(13.0, 13.0)), Icon::Sparkle, if p.builtin { t.text_dim } else { t.accent });
-    ui.painter().text(pos2(x + 12.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(&p.name), Tokens::ui(12.0), t.text);
+    let leaf = preset_leaf_name(&p.name);
+    ui.painter().text(pos2(x + 12.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(leaf), Tokens::ui(12.0), t.text);
     app.auto.add(&format!("effects.preset.{}", p.name), r, &p.name);
     let tip = crate::i18n::t(if p.description.is_empty() { &p.name } else { &p.description }).to_string();
     let resp = resp.on_hover_text(tip);
@@ -352,5 +360,19 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Ok(_) => app.ui.status = tlf!("Saved preset “{name}”", name = d.name.trim()),
             Err(e) => app.ui.status = e.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preset_leaf_name;
+
+    #[test]
+    fn leaf_name_strips_bin_path_prefix_for_nested_presets() {
+        assert_eq!(preset_leaf_name("ProPack ▸ Transitions ▸ Bounce"), "Bounce");
+        assert_eq!(preset_leaf_name("에디팩 ▸ 자막 ▸ 팝업 효과"), "팝업 효과");
+        assert_eq!(preset_leaf_name("Soft Vignette"), "Soft Vignette");
+        assert_eq!(preset_leaf_name("Folder ▸ "), "Folder");
+        assert_eq!(preset_leaf_name(" ▸ "), " ▸ ");
     }
 }
