@@ -1,8 +1,9 @@
 name: FilmCraft unsigned nightly
 
-# Enabled for supervised manual runs by the reviewed manual actors only; no schedule yet.
-# A later explicit opt-in may add a cadence (and a scheduled completion dispatcher with it).
+# Automated daily schedule (03:00 UTC) plus supervised manual runs by the reviewed manual actors.
 on:
+  schedule:
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:
