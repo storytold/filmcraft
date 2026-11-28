@@ -262,7 +262,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let eff = p.get("effect").cloned();
     let mask_i = u64_p(p, "mask").map(|m| m as usize).or(sel.filter(|x| x.clip == clip).map(|x| x.mask)).ok_or_else(|| bad("masks.remove", "need `mask`"))?;
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    s.edit("Delete Mask", move |pr, st| {
+    let ei = s.edit("Delete Mask", move |pr, st| {
         let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let ei = effect_index(&it.effects, eff.as_ref(), sel, clip).ok_or_else(|| bad("masks.remove", "no such effect on clip"))?;
@@ -274,8 +274,9 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
         if st.selected_mask.is_some_and(|x| x.clip == clip && x.effect == ei) {
             st.selected_mask = None;
         }
-        Ok(())
+        Ok(ei)
     })?;
+    on_mask_removed(s, seq_id, clip, ei, mask_i);
     Ok(Value::Null)
 }
 
@@ -601,6 +602,9 @@ pub(crate) fn target_param<'a>(e: &'a mut EffectInstance, p: &Value, pid: &str) 
 pub struct PendingTrack {
     pub job: u64,
     pub target: MaskSel,
+    /// Effect id (`EffectInstance::effect`) when tracking started, so a stale index never writes
+    /// into a different effect.
+    effect_id: String,
     /// Sequence the clip lives in.
     pub seq: filmcraft_project::ItemId,
     /// (media time, path) in tracking order.
@@ -727,7 +731,15 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.mask_jobs.push(PendingTrack { job: id, target: MaskSel { clip, effect: ei, mask: mi }, seq: seq_id, keys, applied: 0, epoch: s.document_epoch });
+    s.mask_jobs.push(PendingTrack {
+        job: id,
+        target: MaskSel { clip, effect: ei, mask: mi },
+        effect_id: it.effects[ei].effect.clone(),
+        seq: seq_id,
+        keys,
+        applied: 0,
+        epoch: s.document_epoch,
+    });
     let wait = crate::commands::bool_p(p, "wait").unwrap_or(false);
     if wait || cfg!(target_arch = "wasm32") {
         run();
@@ -743,14 +755,62 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn cancel_job(s: &Session, job_id: u64) {
+    use std::sync::atomic::Ordering;
+    if let Some(j) = s.jobs.iter().find(|j| j.id == job_id) {
+        j.progress.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+fn update_jobs(s: &mut Session, mut keep: impl FnMut(&mut PendingTrack) -> bool) {
+    let mut i = 0;
+    while i < s.mask_jobs.len() {
+        if keep(&mut s.mask_jobs[i]) {
+            i += 1;
+        } else {
+            cancel_job(s, s.mask_jobs[i].job);
+            s.mask_jobs.remove(i);
+        }
+    }
+}
+
+/// Remap or cancel pending mask-tracking jobs after removing effect `removed_idx` on `clip`.
+pub(crate) fn on_effect_removed(s: &mut Session, seq: filmcraft_project::ItemId, clip: ClipId, removed_idx: usize) {
+    update_jobs(s, |pj| {
+        if pj.seq != seq || pj.target.clip != clip {
+            return true;
+        }
+        if pj.target.effect == removed_idx {
+            return false;
+        }
+        if pj.target.effect > removed_idx {
+            pj.target.effect -= 1;
+        }
+        true
+    });
+}
+
+/// Remap or cancel pending mask-tracking jobs after removing mask `removed_mask` on `effect_idx`.
+pub(crate) fn on_mask_removed(s: &mut Session, seq: filmcraft_project::ItemId, clip: ClipId, effect_idx: usize, removed_mask: usize) {
+    update_jobs(s, |pj| {
+        if pj.seq != seq || pj.target.clip != clip || pj.target.effect != effect_idx {
+            return true;
+        }
+        if pj.target.mask == removed_mask {
+            return false;
+        }
+        if pj.target.mask > removed_mask {
+            pj.target.mask -= 1;
+        }
+        true
+    });
+}
+
 /// Cancel and drop every pending tracking job. Called when the project is replaced, so a job started
 /// on the old project can never write its result into the new one.
 pub fn discard_jobs(s: &mut Session) {
-    use std::sync::atomic::Ordering;
     for pj in std::mem::take(&mut s.mask_jobs) {
-        if let Some(j) = s.jobs.iter().find(|j| j.id == pj.job) {
-            j.progress.cancel.store(true, Ordering::Relaxed);
-        }
+        cancel_job(s, pj.job);
     }
 }
 
@@ -764,9 +824,7 @@ pub fn poll(s: &mut Session) {
         if s.mask_jobs[i].epoch != s.document_epoch {
             // the project was replaced under the job: its result belongs to a document that is gone
             s.error_toast("masks.track", "the project was replaced; mask tracking stopped");
-            if let Some(j) = s.jobs.iter().find(|j| j.id == s.mask_jobs[i].job) {
-                j.progress.cancel.store(true, Ordering::Relaxed);
-            }
+            cancel_job(s, s.mask_jobs[i].job);
             s.mask_jobs.remove(i);
             continue;
         }
@@ -778,11 +836,12 @@ pub fn poll(s: &mut Session) {
         if !new.is_empty() {
             let n_new = new.len();
             let pj = &s.mask_jobs[i];
-            let (target, seq_id, key) = (pj.target, pj.seq, format!("mask-track-{}", pj.job));
+            let (target, seq_id, key, effect_id) = (pj.target, pj.seq, format!("mask-track-{}", pj.job), pj.effect_id.clone());
             let r = s.edit_merged("Track Mask", &key, move |pr, _| {
                 let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
                 let (_, it) = q.find_item_mut(target.clip).ok_or(filmcraft_edit::EditError::NoItem(target.clip))?;
-                let m = it.effects.get_mut(target.effect).and_then(|e| e.masks.get_mut(target.mask)).ok_or_else(|| bad("masks.track", "the mask is gone"))?;
+                let e = it.effects.get_mut(target.effect).filter(|e| e.effect == effect_id).ok_or_else(|| bad("masks.track", "the mask is gone"))?;
+                let m = e.masks.get_mut(target.mask).ok_or_else(|| bad("masks.track", "the mask is gone"))?;
                 for (t, path) in new {
                     m.path.put_keyframe(t, ParamValue::Path(path));
                 }
@@ -792,9 +851,7 @@ pub fn poll(s: &mut Session) {
                 Ok(()) => s.mask_jobs[i].applied += n_new,
                 Err(e) => {
                     s.error_toast("masks.track", e.to_string());
-                    if let Some(j) = s.jobs.iter().find(|j| j.id == s.mask_jobs[i].job) {
-                        j.progress.cancel.store(true, Ordering::Relaxed);
-                    }
+                    cancel_job(s, s.mask_jobs[i].job);
                     s.mask_jobs.remove(i);
                     continue;
                 }

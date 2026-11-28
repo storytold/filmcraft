@@ -518,3 +518,70 @@ fn every_project_replacing_path_drops_pending_tracking_jobs() {
     }
     let _ = std::fs::remove_file(&tpl);
 }
+
+#[test]
+fn removing_earlier_effect_mid_track_keeps_writing_to_tracked_effect() {
+    let (mut s, clip) = tracking_session();
+    let blur = s.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap()["applied"][0]["index"].as_u64().unwrap() as usize;
+    let invert = s.execute("effects.apply", json!({"clips": [clip.0], "effect": "invert"})).unwrap()["applied"][0]["index"].as_u64().unwrap() as usize;
+    assert!(blur < invert);
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"clip": clip.0, "effect": blur, "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    s.execute("masks.add", json!({"clip": clip.0, "effect": invert, "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+
+    s.execute("masks.track", json!({"clip": clip.0, "effect": invert, "mask": 0, "direction": "forward", "frames": 6})).unwrap();
+    s.execute("effects.remove", json!({"clip": clip.0, "index": blur})).unwrap();
+
+    let t0 = std::time::Instant::now();
+    while !s.mask_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(s.mask_jobs.is_empty());
+    let l = s.execute("masks.list", json!({"clip": clip.0})).unwrap();
+    assert_eq!(l["masks"].as_array().unwrap().len(), 1, "{l}");
+    let keys = l["masks"][0]["pathKeyframes"].as_array().unwrap().len();
+    assert_eq!(keys, 7, "{l}");
+    let (_, it) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    assert!(it.effects.iter().all(|e| e.effect != "gaussian_blur"));
+    let inv_idx = it.effects.iter().position(|e| e.effect == "invert").unwrap();
+    assert_eq!(l["masks"][0]["effect"], inv_idx);
+}
+
+#[test]
+fn removing_earlier_mask_mid_track_keeps_writing_to_tracked_mask() {
+    let (mut s, clip) = tracking_session();
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+
+    s.execute("masks.track", json!({"clip": clip.0, "effect": "opacity", "mask": 1, "direction": "forward", "frames": 6})).unwrap();
+    s.execute("masks.remove", json!({"clip": clip.0, "effect": "opacity", "mask": 0})).unwrap();
+
+    let t0 = std::time::Instant::now();
+    while !s.mask_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(s.mask_jobs.is_empty());
+    let l = s.execute("masks.list", json!({"clip": clip.0, "effect": "opacity"})).unwrap();
+    assert_eq!(l["masks"].as_array().unwrap().len(), 1);
+    assert_eq!(l["masks"][0]["name"], "Mask (2)");
+    let keys = l["masks"][0]["pathKeyframes"].as_array().unwrap().len();
+    assert_eq!(keys, 7, "{l}");
+}
+
+#[test]
+fn removing_tracked_effect_cancels_pending_job() {
+    let (mut s, clip) = tracking_session();
+    let blur = s.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap()["applied"][0]["index"].as_u64().unwrap() as usize;
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"clip": clip.0, "effect": blur, "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+
+    let job = s.execute("masks.track", json!({"clip": clip.0, "effect": blur, "mask": 0, "direction": "forward"})).unwrap()["job"].as_u64().unwrap();
+    assert_eq!(s.mask_jobs.len(), 1);
+    s.execute("effects.remove", json!({"clip": clip.0, "index": blur})).unwrap();
+    assert!(s.mask_jobs.is_empty());
+    let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+    assert!(j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
+}

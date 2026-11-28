@@ -3786,6 +3786,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("effects.remove", "Remove Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.remove", "need `clip`"))?;
             let idx = u64_p(p, "index").ok_or_else(|| bad("effects.remove", "need `index`"))? as usize;
+            let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
             // the selected effect: where it is, and its selection once the effect at `idx` is gone
             let effects = s.active_sequence().and_then(|q| q.find_item(c)).map(|(_, it)| it.effects.clone()).unwrap_or_default();
             let sel = s.state.selected_effect.clone().filter(|e| e.clip == c).and_then(|e| e.index(&effects));
@@ -3796,16 +3797,20 @@ fn build() -> Vec<CommandSpec> {
                 }
                 crate::EffectSel::of(c, &rest, if i > idx { i - 1 } else { i })
             });
-            s.edit_sequence("Remove Effect", |q, _, _| {
+            let removed = s.edit_sequence("Remove Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                 if it.effects.get(idx).and_then(|e| e.def()).is_some_and(|d| d.intrinsic) {
                     return Err(EngineError::Other("intrinsic effects cannot be removed".into()));
                 }
                 if idx < it.effects.len() {
                     it.effects.remove(idx);
+                    return Ok(true);
                 }
-                Ok(())
+                Ok(false)
             })?;
+            if removed {
+                crate::masks::on_effect_removed(s, seq_id, c, idx);
+            }
             if sel.is_some() {
                 s.state.selected_effect = after;
             }
