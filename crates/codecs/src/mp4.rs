@@ -32,10 +32,14 @@ impl crate::audio::PacketBytes for DecodedAudioPacket {
     }
 }
 
-/// How far a track's nominal rate may sit from a standard rate and still be read as it. Timestamps
-/// rounded to a coarse unit (whole milliseconds in a 90 kHz track, as phones and messaging apps
-/// write them) move the average by less than this at every standard rate (#1700).
-const STANDARD_RATE_TOLERANCE: f64 = 0.005;
+/// How far a track's nominal rate may sit from a standard rate and still be read as it.
+///
+/// Whole-millisecond timestamps move the mean by at most the rounding over the track, so the error
+/// is about 1 ms / duration: 0.067% for the 30.02 and 29.95 fps averages in #1700, 0.033% for its
+/// 3 s clips, and under 0.1% for any clip of two seconds or more. A clip shorter than that can miss
+/// the window and keep its own rate. The window stays below the 0.23% between 29.9 and 29.97, so a
+/// clip that averages genuinely off a standard rate is not rounded onto one.
+const STANDARD_RATE_TOLERANCE: f64 = 0.001;
 
 /// A video track's nominal frame rate: the mean of the sample durations within a quarter frame of
 /// the median duration, read as the closest standard rate when close enough.
