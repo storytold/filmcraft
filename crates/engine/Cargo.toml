@@ -46,6 +46,7 @@ roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
+sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 
 [dev-dependencies]

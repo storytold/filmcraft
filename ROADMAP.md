@@ -5,11 +5,11 @@
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
 
-**Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
+**Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus reliable Premiere `.prproj` interchange ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
 > **Last reviewed:** 2026-11-15 · **Last updated:** 2026-11-15 · **Change:** minor (FilmCraft v0.20.0 and v0.20.1 (Flatpak updater fix); ProRes decode and encode, MP3 decode and encode, VP8 and MJPEG decode, Ogg audio, containers, exact time formats and EDL reading and writing now come from craft-libs; export names the encoder that ran and when hardware encoding fell back to software (#3952), APV 4:4:4 exports carry full-resolution chroma (#4656) and resampled audio no longer depends on where a read starts (#4710); narration ships natural voices in official packages (#2318, #3773); the scrub playhead no longer waits for the audio device (#2633); graphics start tries each mode in a child process and falls back to the integrated GPU when the chosen adapter cannot draw to the window (#2553, #2581, #2634); Project panel Reveal in Project scrolls to the source clip and restores a sideways-scrolled list (#4760); update prompts open release notes through the desktop host and the updater reports installing, ready, installed and failed; project files are capped at 256 MiB on every read; interchange, still and animated decode, audio buffers, mixer graphs, AV1/HEVC/MPEG-2 decoding, pin chains and CFB storages take bounded work; screenshots, session logs and voice-over takes use private temp folders; CI runs a nightly release dry run, clippy and tests for Windows-only crates, and Harden-Runner on every job; readiness estimates unchanged) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available; ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -106,7 +106,7 @@ Also shipped: Swedish (whole interface; native review welcome, ~100%), Ukrainian
 Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/gaps.md](docs/gaps.md).
 
 1. **No launch crashes, and CI on pull requests** (macOS 12, Intel UHD, Windows 11 reports; no workflow runs the tests today). 40–80 h.
-2. **Open Premiere's `.prproj`**, the beta blocker. 60–120 h.
+2. **Expand Premiere `.prproj` import fidelity**, still a beta requirement. Bounded import now works, including bins and markers; full effect/font/transition fidelity, reverse/time-remapped clips and smart bins remain ([limits](docs/premiere-import.md)); remaining effort not re-estimated.
 3. **10-bit / 4:2:2 camera media without hardware** (H.264 High 10 / 4:2:2, HEVC 4:2:2; #626). 30–50 h.
 4. **Measure fidelity against Premiere** and add `cargo xtask parity`. 50–90 h.
 5. **Real-world media corpus and workflow acceptance tests.** 40–70 h.
@@ -178,9 +178,11 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Upcoming #2: Premiere import now covers bins and markers; remaining gaps restated. |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
 | 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
 | 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
+| 2026-10-17 | minor | Bounded Premiere import available; keep alpha stage and historical readiness estimates, with fidelity/bin/marker gaps explicit. |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
