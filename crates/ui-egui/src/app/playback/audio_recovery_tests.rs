@@ -187,6 +187,97 @@ fn changing_hardware_recovers_wall_clock_playback_without_rewinding() {
     app.stop();
 }
 
+/// #1622: `playhead.set` while playback runs moves the playing playhead, and the clock
+/// continues from the new position — it used to report success and be overwritten by the
+/// next playback tick.
+#[test]
+fn playhead_set_during_playback_continues_from_the_new_position() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    let starts = Arc::new(AtomicUsize::new(0));
+    // a device that never consumes: the audio clock holds the playhead at its anchor
+    app.audio = Some(Box::new(Device { ready: true, starts: starts.clone(), reading: Some(0) }));
+    app.play(1.0);
+    app.end_preroll(0.0);
+    assert!(app.playback.audio_clock);
+    let run = |time: f64, app: &mut FilmcraftApp| {
+        let mut out = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        out.textures_delta.clear();
+    };
+    run(0.5, &mut app);
+    // The command runs between egui passes, so `invoke` sees the previous pass's 0.5 s time.
+    // It moves the playhead through the same command path the control channel uses.
+    let starts_before_set = starts.load(Ordering::Relaxed);
+    let r = crate::menus::invoke(&mut app, &ctx, "playhead.set", json!({"seconds": 5.0})).unwrap();
+    assert!(starts.load(Ordering::Relaxed) > starts_before_set, "playhead.set restarts the active audio stream");
+    let want = Tick(r["time"].as_i64().expect("the set time"));
+    assert!(want > Tick::from_seconds_f64(4.9), "the playhead moved to the requested second: {want:?}");
+    assert_eq!(app.session.playhead(), want);
+    assert!(app.playback.playing, "playback keeps running through the move");
+    assert_eq!(app.playback.anchor_tick, want, "the playback clock re-based on the move");
+    // the next playback tick continues from the moved playhead
+    run(1.0, &mut app);
+    assert_eq!(app.session.playhead(), want, "playback did not snap back to the old anchor");
+    app.stop();
+}
+
+/// A control request can arrive on a hidden logic tick, where egui's input time is still the
+/// previous UI pass: the re-anchor must take the playback clock, or the next tick jumps by the
+/// staleness and can run the playhead into the sequence end.
+#[test]
+fn playhead_set_on_a_hidden_tick_reanchors_on_the_playback_clock() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    app.play(1.0);
+    app.end_preroll(0.0);
+    assert!(!app.playback.audio_clock, "no audio output: the wall clock drives playback");
+    // the hidden tick runs at 10 s; the last UI pass saw 0.5 s
+    app.set_now_for_test(10.0);
+    let mut output = ctx.run_ui(egui::RawInput { time: Some(0.5), ..Default::default() }, |_| {});
+    output.textures_delta.clear();
+    let r = crate::menus::invoke(&mut app, &ctx, "playhead.set", json!({"seconds": 2.0})).unwrap();
+    let want = Tick(r["time"].as_i64().expect("the set time"));
+    assert_eq!(app.playback.anchor_tick, want);
+    assert_eq!(app.playback.anchor_time, 10.0, "the re-anchor took the playback clock, not egui's stale time");
+    // the next tick continues from the move instead of jumping by the stale 9.5 s
+    app.set_now_for_test(10.5);
+    let mut output = ctx.run_ui(egui::RawInput { time: Some(0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+    output.textures_delta.clear();
+    // one 0.5 s tick from the requested position, snapped to the sequence frame rate
+    assert_eq!(app.session.playhead(), app.session.sequence_rate().snap(want + Tick::from_seconds_f64(0.5)));
+    app.stop();
+}
+
+#[test]
+fn reanchoring_audio_clock_resets_stall_watchdog() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    app.audio = Some(Box::new(Device { ready: true, starts: Arc::new(AtomicUsize::new(0)), reading: Some(0) }));
+    app.play(1.0);
+    app.end_preroll(0.0);
+    assert!(app.playback.audio_clock);
+    // A freshly restarted stream reports zero frames until the device consumes its first block.
+    app.playback.audio_seen = (0, 0.0);
+    app.session.set_playhead(Tick::from_seconds_f64(5.0));
+    app.reanchor_playback(10.0);
+
+    // The watchdog compares against `app.now()`, not the raw input time: without this the stall
+    // interval would be read from the host clock near zero and the test could pass without the
+    // `audio_seen` reset in `reanchor_playback`.
+    app.set_now_for_test(10.5);
+    let mut output = ctx.run_ui(egui::RawInput { time: Some(10.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+    output.textures_delta.clear();
+    assert!(app.playback.audio_clock, "a fresh stream must not trip the stall watchdog");
+    assert_eq!(app.session.playhead(), app.playback.anchor_tick, "the audio clock stays at the re-anchored position");
+    app.stop();
+}
+
 /// A device that loses its playback clock resumes from the displayed frame and reports a status message.
 #[test]
 fn a_failed_device_clock_resumes_from_the_displayed_frame() {
