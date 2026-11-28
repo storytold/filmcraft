@@ -445,6 +445,35 @@ fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
     assert_eq!(curve(&mut d), edited, "one Cmd+Z undoes the second drag only");
 }
 
+/// #4915: the curve's top-right (white) point sat under the panel's floating scroll bar, so a drag
+/// there scrolled the panel instead of moving the point.
+#[test]
+fn the_top_right_curve_point_is_not_under_the_scroll_bar() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(2);
+    let curve = |d: &mut Driver| {
+        let q = d.app().session.active_sequence().unwrap().clone();
+        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+        e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default()
+    };
+    let before = curve(&mut d);
+    let r = d.element("lumetri.curve.curve_luma").expect("the luma curve is shown");
+    let (x, y) = (r[0] + r[2] - 1.0, r[1] + 1.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x - r[2] * 0.1, "y": y + r[3] * 0.3}, "steps": 60}));
+    d.frames(3);
+    let after = curve(&mut d);
+    assert_ne!(after, before, "the drag moved the white point");
+    assert_eq!(after.len(), before.len(), "the white point moved, no point was added: {after:?}");
+    assert!(after.iter().all(|p| p[1] < 0.9), "the white point came down: {after:?}");
+}
+
 /// #3431: a plain click on the Color Grading luma curve places a point where it landed; a click away
 /// from the curve adds nothing.
 #[test]
