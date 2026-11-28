@@ -381,14 +381,14 @@ fn go_to_gap(s: &mut Session, p: &Value, next: bool, in_track: bool) -> Result<V
 
 // ---------- through edits ----------
 
-/// Join Through Edits is enabled when the sequence has a through edit on an unlocked track: with
-/// none anywhere the Timeline's clip menu greys it out instead of failing when chosen. (A
-/// selection without one, or a named `cut` that is not one, still answers with its reason.)
+/// Join Through Edits is enabled when the sequence has a through edit that Join All would join:
+/// on an unlocked track, and not kept by a surviving linked audio choice. Menus and command
+/// discovery grey it out otherwise. A call naming a `cut` does not pass through this gate
+/// (`commands::names_its_cut`): it reaches the command and gets that cut's own reason.
 fn has_through_edits(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     let q = s.active_sequence().ok_or("no sequence is open")?;
-    let any = edit::through::through_edits(q).iter().any(|e| q.track(e.track).is_some_and(|t| !t.locked));
-    if any { Ok(()) } else { Err("there are no through edits to join".into()) }
+    if edit::through::joinable_through_edits(q).is_empty() { Err("there are no through edits to join".into()) } else { Ok(()) }
 }
 
 fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
@@ -398,9 +398,7 @@ fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
     let all = bool_p(p, "all").unwrap_or(false) || (p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty());
     let only = if all { Vec::new() } else { with_links(s, &clips_p(s, p)) };
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let any = edit::through::through_edits(q)
-        .iter()
-        .any(|e| (only.is_empty() || only.contains(&e.left) || only.contains(&e.right)) && q.track(e.track).is_some_and(|t| !t.locked));
+    let any = !edit::through::joinable_through_edits_where(q, |a, b| only.is_empty() || only.contains(&a) || only.contains(&b)).is_empty();
     if !any {
         return Err(EngineError::Other("there are no through edits to join".into()));
     }
@@ -423,7 +421,12 @@ fn join_through_edit_at(s: &mut Session, cut: &Value) -> Result<Value> {
     if !edit::through::through_edits(q).iter().any(|e| e.left == left && e.right == right) {
         return Err(EngineError::Other("that cut is not a through edit".into()));
     }
+    // A continuous cut may still be locked or protect a linked audio choice. Reject it before
+    // edit_sequence, where a no-op would clear redo history.
     let (lefts, rights) = (with_links(s, &[left]), with_links(s, &[right]));
+    if !edit::through::joinable_through_edits_where(q, |a, b| lefts.contains(&a) && rights.contains(&b)).iter().any(|e| e.left == left && e.right == right) {
+        return Err(EngineError::Other("that cut cannot be joined while its track is locked or its linked audio cannot join".into()));
+    }
     let n = s.edit_sequence("Join Through Edits", |q, _, st| {
         let n = edit::through::join_through_edits_where(q, |a, b| lefts.contains(&a) && rights.contains(&b));
         st.selection.retain(|c| q.find_item(*c).is_some());
