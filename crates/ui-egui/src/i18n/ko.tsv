@@ -3713,3 +3713,62 @@
 	Toggle Color Grading Section	색 보정 섹션 전환
 	Color Grading Section	색 보정 섹션
 	Read Video Scopes	비디오 스코프 읽기
+# Strings added since this catalog landed: Clip Mismatch Warning, the preset library, updates, the History panel, the work area bar, tracks, MP3 export, encoder and decoder notes.
+	1 frame ({seconds} s)	1프레임({seconds} s)
+	1/2	1/2
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1에는 하드웨어 인코더가 필요하지만 이 컴퓨터에서 찾지 못했습니다. FilmCraft에는 아직 AV1 소프트웨어 인코더가 없습니다.
+	Add Track	트랙 추가
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	오디오 출력 실패: 소리 없이 재생 중 (설정 ▸ 오디오 하드웨어 확인)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	오디오 출력 응답 없음: 소리 없이 재생 중 (설정 ▸ 오디오 하드웨어 확인)
+	Caption Export Settings	자막 내보내기 설정
+	Change Sequence Settings	시퀀스 설정 변경
+	Change the sequence to match the clip's settings?	클립 설정에 맞게 시퀀스를 변경할까요?
+	Check for Updates…	업데이트 확인…
+	Checking for updates…	업데이트 확인 중…
+	Clear History	작업 내역 지우기
+	Clip Mismatch Warning	클립 불일치 경고
+	Clip: {settings}	클립: {settings}
+	Could not check for updates:\n{error}	업데이트를 확인할 수 없음:\n{error}
+	Delete Redoable Actions	다시 실행할 수 있는 작업 삭제
+	Delete Track	트랙 삭제
+	Delete the dimmed actions after the current state? They cannot be redone.	현재 상태 이후의 흐리게 표시된 작업을 삭제할까요? 삭제하면 다시 실행할 수 없습니다.
+	Duration (frames):	길이(프레임):
+	Duration: {tc}	길이: {tc}
+	End: {tc}	끝: {tc}
+	Exported {path} as {format}, from its file extension	파일 확장자에 따라 {path}을(를) {format}(으)로 내보냄
+	FilmCraft Updates	FilmCraft 업데이트
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version}이(가) 현재 최신 버전입니다.
+	From preset file:	사전 설정 파일에서:
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265(HEVC)에는 하드웨어 인코더(NVIDIA GPU의 NVENC, macOS의 VideoToolbox)가 필요하지만 이 컴퓨터에서 찾지 못했습니다. FilmCraft에는 아직 H.265 소프트웨어 인코더가 없습니다. 대신 H.264나 ProRes를 선택하세요.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	하드웨어 디코딩: 자동은 지원 스트림에 시스템 비디오 디코더(macOS는 VideoToolbox, Windows는 Media Foundation, Linux는 H.264·HEVC용 VA-API)를 쓰고, 그 외나 하드웨어 실패 시 FilmCraft 자체 디코더를 씁니다. 이미 열린 미디어는 다시 열 때까지 기존 디코더를 유지합니다.
+	Hide FilmCraft	FilmCraft 숨기기
+	Hide Others	다른 항목 숨기기
+	Imported {n} preset(s)	사전 설정 {n}개 가져옴
+	Imported {n} preset(s); not imported: {error}	사전 설정 {n}개 가져옴, 가져오지 못함: {error}
+	Imported {n} preset(s); {skipped} skipped	사전 설정 {n}개 가져옴, {skipped}개 건너뜀
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	사전 설정 {n}개 가져옴, {skipped}개 건너뜀, {warnings}개는 지원하지 않는 매개변수 포함
+	Imported {n} preset(s); {warnings} with unsupported parameters	사전 설정 {n}개 가져옴, {warnings}개는 지원하지 않는 매개변수 포함
+	Keep Existing Settings	기존 설정 유지
+	Looks for a newer FilmCraft release and offers to update.	새 FilmCraft 버전이 있는지 확인하고 업데이트를 제안합니다.
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	MPEG 오디오(.mp3), 조인트 스테레오 48 kHz 320 kbps
+	No presets folder: the app has no data directory	사전 설정 폴더 없음: 앱에 데이터 폴더가 없습니다
+	Open Presets Folder	사전 설정 폴더 열기
+	Preset library is up to date	사전 설정 라이브러리가 최신 상태입니다
+	Preset library updated	사전 설정 라이브러리 업데이트됨
+	Preset library updated: {imported} loaded, {removed} removed	사전 설정 라이브러리 업데이트됨: {imported}개 불러옴, {removed}개 제거됨
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	반응형 디자인 - 시간은 그래픽 레이어의 키프레임을 다시 매핑합니다. 불투명도, 모션 같은 클립 효과는 미디어 시간을 유지합니다
+	Scan Presets Folder	사전 설정 폴더 스캔
+	Sequence: {settings}	시퀀스: {settings}
+	Set Work Area Bar In Point	작업 영역 막대 시작 표시(In) 설정
+	Set Work Area Bar Out Point	작업 영역 막대 끝 표시(Out) 설정
+	Set as Default Transition	기본 전환으로 설정
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	소스 시작/끝이 1프레임뿐입니다. 시퀀스 전체를 내보내려면 전체 소스를 선택하세요.
+	Start: {tc}	시작: {tc}
+	This clip does not match the sequence settings.	이 클립은 시퀀스 설정과 일치하지 않습니다.
+	Transparency Grid	투명도 격자
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	사용하면 GIF 투명도를 켜짐/꺼짐으로만 처리합니다. 알파가 128 미만이면 투명하고, 128 이상이면 불투명합니다.
+	Work Area Bar	작업 영역 막대
+	{frames} frames ({seconds} s)	{frames}프레임({seconds} s)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name}이(가) 이미 있어 아무것도 내보내지 않았습니다. 바꾸려면 저장 대화 상자에서 해당 파일을 선택하세요.
