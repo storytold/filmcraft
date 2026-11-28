@@ -79,9 +79,10 @@ They apply to the module's contents, rather than to individual blocks; the curso
 on the Windows function itself. There is no crate-wide `allow(unsafe_code)`.
 `vaapi::ffi` and `nvdec::ffi` contain public declarations but do not carry an unsafe allowance.
 
-Added after this audit: [`thread_priority`](../../crates/platform/src/thread_priority.rs) (macOS;
-[ADR 0002](0002-background-thread-priority.md)) carries `#[allow(unsafe_code)]` on its module
-declaration in `lib.rs`. `pthread_set_qos_class_self_np` lowers a background job thread there.
+Added after this audit: [`thread_priority`](../../crates/platform/src/thread_priority.rs) (macOS,
+Windows and Linux; [ADR 0002](0002-background-thread-priority.md)) carries `#[allow(unsafe_code)]`
+on its module declaration in `lib.rs`. `pthread_set_qos_class_self_np`, `SetThreadPriority` or
+`setpriority` lowers a background job thread there.
 
 ### Callbacks into Rust and panic handling
 

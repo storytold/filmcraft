@@ -40,9 +40,14 @@ block, a safe public API, nothing that can unwind across the boundary).
   Not the utility class, which macOS runs on the efficiency cores first. A thread these threads
   create starts at the default class at 0 again (macOS does not pass the class on; tested), so
   decoders an export opens keep their priority.
-- **Windows and Linux** follow as their own changes under this decision. Windows thread priorities
-  are not inherited either (`SetThreadPriority`). Linux `nice` values are inherited by new threads,
-  so a Linux version must also keep the pools of decoders an export opens at normal priority.
+- **Windows:** below-normal thread priority (`SetThreadPriority`). A thread these threads create
+  starts at normal priority again (tested).
+- **Linux:** a `nice` value 10 higher than before (`setpriority` on the thread's id; Linux keeps
+  the value per thread). A thread these threads create takes the lowered value (tested). The
+  decoders an export makes for its own copy of a file serve only that export, so their threads
+  running lowered is right. The shared decode pool decodes for the monitors too:
+  `filmcraft_platform::register` makes it at startup (`filmcraft_codecs::gop::start_decode_pool`),
+  so a lowered thread decoding before anything else has cannot be the one that makes it (tested).
 
 ## Consequences
 
