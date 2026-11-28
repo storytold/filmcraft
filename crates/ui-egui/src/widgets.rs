@@ -563,6 +563,33 @@ pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: 
     );
 }
 
+/// Select the first number in a dialog before egui draws it. A pointer press can still start a
+/// drag as long as the user hasn't started editing the selected value with the keyboard.
+pub(crate) fn focus_dialog_number(ui: &Ui, on_open: egui::Id) {
+    // A newly opened window first measures disabled widgets. Wait for its interactive pass.
+    if ui.is_sizing_pass() || !ui.is_enabled() {
+        return;
+    }
+    let id = ui.next_auto_id();
+    let initial_focus = id.with("dialog-number-initial-focus");
+    if ui.data_mut(|data| data.remove_temp::<bool>(on_open)).is_some() {
+        ui.memory_mut(|memory| memory.request_focus(id));
+        ui.data_mut(|data| data.insert_temp(initial_focus, true));
+        return;
+    }
+    let (pointer_press, keyboard_input) = ui.input(|input| {
+        let keyboard_input =
+            input.events.iter().any(|event| matches!(event, egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Key { pressed: true, .. }));
+        (input.pointer.primary_pressed(), keyboard_input)
+    });
+    if pointer_press || keyboard_input {
+        let was_initial_focus = ui.data_mut(|data| data.remove_temp::<bool>(initial_focus)).is_some();
+        if pointer_press && was_initial_focus {
+            ui.memory_mut(|memory| memory.surrender_focus(id));
+        }
+    }
+}
+
 /// An egui `DragValue` (the number fields of dialogs and Settings) that also takes a calculation
 /// ([`crate::calc`]) applied to the value it holds: `100*2`, or `*2` to double it.
 pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValue<'_> {

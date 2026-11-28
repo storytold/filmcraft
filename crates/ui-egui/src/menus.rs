@@ -461,7 +461,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
     if (menu || matches!(id, "file.closeProject" | "file.closeAllProjects" | "app.quit"))
-        && let Some(r) = crate::panels::clip_dialogs::route(app, id, &params)
+        && let Some(r) = crate::panels::clip_dialogs::route(app, ctx, id, &params)
     {
         return r;
     }
@@ -662,10 +662,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
         "clip.audioGain" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
-            if app.ui.audio_gain.mode.is_empty() {
-                app.ui.audio_gain.mode = "adjust".into();
-            }
-            app.dialog = Some(crate::Dialog::AudioGain);
+            crate::panels::dialogs::open_audio_gain(app, ctx);
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.

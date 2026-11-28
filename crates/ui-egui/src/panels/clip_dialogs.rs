@@ -44,6 +44,8 @@ use crate::state::ClipDialogDraft;
 
 type Elems = Vec<(String, egui::Response, String)>;
 
+const SPEED_FOCUS_ON_OPEN: &str = "speed-focus-on-open";
+
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
     let label = label.into();
     crate::widgets::accessible_name(r.clone(), label.clone());
@@ -113,7 +115,7 @@ fn rename_target(app: &FilmcraftApp) -> Option<Value> {
 }
 
 /// Menu / shortcut entry points without params open a dialog. Returns None for other ids.
-pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     // Open Recent, the Home screen and a dropped project file ask before replacing unsaved
     // changes; File ▸ Open without a path picks the file first (see `ask_before_open`)
     if id == "file.open" {
@@ -126,7 +128,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     // One project is open at a time, so Close All Projects is Close Project: it asks the same "save
     // changes?" question first instead of refusing because there are unsaved changes
     if id == "file.closeAllProjects" {
-        return route(app, "file.closeProject", params);
+        return route(app, ctx, "file.closeProject", params);
     }
     // Save All on a never-saved project asks where to save, like Save
     if id == "file.saveAll" && app.session.path.is_none() {
@@ -146,6 +148,9 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         return Some(Err(e));
     }
     let (params, info) = defaults(app, id);
+    if id == "clip.speedDuration" {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::unique(SPEED_FOCUS_ON_OPEN), true));
+    }
     app.ui.clip_dialog = Some(ClipDialogDraft { command: id.into(), params, info, error: String::new() });
     Some(Ok(json!({"dialog": meta(id).map(|m| m.1)})))
 }
@@ -342,18 +347,24 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
 struct NumberOptions {
     range: std::ops::RangeInclusive<f64>,
     suffix: &'static str,
+    focus_on_open: Option<egui::Id>,
 }
 
-fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, options: NumberOptions) {
+fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, options: NumberOptions) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+        if let Some(on_open) = options.focus_on_open {
+            crate::widgets::focus_dialog_number(ui, on_open);
+        }
         let r = ui.add(crate::widgets::number_drag(&mut v).range(options.range).suffix(options.suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
         }
-    });
+        r
+    })
+    .inner
 }
 
 fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, fps: f64) {
@@ -449,12 +460,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
                 let has_v = p["video"].as_bool().unwrap_or(true);
                 ui.add_enabled_ui(has_v, |ui| {
-                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 16.0..=16384.0, suffix: " px" });
-                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 16.0..=16384.0, suffix: " px" });
-                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), NumberOptions { range: 1.0..=240.0, suffix: " fps" });
+                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 16.0..=16384.0, suffix: " px", focus_on_open: None });
+                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 16.0..=16384.0, suffix: " px", focus_on_open: None });
+                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), NumberOptions { range: 1.0..=240.0, suffix: " fps", focus_on_open: None });
                 });
                 text(ui, &mut elems, pre, p, "timecode", tl!("Media Start:"), 120.0);
-                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.05..=86_400.0, suffix: " s" });
+                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.05..=86_400.0, suffix: " s", focus_on_open: None });
             }
             "clip.nest" => {
                 // the name is ready to type over, and Enter accepts it
@@ -622,7 +633,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "clip.speedDuration" => {
-                number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), NumberOptions { range: 0.01..=100_000.0, suffix: " %" });
+                let speed_field = number(
+                    ui,
+                    &mut elems,
+                    pre,
+                    p,
+                    "speed",
+                    tl!("Speed:"),
+                    NumberOptions { range: 0.01..=100_000.0, suffix: " %", focus_on_open: Some(egui::Id::unique(SPEED_FOCUS_ON_OPEN)) },
+                );
                 // Both fields describe the same source span. Keep typed text until the speed
                 // changes, so incomplete input survives frames and cannot accidentally apply.
                 let (dur, was, fps) =
@@ -644,6 +663,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 valid = speed.is_some_and(|speed| speed.is_finite() && (0.01..=100_000.0).contains(&speed));
                 if valid && before != p["duration"] {
                     p["speed"] = json!(speed);
+                    // Duration can also be edited by automation. Its exact speed must not
+                    // be written back from the formatted speed field when that field blurs.
+                    speed_field.surrender_focus();
                 }
                 d.info["durationSpeed"] = p["speed"].clone();
                 d.info["durationText"] = p["duration"].clone();
