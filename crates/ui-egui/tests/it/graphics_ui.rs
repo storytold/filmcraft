@@ -497,9 +497,9 @@ fn selected_character_size_drag_is_one_undo_step() {
     let after = d.harness.state().session.project.clone();
     assert_ne!(*after, *before);
     d.exec("edit.undo", json!({}));
-    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(**d.harness.state().session.project, *before);
     d.exec("edit.redo", json!({}));
-    assert_eq!(*d.harness.state().session.project, *after);
+    assert_eq!(**d.harness.state().session.project, *after);
 }
 
 /// The Properties panel's stopwatches animate a layer property (#2358): Tracking (letter
@@ -731,7 +731,7 @@ fn a_text_property_change_applies_to_every_selected_text_clip() {
     assert_eq!(size(&mut d, clips[2]), 90.0, "a clip on a locked track keeps its size");
     assert_eq!(d.harness.state().session.history.undo.len(), n + 1, "the drag is one undo step for every clip");
     d.exec("edit.undo", json!({}));
-    assert_eq!(*d.harness.state().session.project, *before, "one undo restores every clip's own size");
+    assert_eq!(**d.harness.state().session.project, *before, "one undo restores every clip's own size");
     // Font: picking a family in the drop-down sets it on every selected text clip
     let fam = filmcraft_text::picker_families()
         .into_iter()

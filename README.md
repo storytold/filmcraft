@@ -226,6 +226,10 @@ Move timelines between FilmCraft and every other editor:
 
 Import merges the document's bins, media and sequences into your project as one undoable step, and links each media file it finds on disk.
 
+**Edit in EffectCraft (Craft Link).** Select video clips and choose Clip ▸ Edit in EffectCraft (`⌘⌥⇧E`, `Ctrl+Alt+Shift+E` on Windows and Linux). EffectCraft must be installed. FilmCraft nests the selection and renders every source that has no file (generators, titles, nested sequences) to a ProRes 4444 movie in a cache folder. It sends the nest to EffectCraft as an OpenTimelineIO document. The result movie lands in `<project>/Project Links/` and replaces the nest on the timeline. The clip carries a badge: `linked` while EffectCraft is running, `linked, not live` with the reason when it is not. Effects EffectCraft cannot import stay on the outer clip, and a banner says so. Undo takes the nest back in one step. Details: [docs/craft-link.md](docs/craft-link.md).
+
+**WebAssembly plug-ins.** FilmCraft hosts suite plug-ins built for the Craft plug-in ABI. They add commands, effects, panels and file formats. A plug-in gets only the permissions the user grants. Manage them from the Plugins menu. See [crates/plugins/README.md](crates/plugins/README.md).
+
 <br>
 
 ## Built for agents
@@ -283,6 +287,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
+| [docs/craft-link.md](docs/craft-link.md) | Edit in EffectCraft: the user flow, the link socket, the cache folder, platform limits |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
 | [ROADMAP.md](ROADMAP.md) | Stage, parity numbers, languages, what's next and the progress log |
@@ -302,7 +307,7 @@ The biggest gaps today:
 
 - **Speed on big footage.** Hardware decoding works on macOS and Windows, and for H.264 and HEVC on Linux (VA-API, or NVDEC with NVIDIA's driver; VP9 and AV1 decode in software there). Blend modes and the most common effects run on the GPU, but color grading, keys and export rendering still run on the CPU; H.264 encoding can use the hardware encoder on macOS and on Windows and Linux with an NVIDIA GPU (opt-in, Export ▸ Hardware encoding), and H.265 export is hardware-only on both (HDR sequences export Main 10 PQ / HLG with NVENC; VideoToolbox writes 8-bit SDR) ([#30](https://github.com/storytold/filmcraft/issues/30)).
 - **Native `.prproj` project import.** `.prproj` files can't be opened yet; bring sequences over as FCP7 XML, AAF or OTIO.
-- **No plugins.** No VST3 / Audio Units or OpenFX hosting.
+- **Few plug-in types.** The WebAssembly plug-in host exists. VST3, Audio Units and OpenFX are not hosted.
 - **Delivery codecs.** H.264 is our only software delivery-codec export; H.265 exports only through a hardware encoder (NVIDIA on Windows: Main 8-bit SDR and Main 10 HDR PQ / HLG; VideoToolbox on macOS: 8-bit Main, SDR); no AV1 export yet.
 - **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.
 - **AI features.** Few so far; speech to text is optional and off by default.

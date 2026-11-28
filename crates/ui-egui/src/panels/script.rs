@@ -850,7 +850,7 @@ mod tests {
         let cached = Arc::clone(app.ui.script.layout_doc.as_ref().unwrap());
         assert!(Arc::ptr_eq(&cached, app.ui.script.search_cache_doc.as_ref().unwrap()));
         let revision = app.session.revision;
-        Arc::make_mut(&mut app.session.project).item_mut(ItemId(item)).unwrap().as_script_mut().unwrap().lines[0].text = "Long wrapping dialogue ".repeat(50);
+        app.session.project_mut().item_mut(ItemId(item)).unwrap().as_script_mut().unwrap().lines[0].text = "Long wrapping dialogue ".repeat(50);
         assert_eq!(app.session.revision, revision, "document identity must work independently of the global revision");
         draw(&mut app);
         assert!(!Arc::ptr_eq(&cached, app.ui.script.layout_doc.as_ref().unwrap()));

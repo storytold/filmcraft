@@ -202,7 +202,7 @@ fn invalid_stream_choices_and_locked_destinations_do_not_mutate_project() {
         assert_eq!(s.project.to_json(), before);
     }
     let id = s.state.active_sequence.unwrap();
-    std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().audio_tracks[0].locked = true;
+    s.project_mut().sequence_mut(id).unwrap().audio_tracks[0].locked = true;
     let locked = s.project.to_json();
     assert!(s.execute("timeline.place", json!({"item":5,"track":"V1","audioTrack":"A1","time":0,"video":true,"audio":true})).is_err());
     assert_eq!(s.project.to_json(), locked);
@@ -268,7 +268,7 @@ fn subclip_placement_keeps_parent_streams_range_and_history() {
         assert_eq!(s.project.to_json(), before);
         s.execute("edit.redo", json!({})).unwrap();
         assert_eq!(s.project.to_json(), placed);
-        s.project = std::sync::Arc::new(Project::from_json(&placed).unwrap());
+        s.set_project(std::sync::Arc::new(Project::from_json(&placed).unwrap()));
         assert_subclip_placement(&s, sub, expected);
     }
 }
@@ -314,7 +314,7 @@ fn subclip_placement_can_add_tracks_for_parent_streams() {
 fn subclip_placement_keeps_parent_channel_map_and_all_audio_streams() {
     let (mut s, sub) = subclip_session(true, true);
     let parent = s.project.resolve_media(sub).unwrap().0;
-    let m = std::sync::Arc::make_mut(&mut s.project).item_mut(parent).unwrap().as_media_mut().unwrap();
+    let m = s.project_mut().item_mut(parent).unwrap().as_media_mut().unwrap();
     m.info.audio_streams.push(m.info.audio_streams[0].clone());
     m.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap { format: filmcraft_project::AudioChannels::Mono, clips: vec![vec![1], vec![0]] });
     s.execute("timeline.place", json!({"item":sub.0,"track":"V1","audioTrack":"A1","time":0})).unwrap();
@@ -407,7 +407,7 @@ fn placement_lanes_are_the_tracks_a_placement_fills() {
     }
     // Modify ▸ Audio Channels with two clips, and a second container audio stream: three audio tracks
     let mut s = setup();
-    let m = std::sync::Arc::make_mut(&mut s.project).item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    let m = s.project_mut().item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
     m.info.audio_streams.push(m.info.audio_streams[0].clone());
     m.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap { format: filmcraft_project::AudioChannels::Mono, clips: vec![vec![1], vec![0]] });
     let lanes = s.placement_lanes(ItemId(5), full(&s, ItemId(5)), true, true);

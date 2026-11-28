@@ -59,9 +59,9 @@ fn ripple_and_check(frames: i64) {
     s.active_sequence().unwrap().check().unwrap();
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step puts both back");
+    assert_eq!(**s.project, *before, "one undo step puts both back");
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after);
+    assert_eq!(**s.project, *after);
 }
 
 /// The early sound has no room to follow: the sequence start, or another clip right before it on
@@ -75,14 +75,14 @@ fn ripple_trim_is_refused_when_the_early_sound_has_no_room() {
     // the sound starts at frame 36: 40 frames earlier is before the sequence starts
     let e = s.execute("timeline.trim", json!({"clip": first.0, "edge": "out", "mode": "ripple", "deltaFrames": -40})).unwrap_err();
     assert!(e.to_string().contains("sync"), "{e}");
-    assert_eq!(*s.project, *before, "a refused trim changes nothing");
+    assert_eq!(**s.project, *before, "a refused trim changes nothing");
     let tone = s.project.items.values().find(|i| !i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
     s.execute("timeline.place", json!({"item": tone.0, "audioTrack": "A2", "frame": 12, "duration": rate.tick_of(24).0})).unwrap();
     let before = s.project.clone();
     assert_eq!(s.active_sequence().unwrap().audio_tracks[1].items[0].end(), start(&s, sound));
     let e = s.execute("timeline.trim", json!({"clip": first.0, "edge": "out", "mode": "ripple", "deltaFrames": -8})).unwrap_err();
     assert!(e.to_string().contains("sync"), "{e}");
-    assert_eq!(*s.project, *before, "a refused trim changes nothing");
+    assert_eq!(**s.project, *before, "a refused trim changes nothing");
     assert_eq!(start(&s, second) - start(&s, sound), rate.tick_of(12));
 }
 
@@ -111,7 +111,7 @@ fn shortening_the_head_after_an_l_cut_keeps_the_earlier_sound_in_place() {
     assert_eq!((start(&s, sound), end(&s, sound)), (start(&s, second), end(&s, second)), "its own sound with it");
     s.active_sequence().unwrap().check().unwrap();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step puts it back");
+    assert_eq!(**s.project, *before, "one undo step puts it back");
 }
 
 /// A shorter head on the J-cut take itself: the picture and its early sound lose the same stretch
@@ -148,7 +148,7 @@ fn shorter_head_on_a_j_cut_take(grab_sound: bool) {
     assert_eq!(len(&s, first), first_before, "the clip before is untouched");
     s.active_sequence().unwrap().check().unwrap();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step puts both back");
+    assert_eq!(**s.project, *before, "one undo step puts both back");
 }
 
 /// Material on a sync-locked track inside the stretch a shorter head takes away still refuses it.
@@ -162,5 +162,5 @@ fn shorter_head_is_refused_when_a_sync_locked_track_has_material_in_the_stretch(
     let before = s.project.clone();
     let e = s.execute("timeline.trim", json!({"clip": second.0, "edge": "in", "mode": "ripple", "deltaFrames": 8})).unwrap_err();
     assert!(e.to_string().contains("sync"), "{e}");
-    assert_eq!(*s.project, *before, "a refused trim changes nothing");
+    assert_eq!(**s.project, *before, "a refused trim changes nothing");
 }

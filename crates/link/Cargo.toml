@@ -1,0 +1,29 @@
+[package]
+name = "filmcraft-link"
+description = "FilmCraft side of Craft Link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craft-ipc = { workspace = true }
+craft-command = { workspace = true }
+filmcraft-engine = { workspace = true }
+filmcraft-interchange = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-export = { workspace = true }
+egui = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+jsonschema = "=0.49.9"
+filmcraft-color = { workspace = true }
+serde_json = { workspace = true }

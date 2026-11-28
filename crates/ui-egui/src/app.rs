@@ -251,6 +251,9 @@ impl FilmcraftApp {
     fn logic_control(&mut self, ctx: &egui::Context) {
         let had_synthetic = !self.synthetic.is_empty() || self.synthetic_pending_step.is_some();
         self.drain_control(ctx);
+        if let Some(per_frame) = self.hooks.per_frame.as_mut() {
+            per_frame(ctx, &mut self.session);
+        }
         if (!self.synthetic.is_empty() || self.synthetic_pending_step.is_some()) && !had_synthetic {
             // Occluded macOS windows stop running `ui`; bring the window forward (without taking
             // keyboard focus) so the input is processed.
@@ -522,6 +525,9 @@ impl eframe::App for FilmcraftApp {
     /// update that waits for the exit.
     fn on_exit(&mut self) {
         self.remember_layout();
+        if let Some(on_exit) = self.hooks.on_exit.as_mut() {
+            on_exit();
+        }
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {

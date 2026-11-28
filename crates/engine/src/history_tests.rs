@@ -31,7 +31,7 @@ fn delete_redoable_actions_forgets_the_undone_steps_only() {
     let after = s.execute("history.list", json!({})).unwrap();
     assert_eq!(after["undo"], before["undo"], "the steps Undo takes back stay");
     assert_eq!(after["redo"], json!([]));
-    assert_eq!(*s.project, *project, "the project does not change");
+    assert_eq!(**s.project, *project, "the project does not change");
     assert_eq!(s.is_dirty(), dirty);
     assert!(s.execute("edit.redo", json!({})).is_err(), "nothing is left to redo");
     // Undo still takes back the step before
@@ -52,7 +52,7 @@ fn clear_history_forgets_every_step_and_keeps_the_project() {
     let r = s.execute("history.clear", json!({})).unwrap();
     assert_eq!(r, json!({"deleted": undo + 2}));
     assert_eq!(s.execute("history.list", json!({})).unwrap(), json!({"undo": [], "redo": []}));
-    assert_eq!(*s.project, *project, "the project does not change");
+    assert_eq!(**s.project, *project, "the project does not change");
     assert_eq!(s.is_dirty(), dirty);
     assert!(s.execute("edit.undo", json!({})).is_err());
     assert!(s.execute("history.clear", json!({})).is_err(), "an empty history has nothing to clear");
@@ -61,7 +61,7 @@ fn clear_history_forgets_every_step_and_keeps_the_project() {
     s.execute("file.newBin", json!({"name": "D"})).unwrap();
     assert_eq!(s.history.undo.len(), 1);
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *project);
+    assert_eq!(**s.project, *project);
 }
 
 /// The command ids stored with the undo and redo steps, oldest first.

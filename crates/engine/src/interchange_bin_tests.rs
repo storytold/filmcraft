@@ -96,7 +96,7 @@ fn an_interchange_document_lands_in_the_bin_it_was_imported_into() {
             assert!(within(&s, kordex, *id), "{doc}: item {id:?} is in the bin the import was aimed at");
         }
         // the import (and Link Media) undo back to the project as it was
-        while *s.project != *before {
+        while **s.project != *before {
             s.execute("edit.undo", json!({})).unwrap();
         }
         assert!(s.project.root.find_bin(kordex).is_some_and(|b| b.children.is_empty()), "{doc}");

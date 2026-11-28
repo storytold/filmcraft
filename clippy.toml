@@ -3,6 +3,10 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 
+disallowed-methods = [
+    { path = "craft_command::Tracked::write", reason = "engine only" },
+]
+
 disallowed-types = [
     { path = "egui::ComboBox", reason = "use craft_ui::ComboBox: egui's combo box menu can't grow back while open (egui#5225)" },
 ]

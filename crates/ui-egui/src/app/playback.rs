@@ -380,7 +380,7 @@ mod export_recording_tests {
         app.set_mode(state::Mode::Export);
         app.ui.export.range = "custom".into();
         app.ui.export.custom_end = 1.0;
-        let before = serde_json::to_value(&app.session.project).unwrap();
+        let before = serde_json::to_value(&*app.session.project).unwrap();
         let undo = app.session.undo_mark();
         let revision = app.session.revision;
         let ctx = egui::Context::default();
@@ -391,7 +391,7 @@ mod export_recording_tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert!(!app.playback.playing);
-        assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+        assert_eq!(serde_json::to_value(&*app.session.project).unwrap(), before);
         assert_eq!(app.session.undo_mark(), undo);
         assert_eq!(app.session.revision, revision);
     }

@@ -79,7 +79,7 @@ fn import_lut_set_input_and_look_then_undo() {
     let lib = s.execute("lut.list", json!({})).unwrap();
     assert_eq!(lib["library"].as_array().unwrap().len(), 1);
     assert!(lib["builtin"].as_array().unwrap().iter().any(|b| b["ref"] == "builtin:slog3-sgamut3cine-to-rec709"));
-    let js = serde_json::to_string(&*s.project).unwrap();
+    let js = serde_json::to_string(&**s.project).unwrap();
     let back: filmcraft_project::Project = serde_json::from_str(&js).unwrap();
     assert_eq!(back.luts, s.project.luts);
     // undo the look, the section toggles and the input LUT

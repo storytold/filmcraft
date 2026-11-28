@@ -20,10 +20,10 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut: None, alt_shortcuts: &[], params, enabled, run, journal: true }
 }
 fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled: always, run, journal: false }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -497,7 +497,7 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let base = it.effects[idx].clone();
     // the current shot as Color Grading sees it: the clip with its Color Grading switched off
-    let mut probe = (*s.project).clone();
+    let mut probe = (**s.project).clone();
     if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
         pi.effects[idx].enabled = false;
     }

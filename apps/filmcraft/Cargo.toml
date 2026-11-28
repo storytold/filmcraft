@@ -20,6 +20,8 @@ neural-voices = ["filmcraft-engine/neural-voices"]
 [dependencies]
 craft-control-protocol = { workspace = true }
 filmcraft-engine = { workspace = true }
+filmcraft-link = { workspace = true }
+filmcraft-plugins = { workspace = true }
 filmcraft-export = { workspace = true }
 # The durable no-follow session record (nightly_session.rs).
 filmcraft-format = { workspace = true }
@@ -29,6 +31,7 @@ filmcraft-time = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
+craft-ipc = { workspace = true }
 # process_identity.rs's identity error; the workspace's own thiserror.
 thiserror = { workspace = true }
 egui = { workspace = true }

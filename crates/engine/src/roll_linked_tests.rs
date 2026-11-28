@@ -80,7 +80,7 @@ fn roll_delta_is_zero_when_a_clip_cannot_roll_by_the_asked_amount() {
     let rate = s.sequence_rate();
     let f = |n: i64| rate.tick_of(n);
     let item = s.active_sequence().unwrap().find_item(v0).unwrap().1.item;
-    match std::sync::Arc::make_mut(&mut s.project).items.get_mut(&item).map(|i| &mut i.kind) {
+    match s.project_mut().items.get_mut(&item).map(|i| &mut i.kind) {
         Some(filmcraft_project::ItemKind::Media(m)) => m.info.duration = f(94),
         other => panic!("not media: {other:?}"),
     }

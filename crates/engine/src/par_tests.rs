@@ -5,7 +5,6 @@
 //! demuxers end to end when ffmpeg is installed.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde_json::json;
 
@@ -16,7 +15,7 @@ use filmcraft_project::{ItemId, ItemKind, ParamValue};
 fn matte(s: &mut Session, par: (u32, u32)) -> ItemId {
     let r = s.execute("file.newColorMatte", json!({"color": "#ff0000", "width": 144, "height": 108, "seconds": 2.0})).unwrap();
     let id = ItemId(r["item"].as_u64().unwrap());
-    if let Some(ItemKind::Media(m)) = Arc::make_mut(&mut s.project).item_mut(id).map(|i| &mut i.kind) {
+    if let Some(ItemKind::Media(m)) = s.project_mut().item_mut(id).map(|i| &mut i.kind) {
         m.info.video.as_mut().unwrap().par = par;
     }
     id
