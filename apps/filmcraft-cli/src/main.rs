@@ -369,7 +369,11 @@ async fn cli_probe(a: &Args) {
 
 async fn cli_bench_decode(a: &Args) {
     let path = a.pos(1).unwrap_or_else(|| usage("bench-decode <media>"));
-    let n: i64 = a.opt("--frames").and_then(|v| v.parse().ok()).unwrap_or(120);
+    let n = match a.opt("--frames") {
+        Some(value) => value.parse::<i64>().ok().filter(|&n| n > 0).unwrap_or_else(|| usage("--frames needs a positive integer")),
+        None if a.flag("--frames") => usage("--frames needs a positive integer"),
+        None => 120,
+    };
     let src = filmcraft_codecs::open_bytes(path, read_file(path).await.unwrap_or_else(|e| fail(e)).into()).unwrap_or_else(|e| fail(e));
     let rate = src.info().frame_rate();
     let t0 = std::time::Instant::now();
