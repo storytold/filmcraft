@@ -22,7 +22,7 @@ jobs:
       actions: read
       attestations: write
       id-token: write
-    uses: storytold/craft-common-actions/.github/workflows/nightly-unsigned.yml@bf94b15b708089b95c4e2d1c978e66ecf1f2f4f3
+    uses: storytold/craft-common-actions/.github/workflows/nightly-unsigned.yml@3fe7aa009c15e57932497b5e6d00bf20f781e5ec
     with:
       tooling-revision: bf94b15b708089b95c4e2d1c978e66ecf1f2f4f3
       app-name: filmcraft
