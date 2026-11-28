@@ -171,6 +171,37 @@ fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
 }
 
+/// #5190: Settings ▸ Timeline ▸ Timeline Scroll Speed multiplies how far a wheel turn moves the
+/// Timeline, sideways and up and down, and leaves zoom alone.
+#[test]
+fn the_scroll_speed_setting_scales_the_wheel_but_not_zoom() {
+    let mut d = Driver::tall();
+    assert_eq!(d.app().session.prefs.timeline.scroll_speed, 1.0, "the wheel's own distance by default");
+    let moved = |d: &mut Driver, speed: f64| {
+        d.app().session.prefs.timeline.scroll_speed = speed;
+        d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0, "vScroll": 0.0}}));
+        d.frames(3);
+        let before = d.view();
+        d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+        let sideways = d.view().0 - before.0;
+        d.wheel(0.2, 0.0, 40.0, none());
+        let down = d.view().2 - before.2;
+        d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
+        (sideways, down, d.view().1 / before.1)
+    };
+    let (side1, down1, zoom1) = moved(&mut d, 1.0);
+    assert!(side1 > 0.0 && down1 > 0.0, "the wheel moves the view: {side1} {down1}");
+    let (side2, down2, zoom2) = moved(&mut d, 2.0);
+    assert!((side2 - 2.0 * side1).abs() < 1e-6, "sideways goes twice as far: {side2} vs {side1}");
+    assert!((down2 - 2.0 * down1).abs() < 1e-6, "up and down goes twice as far: {down2} vs {down1}");
+    assert!((zoom2 - zoom1).abs() < 1e-9, "zoom is not scaled: {zoom2} vs {zoom1}");
+    let (side_half, ..) = moved(&mut d, 0.5);
+    assert!((side_half - 0.5 * side1).abs() < 1e-6, "{side_half}");
+    // a damaged value neither freezes the Timeline nor flings it
+    let (side_bad, ..) = moved(&mut d, f64::NAN);
+    assert!((side_bad - side1).abs() < 1e-6, "{side_bad}");
+}
+
 /// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was
 /// in view and the scroll bar's thumb sat at the right end whatever was done to it.
 #[test]

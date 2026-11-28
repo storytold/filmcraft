@@ -556,6 +556,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             f("timeline.stillImageDuration", "Still Image Default Duration", Kind::Duration { unit_key: "timeline.stillImageUnit" }, true),
             f("timeline.autoScroll", "Timeline Playback Auto-Scrolling", Kind::Choice(AUTO_SCROLL), true),
             f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
+            f("timeline.scrollSpeed", "Timeline Scroll Speed", float(0.25, 4.0, 2, "x"), true),
             Row::Group(
                 "Default Audio Tracks",
                 &[
