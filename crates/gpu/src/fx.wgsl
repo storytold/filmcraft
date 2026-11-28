@@ -17,7 +17,7 @@ struct U {
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
-// Unsharp Mask: the image before blurring.
+// Unsharp Mask: the image before blurring. Focus Blur: the running sum of its levels.
 @group(0) @binding(3) var aux: texture_2d<f32>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
@@ -55,6 +55,8 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_FOCUS_ACC: u32 = 37u;
+const OP_FOCUS_SHOW: u32 = 38u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -100,6 +102,26 @@ fn sample_clamped(x: f32, y: f32) -> vec4<f32> {
     let y0 = i32(floor(fy));
     let x1 = min(x0 + 1, s.x - 1);
     let y1 = min(y0 + 1, s.y - 1);
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    let a = ld(vec2(x0, y0));
+    let b = ld(vec2(x1, y0));
+    let c = ld(vec2(x0, y1));
+    let d = ld(vec2(x1, y1));
+    let top = a + (b - a) * tx;
+    let bot = c + (d - c) * tx;
+    return top + (bot - top) * ty;
+}
+
+// `sample_clamped` within the top-left `r` pixels (`Image::sample_bilinear_clamped` on the
+// halved picture there)
+fn sample_clamped_in(x: f32, y: f32, r: vec2<i32>) -> vec4<f32> {
+    let fx = clamp(x - 0.5, 0.0, f32(r.x) - 1.0);
+    let fy = clamp(y - 0.5, 0.0, f32(r.y) - 1.0);
+    let x0 = i32(floor(fx));
+    let y0 = i32(floor(fy));
+    let x1 = min(x0 + 1, r.x - 1);
+    let y1 = min(y0 + 1, r.y - 1);
     let tx = fx - f32(x0);
     let ty = fy - f32(y0);
     let a = ld(vec2(x0, y0));
@@ -645,6 +667,39 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return dec(v);
 }
 
+// Focus Blur's blur amount at pixel `p` (`FocusArea::amount`): 0 within the size (p1.x) of the
+// centre (p0.xy), or with i1.y = 1 of the band through it along the angle whose sine and cosine
+// are p0.zw, rising to 1 over the feather (p1.y).
+fn focus_amount(p: vec2<i32>) -> f32 {
+    let d0 = vec2<f32>(p) + 0.5 - u.p0.xy;
+    var d = length(d0);
+    if u.i1.y != 0u {
+        d = abs(-d0.x * u.p0.z + d0.y * u.p0.w);
+    }
+    return clamp((d - u.p1.x) / u.p1.y, 0.0, 1.0);
+}
+
+// Focus Blur's level `i` as a fraction of the maximum blur (`vfx::BLUR_LEVELS`).
+fn focus_level(i: u32) -> f32 {
+    switch i {
+        case 0u: { return 0.0; }
+        case 1u: { return 0.125; }
+        case 2u: { return 0.25; }
+        case 3u: { return 0.5; }
+        default: { return 1.0; }
+    }
+}
+
+// How much level `k` contributes at blur amount `a` (`vfx::level_weight`): the level below `a`
+// gets 1 - t, the one above t.
+fn focus_weight(k: u32, a: f32) -> f32 {
+    let i = 1u + u32(a >= 0.125) + u32(a >= 0.25) + u32(a >= 0.5);
+    let l0 = focus_level(i - 1u);
+    let l1 = focus_level(i);
+    let t = clamp((a - l0) / (l1 - l0), 0.0, 1.0);
+    return select(0.0, t, k == i) + select(0.0, 1.0 - t, k + 1u == i);
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -680,7 +735,7 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
         }
         case OP_BOX: {
             // one box pass along x (i1.z = 0) or y (1): mean over 2r+1 pixels, clamped to the
-            // edge (repeat) or skipping pixels outside, as `effects::box_rows`
+            // edge (repeat) or skipping pixels outside, as `effects::box_line`
             let r = i32(u.i1.x);
             let repeat = u.i1.y != 0u;
             let vertical = u.i1.z != 0u;
@@ -716,6 +771,25 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let d = o.rgb - bq.rgb;
             let sharpened = max(o.rgb + d * amount, vec3(0.0));
             return vec4(select(o.rgb, sharpened, abs(d) >= vec3(th * o.a)), o.a);
+        }
+        case OP_FOCUS_ACC: {
+            // src: level i1.x (blurred, or the original), aux: the sum so far (i1.z = 1: none
+            // yet), as `vfx::blend_levels`. A halved level (i1.w = 1) is the top-left p2.xy
+            // pixels of src, read at the pixel's centre scaled by p1.zw.
+            var lv = ld(p);
+            if u.i1.w != 0u {
+                lv = sample_clamped_in(pc.x * u.p1.z, pc.y * u.p1.w, vec2<i32>(u.p2.xy));
+            }
+            let b = lv * focus_weight(u.i1.x, focus_amount(p));
+            if u.i1.z != 0u {
+                return b;
+            }
+            return textureLoad(aux, p, 0) + b;
+        }
+        case OP_FOCUS_SHOW: {
+            // the focus area tinted red over the picture (`vfx::over`)
+            let k = (1.0 - focus_amount(p)) * 0.35;
+            return vec4(k, 0.0, 0.0, k) + ld(p) * (1.0 - k);
         }
         case OP_CROP: {
             let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1.x;
@@ -853,7 +927,7 @@ fn fx_px(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 // A box pass as a running sum along one row (i1.z = 0) or column (1) per invocation: O(1) per
-// pixel for any radius, the arithmetic of `effects::box_rows`.
+// pixel for any radius, the arithmetic of `effects::box_line`.
 @compute @workgroup_size(64)
 fn fx_run(@builtin(global_invocation_id) id: vec3<u32>) {
     let s = size();

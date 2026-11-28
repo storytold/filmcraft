@@ -29,6 +29,68 @@ pub struct Resample {
     pub opacity: f32,
 }
 
+/// One level of Focus Blur: its index in `vfx::BLUR_LEVELS`, how often the picture is halved
+/// (`Image::downsample2`) before it is blurred, and the box radii per axis of its Gaussian at that
+/// size (`effects::gaussian_boxes`; both empty and no halving: the picture itself).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlurLevel {
+    pub k: u32,
+    pub down: u32,
+    pub rx: Vec<u32>,
+    pub ry: Vec<u32>,
+}
+
+/// Focus Blur's focus area in working pixels: sharp within `size` of `center` (a disc, or with
+/// `linear` a band through it along the angle whose sine and cosine are `sin` and `cos`), fully
+/// blurred `feather` further out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FocusArea {
+    pub center: [f32; 2],
+    pub sin: f32,
+    pub cos: f32,
+    pub size: f32,
+    pub feather: f32,
+    pub linear: bool,
+}
+
+impl FocusArea {
+    /// The blur amount (0..1) at distance `d` from the centre (or the band's middle line).
+    fn amount_at(&self, d: f64) -> f32 {
+        ((d - self.size as f64) / self.feather as f64).clamp(0.0, 1.0) as f32
+    }
+
+    /// The blur amount at the centre of pixel (`x`, `y`); not a number: 0, sharp.
+    pub fn amount(&self, x: usize, y: usize) -> f32 {
+        let (dx, dy) = (x as f64 + 0.5 - self.center[0] as f64, y as f64 + 0.5 - self.center[1] as f64);
+        let d = if self.linear { (-dx * self.sin as f64 + dy * self.cos as f64).abs() } else { dx.hypot(dy) };
+        let a = self.amount_at(d);
+        if a.is_nan() { 0.0 } else { a }
+    }
+
+    /// The lowest and highest [`amount`](Self::amount) over the pixels of a `w`×`h` picture,
+    /// widened by a pixel's distance either way so that rounding never leaves out a level a pixel
+    /// uses (0..1 when they can't be told).
+    pub fn range(&self, w: usize, h: usize) -> (f32, f32) {
+        let (x0, x1) = (0.5, w.max(1) as f64 - 0.5);
+        let (y0, y1) = (0.5, h.max(1) as f64 - 0.5);
+        let (cx, cy) = (self.center[0] as f64, self.center[1] as f64);
+        let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+        let (near, far) = if self.linear {
+            let (s, c) = (self.sin as f64, self.cos as f64);
+            // signed distance from the band's middle line: linear, so its extremes are corners
+            let along = corners.map(|(x, y)| -(x - cx) * s + (y - cy) * c);
+            let lo = along.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = along.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            (if lo <= 0.0 && hi >= 0.0 { 0.0 } else { lo.abs().min(hi.abs()) }, lo.abs().max(hi.abs()))
+        } else {
+            let dx = (x0 - cx).max(cx - x1).max(0.0);
+            let dy = (y0 - cy).max(cy - y1).max(0.0);
+            (dx.hypot(dy), corners.iter().map(|(x, y)| (x - cx).hypot(y - cy)).fold(0.0, f64::max))
+        };
+        if near.is_finite() && far.is_finite() { (self.amount_at(near - 1.0), self.amount_at(far + 1.0)) } else { (0.0, 1.0) }
+    }
+}
+
 /// One evaluated effect.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FxOp {
@@ -127,6 +189,14 @@ pub enum FxOp {
         rot: f32,
         rr: f32,
         rings: u32,
+    },
+    /// Focus Blur: sharp in `area`, blurred outside it through the `levels` some pixel uses
+    /// (`vfx::blur_levels`), each pixel the sum of the levels weighted by its blur amount
+    /// (`vfx::level_weight`); `show` tints the area red.
+    FocusBlur {
+        area: FocusArea,
+        levels: Vec<BlurLevel>,
+        show: bool,
     },
     /// Unsharp mask over a repeat-edge Gaussian of the given box radii (per axis).
     Unsharp {
@@ -243,6 +313,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "directional_blur",
     "directional_blur_legacy",
     "bokeh_blur",
+    "focus_blur",
     "sharpen",
     "unsharp_mask",
     "crop",
@@ -431,6 +502,22 @@ impl FxOp {
                     rr,
                     rings: (rr.ceil() as usize).clamp(1, 12) as u32,
                 }
+            }
+            "focus_blur" => {
+                let px = cx.px_scale as f64;
+                let c = crate::vfx::pv_wh(e, "center", cx, w, h);
+                let (s, co) = (f(e, "angle", cx) as f64).to_radians().sin_cos();
+                let area = FocusArea {
+                    center: [c.x as f32, c.y as f32],
+                    sin: s as f32,
+                    cos: co as f32,
+                    size: (f(e, "size", cx) as f64 * px * 0.5) as f32,
+                    feather: (f(e, "feather", cx) as f64 * px).max(1.0) as f32,
+                    linear: crate::vfx::chv(e, "shape") == 1,
+                };
+                let (lo, hi) = area.range(w, h);
+                let levels = crate::vfx::blur_levels(w, h, f(e, "amount", cx) * cx.px_scale * 0.5, lo, hi);
+                FxOp::FocusBlur { area, levels, show: crate::vfx::bv(e, "show") }
             }
             "sharpen" => {
                 // below a sigma of ~0.58 the three boxes all round to radius 0 and the mask is a
@@ -691,6 +778,7 @@ impl FxOp {
             FxOp::Gaussian { .. } => true,
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
             FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
+            FxOp::FocusBlur { area, .. } => fin(&area.center) && fin(&[area.sin, area.cos, area.size, area.feather]),
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
             FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
             FxOp::Resample(r) => {
@@ -898,6 +986,7 @@ impl FxOp {
                     crate::vfx::bokeh(img, *levels, *boost, *threshold, *sides, *rot, *rr, *rings);
                 }
             }
+            FxOp::FocusBlur { area, levels, show } => crate::vfx::focus(img, area, levels, *show),
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
             FxOp::Resample(r) => {
