@@ -135,6 +135,119 @@ fn select_all_matching_selects_every_use_of_the_source() {
     assert!(s.execute("edit.selectAllMatching", json!({})).is_err());
 }
 
+/// #4603: `with` gives other clips the same change in the same undo step: numbers and points move
+/// by the difference, so clips set apart keep their arrangement, within the parameter's range.
+#[test]
+fn set_param_with_moves_the_other_clips_by_the_same_amount() {
+    use filmcraft_project::ParamValue;
+    let mut s = demo();
+    let (a, b, c) = (v1(&s)[0].id.0, v1(&s)[1].id.0, v1(&s)[2].id.0);
+    let pos = |s: &Session, id: u64| match clip(s, id).effect("motion").and_then(|e| e.param("position")).map(|p| p.value.clone()) {
+        Some(ParamValue::Vec2(v)) => (v.x, v.y),
+        other => panic!("Position is a point: {other:?}"),
+    };
+    let scale = |s: &Session, id: u64| clip(s, id).effect("motion").and_then(|e| e.param("scale")).and_then(|p| p.value.as_f64()).unwrap_or(f64::NAN);
+    s.execute("effects.setParam", json!({"clip": b, "effect": "motion", "param": "position", "value": [100.0, 50.0]})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 10.0})).unwrap();
+    let (pa, pb, pc) = (pos(&s, a), pos(&s, b), pos(&s, c));
+    let undo = s.history.undo.len();
+    s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "position", "value": [pa.0 + 30.0, pa.1 - 20.0], "with": [b, c, a, b]}))
+        .unwrap();
+    assert_eq!(pos(&s, a), (pa.0 + 30.0, pa.1 - 20.0));
+    assert_eq!(pos(&s, b), (pb.0 + 30.0, pb.1 - 20.0), "the second clip moved by as much");
+    assert_eq!(pos(&s, c), (pc.0 + 30.0, pc.1 - 20.0), "the third clip moved by as much");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((pos(&s, a), pos(&s, b), pos(&s, c)), (pa, pb, pc), "one undo puts all three back");
+    // a scalar too, held inside the parameter's range
+    let sa = scale(&s, a);
+    s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "scale", "value": sa - 50.0, "with": [c]})).unwrap();
+    assert_eq!(scale(&s, a), sa - 50.0);
+    assert_eq!(scale(&s, c), 0.0, "10 % less 50 stops at the range's 0 %");
+    // a mask's parameters differ from clip to clip
+    assert!(s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "scale", "value": 50.0, "mask": 0, "with": [b]})).is_err());
+}
+
+/// #4817: a drag that folds into one undo step moves the companions by the whole drag's change
+/// from where they started, not by the last step's, so dragging a value down and back up leaves
+/// them where they were even where they clamped on the way.
+#[test]
+fn a_drag_that_comes_back_leaves_the_other_clips_where_they_started() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].id.0, v1(&s)[1].id.0);
+    let opacity = |s: &Session, id: u64| f64_param(&clip(s, id), "opacity", "opacity");
+    s.execute("effects.setParam", json!({"clip": b, "effect": "opacity", "param": "opacity", "value": 10.0})).unwrap();
+    let undo = s.history.undo.len();
+    // one drag: 100 % down to 50 % (B clamps at 0 %) and back up to 100 %
+    for (i, v) in [80.0, 50.0, 80.0, 100.0].into_iter().enumerate() {
+        let mut p = json!({"clip": a, "effect": "opacity", "param": "opacity", "value": v, "with": [b], "merge": true});
+        if i == 0 {
+            p["begin"] = json!(true);
+        }
+        s.execute("effects.setParam", p).unwrap();
+        assert_eq!(opacity(&s, a), v);
+    }
+    assert_eq!(opacity(&s, b), 10.0, "back where it started, not at the 50 % it clamped through");
+    assert_eq!(s.history.undo.len(), undo + 1, "the drag is one undo step");
+}
+
+/// #4817: a clip saved before a parameter existed has none of it, so the value it starts a drag
+/// with is the definition's default — what the first update inserts. The undo snapshot still lacks
+/// the parameter, and reading that as "no baseline" fell back to the already-edited value, so a
+/// second drag step moved the clip twice.
+#[test]
+fn a_drag_moves_a_clip_that_lacks_the_parameter_by_the_whole_change() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].id.0, v1(&s)[1].id.0);
+    // B's Motion, as an older project saved it, has no Scale
+    {
+        let mut p = (*s.project).clone();
+        let seq = s.state.active_sequence.unwrap();
+        p.sequence_mut(seq).unwrap().find_item_mut(ClipId(b)).unwrap().1.effect_mut("motion").unwrap().params.remove("scale");
+        s.project = std::sync::Arc::new(p);
+    }
+    assert!(clip(&s, b).effect("motion").unwrap().param("scale").is_none(), "B has no Scale to begin with");
+    let undo = s.history.undo.len();
+    // one drag: A's Scale 100 % to 110 % to 120 %
+    for (i, v) in [110.0, 120.0].into_iter().enumerate() {
+        let mut p = json!({"clip": a, "effect": "motion", "param": "scale", "value": v, "with": [b], "merge": true});
+        if i == 0 {
+            p["begin"] = json!(true);
+        }
+        s.execute("effects.setParam", p).unwrap();
+        assert_eq!(f64_param(&clip(&s, a), "motion", "scale"), v);
+    }
+    assert_eq!(f64_param(&clip(&s, b), "motion", "scale"), 120.0, "B moved by the whole drag's change, not twice the first step's");
+    assert_eq!(s.history.undo.len(), undo + 1, "the drag is one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(f64_param(&clip(&s, a), "motion", "scale"), 100.0);
+    assert!(clip(&s, b).effect("motion").unwrap().param("scale").is_none(), "one undo takes B's new Scale away again");
+}
+
+/// #4817: the clip the drag names reads its baseline from the snapshot the same way, so a parameter
+/// it lacks must not make the companions fall a step behind.
+#[test]
+fn a_drag_baseline_reads_the_default_of_a_parameter_the_primary_lacks() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].id.0, v1(&s)[1].id.0);
+    {
+        let mut p = (*s.project).clone();
+        let seq = s.state.active_sequence.unwrap();
+        p.sequence_mut(seq).unwrap().find_item_mut(ClipId(a)).unwrap().1.effect_mut("motion").unwrap().params.remove("scale");
+        s.project = std::sync::Arc::new(p);
+    }
+    // one drag: A's Scale 100 % to 110 % to 120 %
+    for (i, v) in [110.0, 120.0].into_iter().enumerate() {
+        let mut p = json!({"clip": a, "effect": "motion", "param": "scale", "value": v, "with": [b], "merge": true});
+        if i == 0 {
+            p["begin"] = json!(true);
+        }
+        s.execute("effects.setParam", p).unwrap();
+    }
+    assert_eq!(f64_param(&clip(&s, a), "motion", "scale"), 120.0);
+    assert_eq!(f64_param(&clip(&s, b), "motion", "scale"), 120.0, "B moved by the whole drag's change");
+}
+
 #[test]
 fn paste_attributes_with_scaled_keyframes_and_remove_attributes() {
     let mut s = demo();
