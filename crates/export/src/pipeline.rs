@@ -10,6 +10,8 @@ use filmcraft_geom::Vec2;
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::FrameRate;
+use image::ImageDecoder;
+use image::metadata::Orientation;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
@@ -470,6 +472,7 @@ fn composite(dst: &mut Image, src: &Image, x: i64, y: i64, opacity: f32) {
 /// Load a PNG / JPEG overlay as premultiplied linear light, `width` pixels wide.
 fn load_overlay(path: &str, width: f32) -> Result<Image> {
     let bytes = filmcraft_media::reader::read_regular_file(std::path::Path::new(path)).map_err(|e| ExportError::Io(format!("image overlay {path}: {e}")))?;
+    let orientation = overlay_orientation(&bytes);
     let mut reader = image::ImageReader::new(Cursor::new(bytes));
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
@@ -477,7 +480,9 @@ fn load_overlay(path: &str, width: f32) -> Result<Image> {
     limits.max_alloc = Some((MAX_OVERLAY_PIXELS * 4) as u64);
     reader.limits(limits);
     let reader = reader.with_guessed_format().map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?;
-    let rgba = reader.decode().map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?.to_rgba8();
+    let mut decoded = reader.decode().map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?;
+    decoded.apply_orientation(orientation);
+    let rgba = decoded.to_rgba8();
     let (iw, ih) = (rgba.width() as usize, rgba.height() as usize);
     bounded_overlay_dimensions(iw, ih)?;
     let mut img = Image::new(iw, ih);
@@ -495,6 +500,14 @@ fn load_overlay(path: &str, width: f32) -> Result<Image> {
     let nh = ((ih as f64 * nw as f64 / iw.max(1) as f64).round() as usize).max(1);
     bounded_overlay_dimensions(nw, nh)?;
     Ok(if (nw, nh) == (iw, ih) { img } else { resample(&img, nw, nh) })
+}
+
+/// The EXIF Orientation of an overlay file, from its headers alone, so a photo stored sideways is
+/// drawn upright as it is when imported as a still. A missing or unreadable value means no
+/// transform: a damaged tag never fails an export.
+fn overlay_orientation(bytes: &[u8]) -> Orientation {
+    let probe = || image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?.orientation().ok();
+    probe().unwrap_or(Orientation::NoTransforms)
 }
 
 /// Separable resample of a premultiplied image with a triangle filter widened by the reduction
@@ -603,6 +616,8 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
 
 #[cfg(test)]
 mod overlay_budget_tests {
+    use image::ImageEncoder;
+
     use super::*;
 
     #[test]
@@ -610,6 +625,25 @@ mod overlay_budget_tests {
         assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
         assert!(bounded_overlay_dimensions(4097, 4096).is_err());
         assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn overlay_stored_sideways_is_drawn_upright() {
+        let dir = std::env::temp_dir().join(format!("fc-export-overlay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |name: &str, exif: Option<Vec<u8>>, width: f32| {
+            let path = dir.join(name);
+            std::fs::write(&path, wide_png(exif)).unwrap();
+            load_overlay(&path.to_string_lossy(), width).unwrap()
+        };
+        let stored = load("stored.png", None, 3.0);
+        // Orientation 6: the stored picture is the upright one turned a quarter turn, so its
+        // bottom-left pixel is the upright picture's top-left.
+        let upright = load("sideways.png", Some(orientation_exif(6)), 2.0);
+
+        assert_eq!((stored.w, stored.h), (3, 2));
+        assert_eq!((upright.w, upright.h), (stored.h, stored.w));
+        assert_eq!(upright.px[..4], stored.px[stored.w * 4..stored.w * 4 + 4]);
     }
 
     #[test]
@@ -631,5 +665,31 @@ mod overlay_budget_tests {
         let out = resample(&src, 6000, 1);
         assert_eq!((out.w, out.h), (6000, 1));
         assert!(out.px.iter().all(|v| (v - 0.5).abs() < 1e-4));
+    }
+    /// A 3 x 2 PNG whose six pixels all differ, carrying `exif` in an eXIf chunk.
+    fn wide_png(exif: Option<Vec<u8>>) -> Vec<u8> {
+        let pixels: Vec<u8> = (0..6u8).flat_map(|i| [40 * i, 255 - 40 * i, 90]).collect();
+        let mut out = Vec::new();
+        let mut enc = image::codecs::png::PngEncoder::new(&mut out);
+        if let Some(exif) = exif {
+            enc.set_exif_metadata(exif).unwrap();
+        }
+        enc.write_image(&pixels, 3, 2, image::ExtendedColorType::Rgb8).unwrap();
+        out
+    }
+
+    /// A little-endian EXIF block (TIFF header, one IFD) holding only Orientation `o`
+    /// (tag 0x0112, SHORT, count 1).
+    fn orientation_exif(o: u16) -> Vec<u8> {
+        let mut out = b"II*\0".to_vec();
+        out.extend(8u32.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(0x0112u16.to_le_bytes());
+        out.extend(3u16.to_le_bytes());
+        out.extend(1u32.to_le_bytes());
+        out.extend(o.to_le_bytes());
+        out.extend([0, 0]);
+        out.extend(0u32.to_le_bytes());
+        out
     }
 }
