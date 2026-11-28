@@ -159,6 +159,27 @@ fn marker_csv_menu_exports_sequence_review_notes() {
 }
 
 #[test]
+fn chapter_marker_menu_saves_plain_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let asked = Asked::default();
+    let mut s = session();
+    s.execute("markers.clearAll", json!({"target":"program"})).unwrap();
+    s.execute("markers.add", json!({"target":"program", "frame":0, "name":"Introduction"})).unwrap();
+    let mut d = Driver::new(s, Some(dir.path().to_path_buf()), asked.clone());
+
+    let menu = d.ok("ui.menu.list", json!({}));
+    let entry = menu.as_array().unwrap().iter().find(|i| i["id"] == "markers.exportChapters").unwrap();
+    assert_eq!(entry["path"], json!(["Markers"]));
+    assert_eq!(entry["enabled"], true);
+    d.ok("ui.menu.invoke", json!({"id":"markers.exportChapters"}));
+    d.frames(3);
+
+    let (_, extensions, suggested) = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(extensions, ["txt"]);
+    assert_eq!(std::fs::read_to_string(dir.path().join(suggested)).unwrap(), "00:00 Introduction\n");
+}
+
+#[test]
 fn marker_csv_save_cancel_and_disabled_menu_leave_the_session_alone() {
     let asked = Asked::default();
     let mut d = Driver::new(session(), None, asked.clone());

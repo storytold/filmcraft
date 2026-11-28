@@ -1,13 +1,16 @@
-//! Sequence review notes as a spreadsheet-safe CSV, using the host's atomic file service.
+//! Sequence markers as spreadsheet-safe review notes or plain-text chapters.
+
+use std::fmt::Write as _;
 
 use filmcraft_project::Label;
-use filmcraft_time::{Tick, format_timecode_frames};
+use filmcraft_time::{TICKS_PER_SECOND, Tick, format_timecode_frames};
 use serde_json::{Value, json};
 
 use crate::commands::bad;
 use crate::{EngineError, Result, Session};
 
 const CMD: &str = "markers.exportCsv";
+const CHAPTERS_CMD: &str = "markers.exportChapters";
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MARKERS: usize = 100_000;
 
@@ -15,12 +18,15 @@ fn label_name(s: &Session, color: Label) -> &str {
     s.prefs.labels.colors.get(&crate::settings::label_id(color)).map(|c| c.name.trim()).filter(|n| !n.is_empty()).unwrap_or(color.name())
 }
 
-pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = p
-        .get("path")
+fn export_path<'a>(p: &'a Value, command: &str) -> Result<&'a str> {
+    p.get("path")
         .and_then(Value::as_str)
         .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
-        .ok_or_else(|| bad(CMD, "need a non-empty `path` without NUL characters"))?;
+        .ok_or_else(|| bad(command, "need a non-empty `path` without NUL characters"))
+}
+
+pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = export_path(p, CMD)?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     seq.settings.validate().map_err(|e| bad(CMD, e))?;
     let name = s.state.active_sequence.and_then(|id| s.project.item(id)).map(|i| i.name.as_str()).unwrap_or("Sequence");
@@ -97,6 +103,44 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "markers": seq.markers.len(), "bytes": csv.len()}))
 }
 
+pub(crate) fn export_chapters(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = export_path(p, CHAPTERS_CMD)?;
+    let sequence = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    if sequence.markers.len() > MAX_MARKERS {
+        return Err(bad(CHAPTERS_CMD, "too many markers (maximum 100000)"));
+    }
+    // Title normalization only shortens the text; 32 bytes cover the timestamp and fallback title.
+    let bound = sequence
+        .markers
+        .iter()
+        .try_fold(0usize, |total, marker| total.checked_add(marker.name.len()).and_then(|n| n.checked_add(32)).filter(|&n| n <= MAX_BYTES));
+    let mut text = String::with_capacity(bound.ok_or_else(|| bad(CHAPTERS_CMD, "chapter list exceeds the 16 MiB limit"))?);
+    let mut markers: Vec<_> = sequence.markers.iter().collect();
+    markers.sort_by_key(|m| (m.start, m.id));
+    for (index, marker) in markers.into_iter().enumerate() {
+        if marker.start.0 < 0 {
+            return Err(bad(CHAPTERS_CMD, format!("marker {} has a negative start", marker.id.0)));
+        }
+        let seconds = marker.start.0 / TICKS_PER_SECOND;
+        let hours = seconds / 3600;
+        if hours > 0 {
+            let _ = write!(text, "{hours}:");
+        }
+        let _ = write!(text, "{:02}:{:02}", seconds / 60 % 60, seconds % 60);
+        if marker.name.trim().is_empty() {
+            let _ = write!(text, " Chapter {}", index + 1);
+        } else {
+            for word in marker.name.split_whitespace() {
+                text.push(' ');
+                text.push_str(word);
+            }
+        }
+        text.push('\n');
+    }
+    s.services.write_file(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    Ok(json!({"path": path, "markers": sequence.markers.len(), "bytes": text.len()}))
+}
+
 fn marker_color_name(s: &Session, marker: &filmcraft_project::Marker) -> String {
     marker.custom_color.map_or_else(|| label_name(s, marker.color).to_string(), filmcraft_project::HexColor::hex)
 }
@@ -154,6 +198,30 @@ mod tests {
     }
     fn written(files: &Files) -> String {
         String::from_utf8(files.writes.lock().unwrap().last().unwrap().1.clone()).unwrap()
+    }
+
+    #[test]
+    fn chapter_export_uses_sorted_elapsed_timestamps_and_single_line_titles() {
+        use filmcraft_time::TICKS_PER_SECOND;
+
+        let files = Arc::new(Files::default());
+        let mut s = session(files.clone());
+        s.edit_sequence("Chapter markers", |q, _, _| {
+            q.start_timecode = 24 * 60 * 60;
+            q.markers = vec![
+                marker(102, Tick(3661 * TICKS_PER_SECOND), Tick::ZERO, "Conclusion"),
+                marker(101, Tick(65 * TICKS_PER_SECOND + 1), Tick::ZERO, "Installation\n字幕"),
+                marker(104, Tick(50 * TICKS_PER_SECOND), Tick::ZERO, " \t"),
+                marker(103, Tick(35 * TICKS_PER_SECOND), Tick::ZERO, ""),
+                marker(100, Tick::ZERO, Tick::ZERO, "Introduction"),
+            ];
+            Ok(())
+        })
+        .unwrap();
+
+        let result = s.execute("markers.exportChapters", json!({"path":"chapters.txt"})).unwrap();
+        assert_eq!(result["markers"], 5);
+        assert_eq!(written(&files), "00:00 Introduction\n00:35 Chapter 2\n00:50 Chapter 3\n01:05 Installation 字幕\n1:01:01 Conclusion\n");
     }
 
     #[test]
