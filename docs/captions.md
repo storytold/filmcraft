@@ -71,8 +71,8 @@ Details of each format and the SCC encoder are in craft-libs' [`crates/captions/
 | `captions.list` | (query) | `track` — tracks, styles and captions with timecodes (a `track` that names no caption track is an error) |
 
 Tracks are addressed by id or `"C1"`, `"C2"`… (top first). Edits are limited by neighbouring
-captions and a one-frame minimum. Sync-locked caption tracks follow insert and extract edits on
-the media tracks (a caption across an insert point is split). `Add Edit to All Tracks` (⇧⌘K)
+captions and a one-frame minimum. Sync-locked caption tracks follow insert, extract, ripple delete and ripple trim
+edits on the media tracks (a caption across an insert point is split). `Add Edit to All Tracks` (⇧⌘K)
 also splits captions.
 
 ## Timeline and Text panel
