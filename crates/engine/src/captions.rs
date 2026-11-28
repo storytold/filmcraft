@@ -601,6 +601,7 @@ pub fn commands() -> Vec<CommandSpec> {
         }),
         spec("captions.next", "Go to Next Caption Segment", &["Sequence", "Captions"], Some("Cmd+Alt+Down"), "{}", has_captions, |s, _| step(s, true)),
         spec("captions.previous", "Go to Previous Caption Segment", &["Sequence", "Captions"], Some("Cmd+Alt+Up"), "{}", has_captions, |s, _| step(s, false)),
+        spec("captions.selectAtPlayhead", "Select Caption at Playhead", &["Sequence", "Captions"], None, "{}", has_captions, |s, _| select_at_playhead(s)),
         spec("captions.showAll", "Show All Caption Tracks", &["Sequence", "Captions"], None, "{}", has_caption_track, |s, _| show_all(s, true)),
         spec("captions.hideAll", "Hide All Caption Tracks", &["Sequence", "Captions"], None, "{}", has_caption_track, |s, _| show_all(s, false)),
         spec("captions.import", "Import Captions…", &[], None, r#"{"path":str,"name":str?,"language":str?}"#, always, |s, p| {
@@ -653,6 +654,23 @@ fn step(s: &mut Session, forward: bool) -> Result<Value> {
     s.set_playhead(time);
     s.state.caption_selection = vec![id];
     Ok(json!({"time": time.0, "caption": id.0}))
+}
+
+/// Select the caption on screen at the playhead, whatever is selected now (#5147). Unlike
+/// `captions.next` it also finds a caption that starts exactly at the playhead, and unlike the
+/// edit commands it does not let an old selection win. The playhead stays where it is.
+fn select_at_playhead(s: &mut Session) -> Result<Value> {
+    let t = s.playhead();
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let id = seq
+        .caption_tracks
+        .iter()
+        .filter(|tr| tr.enabled)
+        .find_map(|tr| tr.caption_at(t).map(|c| c.id))
+        .ok_or_else(|| EngineError::Other("no caption at the playhead".into()))?;
+    s.state.caption_selection = vec![id];
+    s.state.selection.clear();
+    Ok(json!({"caption": id.0}))
 }
 
 fn show_all(s: &mut Session, on: bool) -> Result<Value> {
