@@ -56,6 +56,14 @@ pub trait VideoEncoder: Send {
     fn hardware(&self) -> Option<&'static str> {
         None
     }
+    /// A stable identifier of the encoder for [`crate::Report::encoder_id`]: "software",
+    /// "nvenc", "videotoolbox", "media_foundation". Machine-readable where
+    /// [`VideoEncoder::hardware`] is the display name, so a consumer can compare it without
+    /// matching text. A hardware encoder that overrides `hardware` must override this too,
+    /// or its export is reported as software.
+    fn id(&self) -> &'static str {
+        "software"
+    }
 }
 
 /// Audio encoder (AAC) plugged in by codec crates; PCM is built in.

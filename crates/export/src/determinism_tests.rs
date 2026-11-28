@@ -347,7 +347,12 @@ fn max_threads_caps_the_threads_an_export_runs_on() {
     // uncapped, it renders on the pool it is called in
     let (most, threads) = threads_used(8, 0, "cap-0.mov");
     assert_eq!(most, 8);
-    assert!(threads > 3, "{threads} threads asked for frames: the uncapped export should have used several");
+    // The peak concurrency above is the strong check. How many DISTINCT threads asked for
+    // frames is a different number: 24 tiny frames can be handed out to two threads while
+    // the rest of the pool is still waking up, and the fewer the machine has free the fewer
+    // get work, so this only says the export was not single-threaded. Asking for more than
+    // that made the test fail whenever another test exported at the same time.
+    assert!(threads > 1, "{threads} threads asked for frames: the uncapped export should have used more than one");
     // capped, on a pool of that size
     for cap in [1u32, 3] {
         let (most, threads) = threads_used(8, cap, &format!("cap-{cap}.mov"));

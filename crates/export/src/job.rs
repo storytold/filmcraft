@@ -529,6 +529,7 @@ impl Exporter {
             self.settings.h264_pass = H264Pass::Second(stats);
             // the same request as the analysis pass's: a hardware encoder declines it again, already reported
             self.venc = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?.0;
+
             self.first_pass = false;
             self.next = self.f0;
             return Ok(Step::Progress);
@@ -569,7 +570,13 @@ impl Exporter {
         let nframes = self.frames();
         if !self.settings.part_of_batch {
             progress.finished.store(true, Ordering::Relaxed);
-            progress.set_status(format!("Done in {secs:.1}s"));
+            // The status says which encoder wrote the file: a hardware encoder that declined leaves the
+            // software encoder to write it, and the reason belongs in the line the user reads.
+            let encoder = format!("{} {}", self.venc.hardware().unwrap_or("software"), self.settings.video_format().label());
+            progress.set_status(match self.warnings.first() {
+                Some(why) => format!("Done in {secs:.1}s ({encoder} - {why})"),
+                None => format!("Done in {secs:.1}s ({encoder})"),
+            });
         }
         Ok(Step::Done(Report {
             path: self.settings.path.clone(),
@@ -579,6 +586,7 @@ impl Exporter {
             render_fps: nframes as f64 / secs.max(1e-6),
             extra_files,
             encoder: Some(self.venc.hardware().unwrap_or("software").to_string()),
+            encoder_id: self.venc.id().to_string(),
             warnings: std::mem::take(&mut self.warnings),
         }))
     }

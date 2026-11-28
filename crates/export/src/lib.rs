@@ -150,12 +150,18 @@ pub struct Report {
     pub bytes: u64,
     pub render_fps: f64,
     /// Further files written besides `path` (MXF OP-Atom audio files).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
     /// The video encoder that ran: the hardware encoder's name ("NVENC", "VideoToolbox"), or
     /// "software" for FilmCraft's own. `None` for exports without one (audio, image sequences, GIF).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
+    /// A stable identifier of the encoder that wrote the stream: "software", "nvenc",
+    /// "videotoolbox", "media_foundation". A consumer compares this; `encoder` is the
+    /// readable text. An image sequence, and every report that is not an export, leaves it
+    /// empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encoder_id: String,
     /// What the user should know about how the export ran: hardware encoding asked for, but the
     /// software encoder ran instead (and why, when the hardware encoder said).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -164,6 +170,9 @@ pub struct Report {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod encoder_name_tests;
 
 #[cfg(test)]
 mod settings_tests;
