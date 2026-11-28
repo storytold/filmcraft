@@ -558,9 +558,17 @@ impl Drop for Session {
 /// Load both drivers and retain a primary context; does not create a decoder or parse video.
 pub fn probe() -> Result<String, String> {
     let (_api, _library) = Api::load()?;
-    let device = Device::new()?;
-    let _current = device.push_current()?;
+    // No CUDA here: cuInit opens /dev/nvidia* for the rest of the process, which keeps a laptop's
+    // on-demand GPU powered while FilmCraft is merely open. The driver's procfs listing answers
+    // without waking the GPU; a session that then fails to open falls back to VA-API per stream.
+    nvidia_gpu_listed(std::path::Path::new("/proc/driver/nvidia/gpus"))?;
     Ok("NVDEC (libnvcuvid, first CUDA device)".into())
+}
+
+/// Whether NVIDIA's kernel driver lists a GPU under `gpus` (one directory per bound GPU).
+fn nvidia_gpu_listed(gpus: &std::path::Path) -> Result<(), String> {
+    let mut entries = std::fs::read_dir(gpus).map_err(|e| format!("no NVIDIA kernel driver: {e}"))?;
+    if entries.any(|e| e.is_ok_and(|e| e.path().is_dir())) { Ok(()) } else { Err("NVIDIA's driver lists no GPU".into()) }
 }
 
 #[cfg(test)]
@@ -605,6 +613,18 @@ mod tests {
     fn session_is_send() {
         fn is_send<T: Send>() {}
         is_send::<Session>();
+    }
+    #[test]
+    fn the_probe_reads_the_driver_listing_without_cuda() {
+        let d = std::env::temp_dir().join(format!("fc-nvidia-gpus-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(nvidia_gpu_listed(&d).is_err(), "no driver directory");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("stray"), b"").unwrap();
+        assert!(nvidia_gpu_listed(&d).is_err(), "no GPU directory");
+        std::fs::create_dir(d.join("0000:01:00.0")).unwrap();
+        assert!(nvidia_gpu_listed(&d).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     // These stubs must never be called: the callback tests stop before driver access.

@@ -9,6 +9,8 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
+use std::sync::Arc;
+
 use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
@@ -219,6 +221,19 @@ pub enum FxOp {
         aspect: f32,
         gpu_capable: bool,
     },
+    /// Ops run in order: an effect the GPU runs as several passes (Lumetri with an Input LUT,
+    /// Look, Wheels, Curves, HSL Secondary or Sharpen; Warp Stabilizer ▸ Stabilize, Crop).
+    Seq(Vec<FxOp>),
+    /// A LUT file (1D shaper and / or 3D cube) on display-encoded colour clamped to 0…1, as
+    /// Lumetri ▸ Basic Correction ▸ Input LUT applies it.
+    Lut(Arc<filmcraft_color::Lut>),
+    /// Lumetri ▸ Creative Look, Color Wheels and Curves.
+    LumetriAdvanced(Arc<crate::effects::LumetriAdvanced>),
+    /// Lumetri ▸ HSL Secondary (key, refine, correct).
+    HslSecondary(Arc<crate::effects::HslSecondary>),
+    /// Warp Stabilizer ▸ Synthesize Edges: the warp, with uncovered pixels filled from the
+    /// edge-clamped source.
+    SynthEdges(Resample),
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
@@ -259,6 +274,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "vignette",
     "video_limiter",
     "lumetri",
+    "warp_stabilizer",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -272,6 +288,28 @@ fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
     Resample { inv: Some(inv), rect: [x0 as u32, x1 as u32, y0.min(y1) as u32, y1 as u32], opacity }
 }
 
+/// Largest HSL Secondary ▸ Denoise median radius the GPU runs (7×7 at full resolution).
+pub const HSL_MEDIAN_MAX_RADIUS: usize = 3;
+/// Largest 3D LUT edge and 1D shaper length the GPU takes (larger tables stay on the CPU).
+pub const GPU_LUT_MAX_CUBE: usize = 129;
+pub const GPU_LUT_MAX_SHAPER: usize = 65_536;
+
+/// Whether the GPU's LUT op reproduces `Lut::apply` for `l`: well-formed tables of a size it
+/// takes, finite numbers and non-degenerate domains.
+pub fn lut_gpu_ok(l: &filmcraft_color::Lut) -> bool {
+    let domain = |lo: &[f32; 3], hi: &[f32; 3]| lo.iter().zip(hi).all(|(a, b)| a.is_finite() && b.is_finite() && (b - a).abs() > 1e-12);
+    let shaper = l.shaper.as_ref().is_none_or(|s| {
+        (2..=GPU_LUT_MAX_SHAPER).contains(&s.data.len()) && domain(&s.domain_min, &s.domain_max) && s.data.iter().flatten().all(|v| v.is_finite())
+    });
+    let cube = l.cube.as_ref().is_none_or(|c| {
+        (2..=GPU_LUT_MAX_CUBE).contains(&c.size)
+            && c.size.checked_pow(3) == Some(c.data.len())
+            && domain(&c.domain_min, &c.domain_max)
+            && c.data.iter().flatten().all(|v| v.is_finite())
+    });
+    (l.shaper.is_some() || l.cube.is_some()) && shaper && cube
+}
+
 /// Whether `Image::transformed` would take its mip (downsample) path for `m` on a `w`×`h` image.
 fn minifies(m: &Affine, w: usize, h: usize) -> bool {
     let sx = (m.a * m.a + m.b * m.b).sqrt();
@@ -280,6 +318,49 @@ fn minifies(m: &Affine, w: usize, h: usize) -> bool {
     // (a non-finite factor: keep such maps off the GPU; `apply` still hands them to the CPU's
     // `Image::transformed`, which decides as before)
     !minify.is_finite() || minify >= 2.0 && w >= 4 && h >= 4
+}
+
+/// SDR Lumetri with an Input LUT, Look, Wheels, Curves, HSL Secondary or Sharpen: the passes of
+/// `effects::lumetri` in its order, each with its own GPU op. `basic` is the Basic/Creative pass.
+fn lumetri_passes(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize, basic_on: bool, sharpen: f32, basic: FxOp) -> FxOp {
+    let mut ops = Vec::with_capacity(5);
+    if let Some(l) = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None } {
+        ops.push(FxOp::Lut(l));
+    }
+    ops.push(basic);
+    if let Some(a) = crate::effects::lumetri_advanced_params(e, cx) {
+        ops.push(FxOp::LumetriAdvanced(Arc::new(a)));
+    }
+    if let Some(p) = crate::effects::hsl_secondary_params(e, cx) {
+        ops.push(FxOp::HslSecondary(Arc::new(p)));
+    }
+    if sharpen.abs() > 1e-3 {
+        let r = 1.2 * cx.px_scale.max(0.35);
+        let (rx, ry) = gaussian_boxes(w, h, r, r);
+        ops.push(FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 });
+    }
+    FxOp::Seq(ops)
+}
+
+/// Warp Stabilizer as GPU ops. The analysis needs the clip (`cx.env`); without it the CPU path runs as before.
+fn stabilizer_op(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> Option<FxOp> {
+    let s = crate::vfx::temporal::stabilizer_warp(w, h, e, cx)?;
+    let warp = |m: &Affine| {
+        if minifies(m, w, h) { Resample { inv: Some(*m), rect: [u32::MAX; 4], opacity: 1.0 } } else { resample(w, h, m, 1.0) }
+    };
+    Some(match s.framing {
+        3 => FxOp::SynthEdges(warp(&s.m)),
+        framing => {
+            let mut ops = Vec::with_capacity(2);
+            if !s.m.is_identity() {
+                ops.push(FxOp::Resample(warp(&s.m)));
+            }
+            if framing == 1 {
+                ops.push(FxOp::crop_rect(w, h, s.crop[0], s.crop[1], s.crop[0], s.crop[1], 0.0));
+            }
+            FxOp::Seq(ops)
+        }
+    })
 }
 
 impl FxOp {
@@ -636,7 +717,7 @@ impl FxOp {
                 let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
                 let aspect = if h > 0 { (w as f32 / h as f32).max(1e-4) } else { 1.0 };
 
-                FxOp::Lumetri {
+                let basic = |gpu_capable| FxOp::Lumetri {
                     gains,
                     exposure,
                     contrast,
@@ -657,8 +738,13 @@ impl FxOp {
                     vfeather,
                     aspect,
                     gpu_capable,
+                };
+                if gpu_capable || is_hdr {
+                    return Some(basic(gpu_capable));
                 }
+                lumetri_passes(e, cx, w, h, basic_on, sharpen, basic(true))
             }
+            "warp_stabilizer" => stabilizer_op(e, cx, w, h)?,
             _ => return None,
         })
     }
@@ -714,6 +800,23 @@ impl FxOp {
                     && fin(ht)
                     && fin(&[*va, *vmid, *vround, *vfeather, *aspect])
             }
+            FxOp::Seq(ops) => ops.iter().all(FxOp::gpu_ok),
+            FxOp::Lut(l) => lut_gpu_ok(l),
+            FxOp::LumetriAdvanced(a) => {
+                a.look <= 8
+                    && a.look_k.is_finite()
+                    && a.wheel_rgb.iter().all(|w| fin(w))
+                    && fin(&a.wheel_l)
+                    && a.look_lut.as_deref().is_none_or(lut_gpu_ok)
+                    && a.curves.iter().chain(&a.hue).flatten().all(|t| t.len() == crate::effects::CURVE_N && fin(t))
+            }
+            FxOp::HslSecondary(p) => {
+                p.show_mask <= 3
+                    && p.denoise_r <= HSL_MEDIAN_MAX_RADIUS
+                    && p.blur_radii.iter().all(|r| *r <= u32::MAX as usize)
+                    && fin(&[p.hc, p.hr, p.smin, p.lmin, p.lmax, p.soft, p.temp, p.tint, p.sat, p.hue_shift, p.denoise])
+            }
+            FxOp::SynthEdges(r) => FxOp::Resample(r.clone()).gpu_ok(),
         }
     }
 
@@ -1121,6 +1224,32 @@ impl FxOp {
                         v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
                     }
                     dec(v)
+                });
+            }
+            FxOp::Seq(ops) => {
+                for op in ops {
+                    op.apply(img);
+                }
+            }
+            FxOp::Lut(l) => img.map_rgb(|c, _, _| dec(l.apply(enc(c).map(|q| q.clamp(0.0, 1.0))))),
+            FxOp::LumetriAdvanced(a) => crate::effects::lumetri_advanced_apply(img, a, filmcraft_color::GradeSpace::Sdr),
+            FxOp::HslSecondary(p) => crate::effects::hsl_secondary_apply(img, p, filmcraft_color::GradeSpace::Sdr),
+            FxOp::SynthEdges(r) => {
+                let src = img.clone();
+                FxOp::Resample(r.clone()).apply(img);
+                // fill what the warp left uncovered from the clamped source (`warp_stabilizer`)
+                let Some(inv) = r.inv.as_ref().map(|m| if r.rect[0] == u32::MAX { m.inverse() } else { Some(*m) }).and_then(|m| m) else { return };
+                let w = img.w;
+                img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+                    for x in 0..w {
+                        let p = &mut row[x * 4..x * 4 + 4];
+                        if p[3] < 0.999 {
+                            let q = inv.apply(filmcraft_geom::Vec2::new(x as f64 + 0.5, y as f64 + 0.5));
+                            let mut b = src.sample_bilinear_clamped(q.x as f32, q.y as f32);
+                            crate::vfx::over(&mut b, [p[0], p[1], p[2], p[3]]);
+                            p.copy_from_slice(&b);
+                        }
+                    }
                 });
             }
         }

@@ -637,61 +637,47 @@ fn hostile_parameters_are_bounded() {
     assert!(c.fx.as_ref().is_some_and(|f| f.is_idle()), "working images kept after a refused effect image");
 }
 
+/// Lumetri with an Input LUT, Look, Wheels, Curves, HSL Secondary or Sharpen runs on the GPU as a
+/// sequence of passes (SDR); HDR grades and non-finite parameters stay on the CPU.
 #[test]
-fn lumetri_unsupported_sections_fall_back() {
+fn lumetri_sections_run_on_gpu() {
     let (w, h) = (40usize, 24usize);
-    // sharpen > 0 and input LUT (explicitly required by brief)
-    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
-
-    // sharpen alone
-    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // input_lut alone
-    let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // look_lut
-    let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // look > 0
-    let e = effect("lumetri", &[("look", ch(1))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // curve_luma modified
-    let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // hue_vs_sat non-empty
-    let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // wheel offset
-    let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // wheel lightness
-    let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // HSL secondary on
-    let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    let on_gpu = [
+        vec![("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into()))],
+        vec![("sharpen", fl(20.0))],
+        vec![("input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into()))],
+        // a LUT that does not resolve is no LUT, as on the CPU
+        vec![("input_lut", ParamValue::Text("test.cube".into()))],
+        vec![("look_lut", ParamValue::Text("builtin:look-teal-orange".into()))],
+        vec![("look", ch(1))],
+        vec![("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))],
+        vec![("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))],
+        vec![("wheel_shadows", pt(0.5, 0.0))],
+        vec![("wheel_midtones_l", fl(20.0))],
+        vec![("hsl_on", ParamValue::Bool(true))],
+    ];
+    for params in &on_gpu {
+        let op = FxOp::eval(&effect("lumetri", params), &cx(Tick::ZERO, 1.0), w, h);
+        assert!(op.as_ref().is_some_and(FxOp::gpu_ok), "{params:?}: {op:?}");
+    }
+    let on_cpu = [
+        vec![("input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into())), ("exposure", fl(f64::NAN))],
+        vec![("look", ch(2)), ("look_intensity", fl(f64::NAN))],
+        vec![("wheel_shadows_l", fl(f64::INFINITY))],
+        vec![("hsl_on", ParamValue::Bool(true)), ("hsl_temp", fl(f64::NAN))],
+    ];
+    for params in &on_cpu {
+        let op = FxOp::eval(&effect("lumetri", params), &cx(Tick::ZERO, 1.0), w, h);
+        assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "{params:?}: {op:?}");
+        // and the CPU reference copes
+        let mut img = filmcraft_render::Image::filled(w, h, [0.3, 0.2, 0.1, 1.0]);
+        if let Some(op) = op {
+            op.apply(&mut img);
+        }
+    }
 
     // HDR working space
-    let e = effect("lumetri", &[]);
+    let e = effect("lumetri", &[("input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into()))]);
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
     cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
     let op = FxOp::eval(&e, &cx_hdr, w, h);
@@ -928,4 +914,196 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
             assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");
         }
     }
+}
+
+/// Lumetri's GPU passes (Input LUT, Look, Wheels, Curves, HSL Secondary, Sharpen) on the GPU
+/// against their CPU reference, at full and half working resolution. HSL keys and LUT cells are
+/// step-like at their edges, so those cases may flip a few values.
+#[test]
+fn gpu_lumetri_passes_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let lut = || ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into());
+    let curve = |pts: &[[f32; 2]]| ParamValue::Curve(pts.to_vec());
+    let on = || ParamValue::Bool(true);
+    let mut cases: Vec<(String, Vec<(&str, ParamValue)>, bool)> = vec![
+        ("input lut".into(), vec![("input_lut", lut())], true),
+        ("input lut + basic".into(), vec![("input_lut", lut()), ("exposure", fl(0.5)), ("temperature", fl(6.8)), ("contrast", fl(20.0))], true),
+        ("look lut".into(), vec![("look_lut", ParamValue::Text("builtin:look-teal-orange".into())), ("look_intensity", fl(70.0))], true),
+        (
+            "wheels".into(),
+            vec![("wheel_shadows", pt(0.3, -0.2)), ("wheel_midtones", pt(-0.1, 0.4)), ("wheel_highlights", pt(0.2, 0.1)), ("wheel_midtones_l", fl(15.0))],
+            false,
+        ),
+        (
+            "curves".into(),
+            vec![
+                ("curve_luma", curve(&[[0.0, 0.05], [0.5, 0.58], [1.0, 0.95]])),
+                ("curve_red", curve(&[[0.0, 0.0], [0.6, 0.65], [1.0, 1.0]])),
+                ("curve_blue", curve(&[[0.0, 0.1], [1.0, 0.9]])),
+            ],
+            false,
+        ),
+        (
+            "hue curves".into(),
+            vec![
+                ("hue_vs_sat", curve(&[[0.0, 0.5], [0.3, 0.8], [0.7, 0.3]])),
+                ("hue_vs_hue", curve(&[[0.1, 0.5], [0.5, 0.6]])),
+                ("hue_vs_luma", curve(&[[0.2, 0.4], [0.8, 0.6]])),
+                ("luma_vs_sat", curve(&[[0.0, 0.3], [1.0, 0.6]])),
+                ("sat_vs_sat", curve(&[[0.0, 0.5], [1.0, 0.7]])),
+            ],
+            true,
+        ),
+        (
+            "hsl".into(),
+            vec![
+                ("hsl_on", on()),
+                ("hsl_hue", fl(30.0)),
+                ("hsl_hue_range", fl(60.0)),
+                ("hsl_sat", fl(70.0)),
+                ("hsl_temp", fl(20.0)),
+                ("hsl_tint", fl(-10.0)),
+                ("hsl_hue_shift", fl(10.0)),
+            ],
+            true,
+        ),
+        ("hsl refine".into(), vec![("hsl_on", on()), ("hsl_hue", fl(200.0)), ("hsl_denoise", fl(60.0)), ("hsl_blur", fl(40.0)), ("hsl_sat", fl(140.0))], true),
+        ("hsl big blur".into(), vec![("hsl_on", on()), ("hsl_blur", fl(100.0)), ("hsl_denoise", fl(100.0))], true),
+        ("sharpen".into(), vec![("sharpen", fl(40.0))], false),
+        (
+            "everything".into(),
+            vec![
+                ("input_lut", lut()),
+                ("exposure", fl(0.3)),
+                ("look", ch(2)),
+                ("wheel_highlights_l", fl(-10.0)),
+                ("curve_green", curve(&[[0.0, 0.02], [1.0, 0.98]])),
+                ("hsl_on", on()),
+                ("hsl_blur", fl(20.0)),
+                ("sharpen", fl(25.0)),
+            ],
+            true,
+        ),
+    ];
+    for look in 1..=8 {
+        cases.push((format!("look {look}"), vec![("look", ch(look)), ("look_intensity", fl(80.0))], false));
+    }
+    for mask in 1..=3 {
+        cases.push((format!("hsl mask {mask}"), vec![("hsl_on", on()), ("hsl_show_mask", ch(mask)), ("hsl_denoise", fl(30.0))], true));
+    }
+    let mut failures = Vec::new();
+    for px_scale in [1.0, 0.5] {
+        for (name, params, steps) in &cases {
+            let op = FxOp::eval(&effect("lumetri", params), &cx(Tick::ZERO, px_scale), w as usize, h as usize).unwrap_or_else(|| panic!("{name}: no op"));
+            assert!(op.gpu_ok(), "{name}: not GPU-capable: {op:?}");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{name} @ {px_scale}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT || flips > if *steps { FLIPS } else { 0.0 } {
+                failures.push(format!("{name} @ {px_scale}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "GPU Lumetri passes differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// LUT files with a 1D shaper, a shaper alone, and a cube over a non-unit domain.
+#[test]
+fn gpu_lut_shapers_and_domains_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let shaper = filmcraft_color::Lut1d {
+        domain_min: [0.0; 3],
+        domain_max: [1.0; 3],
+        data: (0..64).map(|i| [(i as f32 / 63.0).powf(0.6), (i as f32 / 63.0).powf(0.8), (i as f32 / 63.0).sqrt()]).collect(),
+    };
+    let cube = filmcraft_color::Lut3d::from_fn(17, |c| [c[0] * 0.9 + 0.05 * c[2], c[1] * c[1], 1.0 - c[2] * 0.7]);
+    let wide =
+        filmcraft_color::Lut3d { domain_min: [-0.1, 0.0, -0.2], domain_max: [1.2, 1.1, 1.0], ..filmcraft_color::Lut3d::from_fn(9, |c| [c[1], c[2], c[0]]) };
+    let luts = [
+        filmcraft_color::Lut { title: String::new(), shaper: Some(shaper.clone()), cube: Some(cube.clone()) },
+        filmcraft_color::Lut { title: String::new(), shaper: Some(shaper), cube: None },
+        filmcraft_color::Lut { title: String::new(), shaper: None, cube: Some(wide) },
+    ];
+    for (i, l) in luts.into_iter().enumerate() {
+        let op = FxOp::Lut(std::sync::Arc::new(l));
+        assert!(op.gpu_ok(), "lut {i}");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst <= EXACT && flips <= FLIPS, "lut {i}: {worst:.2e}, flips {flips:.4}");
+    }
+    // malformed tables stay on the CPU
+    let bad = filmcraft_color::Lut3d { size: 5, ..filmcraft_color::Lut3d::from_fn(4, |c| c) };
+    assert!(!FxOp::Lut(std::sync::Arc::new(filmcraft_color::Lut { title: String::new(), shaper: None, cube: Some(bad) })).gpu_ok());
+    assert!(!FxOp::Lut(std::sync::Arc::new(filmcraft_color::Lut { title: String::new(), shaper: None, cube: None })).gpu_ok());
+}
+
+/// Warp Stabilizer's framings on the GPU: the warp then Crop, and Synthesize Edges.
+#[test]
+fn gpu_stabilizer_framings_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (96u32, 54u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    // a stabiliser-like correction: small shift, rotation and zoom
+    let t = effect("transform", &[("rotation", fl(2.5)), ("scale_height", fl(104.0)), ("position", pt(51.0, 25.0))]);
+    let Some(FxOp::Resample(r)) = FxOp::eval(&t, &cx(Tick::ZERO, 1.0), w as usize, h as usize) else { panic!("transform resample") };
+    let cases = [
+        ("crop", FxOp::Seq(vec![FxOp::Resample(r.clone()), FxOp::Crop { x0: 4.0, x1: 92.0, y0: 2.5, y1: 51.5, feather: 0.0 }])),
+        ("synthesize edges", FxOp::SynthEdges(r)),
+        ("synthesize edges, identity", FxOp::SynthEdges(filmcraft_render::gpufx::Resample { inv: Some(Affine::IDENTITY), rect: [0, w, 0, h], opacity: 1.0 })),
+    ];
+    for (name, op) in cases {
+        assert!(op.gpu_ok(), "{name}");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst <= EXACT && flips == 0.0, "{name}: {worst:.2e}, flips {flips:.4}");
+    }
+}
+
+/// Tables are uploaded once and reused while frames use them, and released when they don't.
+#[test]
+fn gpu_lut_tables_are_cached_per_frame() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (32u32, 16u32);
+    let frame = VideoFrame::rgba_f32(w, h, picture(w, h));
+    let e = effect(
+        "lumetri",
+        &[("input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into())), ("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))],
+    );
+    let op = || FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("op");
+    let a = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op()] }).expect("first").2;
+    assert_eq!(c.fx.as_ref().map(|f| f.data_entries()), Some(2), "the LUT and the curve tables");
+    let b = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op()] }).expect("second").2;
+    assert_eq!(a, b);
+    assert_eq!(c.fx.as_ref().map(|f| f.data_entries()), Some(2), "reused, not re-uploaded");
+    c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).expect("plain");
+    assert_eq!(c.fx.as_ref().map(|f| f.data_entries()), Some(0), "released when unused");
 }

@@ -484,11 +484,25 @@ pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
     hi
 }
 
-/// Warp Stabilizer: see the module docs.
-pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let Some(env) = cx.env else { return };
+/// Warp Stabilizer evaluated for one frame of a working layer: the warp and its framing. The
+/// CPU effect ([`warp_stabilizer`]) and the GPU op (`FxOp` resample / crop / edge synthesis)
+/// share it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StabilizerWarp {
+    /// Layer pixels → stabilised layer pixels.
+    pub m: Affine,
+    /// 0: Stabilize Only, 1: Stabilize, Crop, 2: … Auto-scale, 3: … Synthesize Edges.
+    pub framing: u32,
+    /// Stabilize, Crop: the margin on each side, as a fraction of the width and of the height.
+    pub crop: [f32; 2],
+}
+
+/// [`StabilizerWarp`] of `e` for a `w`×`h` working layer (None: no environment to analyse, or
+/// nothing analysed).
+pub fn stabilizer_warp(w: usize, h: usize, e: &EffectInstance, cx: &FxCtx) -> Option<StabilizerWarp> {
+    let env = cx.env?;
     let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
-    let Some(path) = stabilizer_path(env, cx.seconds, method, bv(e, "detailed")) else { return };
+    let path = stabilizer_path(env, cx.seconds, method, bv(e, "detailed"))?;
     let n = path.steps.len() + 1;
     let k = ((cx.seconds * path.fps).round().max(0.0) as usize).min(n - 1);
     let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps;
@@ -505,20 +519,31 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         _ => 1.0,
     } * extra;
     // analysis px → layer px
-    let s = img.w as f64 / aw;
+    let s = w as f64 / aw;
     let to_layer = Affine::scale(s, s);
     let from_layer = Affine::scale(1.0 / s, 1.0 / s);
-    let (lw, lh) = (img.w as f64, img.h as f64);
+    let (lw, lh) = (w as f64, h as f64);
     let z = Affine::translate(lw / 2.0, lh / 2.0).then_apply(&Affine::scale(zoom, zoom)).then_apply(&Affine::translate(-lw / 2.0, -lh / 2.0));
-    let m = z.then_apply(&to_layer).then_apply(&corr[k]).then_apply(&from_layer);
+    let m = z.then_apply(&to_layer).then_apply(corr.get(k)?).then_apply(&from_layer);
+    let crop = if framing == 1 {
+        // crop to the area every frame covers
+        let worst = corrected.worst_cover(aw, ah, 4.0);
+        let k = ((1.0 - 1.0 / worst) / 2.0) as f32;
+        [k, k]
+    } else {
+        [0.0; 2]
+    };
+    Some(StabilizerWarp { m, framing, crop })
+}
+
+/// Warp Stabilizer: see the module docs.
+pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let Some(StabilizerWarp { m, framing, crop }) = stabilizer_warp(img.w, img.h, e, cx) else { return };
     let src = img.clone();
     affine_warp(img, &m);
     match framing {
         1 => {
-            // crop to the area every frame covers
-            let worst = corrected.worst_cover(aw, ah, 4.0);
-            let (mx, my) = (lw * (1.0 - 1.0 / worst) / 2.0, lh * (1.0 - 1.0 / worst) / 2.0);
-            crate::effects::crop(img, (mx / lw) as f32, (my / lh) as f32, (mx / lw) as f32, (my / lh) as f32, 0.0);
+            crate::effects::crop(img, crop[0], crop[1], crop[0], crop[1], 0.0);
         }
         3 => {
             // synthesise edges: fill uncovered pixels from the clamped source
