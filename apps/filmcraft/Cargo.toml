@@ -21,12 +21,16 @@ neural-voices = ["filmcraft-engine/neural-voices"]
 craft-control-protocol = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
+# The durable no-follow session record (nightly_session.rs).
+filmcraft-format = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
+# process_identity.rs's identity error; the workspace's own thiserror.
+thiserror = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "wayland", "x11"] }
 serde_json = { workspace = true }
@@ -72,3 +76,6 @@ craft-update = { workspace = true }
 # graphics/probe.rs: the display drivers' names and versions, so a driver update tests the
 # graphics start again (MIT).
 winreg = "0.55"
+# process_identity.rs: the explicit AppUserModelID a nightly install needs for its own taskbar
+# identity, separate from stable (MIT).
+winsafe = { version = "0.0.29", features = ["user", "shell"] }

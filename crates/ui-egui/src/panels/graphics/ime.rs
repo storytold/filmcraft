@@ -44,7 +44,7 @@ pub(super) struct DrawnPreedit {
 /// Draw the marked text from the caret line `top`–`bottom` until it commits: on a dark plate,
 /// underlined, with a heavier underline under the clause being converted, or a caret where an
 /// empty active range puts it.
-pub(super) fn draw_preedit(painter: &egui::Painter, top: Pos2, bottom: Pos2, preedit: craft_ui::ime::Preedit<'_>) -> DrawnPreedit {
+pub(super) fn draw_preedit(painter: &egui::Painter, top: Pos2, bottom: Pos2, preedit: crate::ime_composer::Preedit<'_>) -> DrawnPreedit {
     let text = preedit.text.get(..char_boundary_floor(preedit.text, MAX_PREEDIT_BYTES)).unwrap_or_default();
     let chars = text.chars().count();
     let active = preedit.active.map(|r| {

@@ -65,6 +65,16 @@ impl ControlRequest {
     }
 }
 
+/// The control listener the app was asked to start (`--control`, `FILMCRAFT_CONTROL_PORT`):
+/// `error` is why it is not listening (a bad `FILMCRAFT_CONTROL_TOKEN`, or a port another
+/// program already bound). A bind failure is otherwise invisible to an agent (it sees only a
+/// port that never answers), so `ui.inspect` reports it under `control` (#3313).
+#[derive(Clone, Debug)]
+pub struct ControlStatus {
+    pub port: u16,
+    pub error: Option<String>,
+}
+
 pub enum Outcome {
     Done(Value),
     /// Try again on a later frame (e.g. the element is not on screen yet).
@@ -141,11 +151,12 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         }
     }
     if let Some(m) = s("mode") {
-        app.ui.mode = match m.to_ascii_lowercase().as_str() {
+        let mode = match m.to_ascii_lowercase().as_str() {
             "import" => Mode::Import,
             "export" => Mode::Export,
             _ => Mode::Edit,
         };
+        app.set_mode(mode);
     }
     if let Some(th) = s("theme") {
         match crate::theme::ThemeKind::from_name(th) {
@@ -496,7 +507,11 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
-            match invoke(app, ctx, id, params) {
+            // `engine.execute` never opens a parameter dialog (#1540); `ui.menu.invoke` is the menu
+            app.engine_call = req.method == "engine.execute";
+            let r = invoke(app, ctx, id, params);
+            app.engine_call = false;
+            match r {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
@@ -508,8 +523,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items_with_focus(app, ctx)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.docking" => {
-            let hits = craft_ui::docking::DockArea::<PanelKind>::hit_rects(ctx, crate::dock_ui::area_id());
-            let hits: Vec<Value> = hits.iter().map(|(hit, r)| json!({"hit": hit, "rect": [r.left(), r.top(), r.width(), r.height()]})).collect();
+            let hits = crate::dock_ui::hit_rects(ctx);
             ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
         }
         "perf.stats" => ok(crate::perf::stats(app)),
@@ -527,7 +541,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if req.method == "ui.panel.show" {
                 app.show_panel(panel);
             } else {
-                if let Err(error) = app.apply_dock(craft_ui::docking::Action::Close { panel }) {
+                if let Err(error) = app.apply_dock(craft_behavior::dock::Action::close(panel)) {
                     return err(&error);
                 }
             }
@@ -648,6 +662,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "keyboardFocus": keyboard_focus,
         "input": {"mode": if app.control_input_only { "controlOnly" } else { "interactive" },
             "nativeWindowFocused": app.native_window_focused, "effectiveWindowFocused": ctx.input(|input| input.focused)},
+        "control": app.control_status.as_ref().map(|c| json!({"port": c.port, "listening": c.error.is_none(), "error": c.error})),
         "ui": app.ui,
         "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
         "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
@@ -817,6 +832,18 @@ mod input_bounds_tests {
         let (req, _) = ControlRequest::new(method, params);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(app, &egui::Context::default(), &req)))
             .expect("hostile control parameters must not panic")
+    }
+
+    /// `ui.inspect` reports the control listener's state, so an agent sees a bind failure the
+    /// status bar showed only in passing (#3313).
+    #[test]
+    fn inspect_reports_the_control_listener() {
+        let mut a = app();
+        assert_eq!(inspect(&a, &egui::Context::default())["control"], Value::Null);
+        a.control_status = Some(ControlStatus { port: 9886, error: None });
+        assert_eq!(inspect(&a, &egui::Context::default())["control"], json!({"port": 9886, "listening": true, "error": null}));
+        a.control_status = Some(ControlStatus { port: 9886, error: Some("port in use".into()) });
+        assert_eq!(inspect(&a, &egui::Context::default())["control"], json!({"port": 9886, "listening": false, "error": "port in use"}));
     }
 
     /// Require an immediate error naming `field`, with all previously queued input unchanged.

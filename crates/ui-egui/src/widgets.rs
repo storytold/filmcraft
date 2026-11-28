@@ -1,6 +1,7 @@
 //! Small custom widgets in Premiere's visual language.
 
 pub mod color_picker;
+pub mod toolbar_fit;
 
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use filmcraft_time::{FrameRate, Tick, TimeDisplay, parse_time_display};
@@ -301,7 +302,7 @@ pub fn timecode_field(
             accessible_name(ui.put(rect, egui::TextEdit::singleline(&mut buf).id(edit_id).font(Tokens::timecode()).desired_width(rect.width())), "Timecode");
         if r.lost_focus() {
             ui.data_mut(|d| d.remove::<String>(editing_id));
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::framework::escape_pressed(ui.ctx()) {
                 return None;
             }
             let typed = parse_time_display(&buf, rate, drop_frame, display, rate.frame_at(time));
@@ -377,7 +378,7 @@ pub fn timecode_field(
 /// Escape closes a dialog or popup only when no mouse button is held: with one held it cancels the
 /// drag in progress instead (#580).
 pub fn escape_closes(ctx: &egui::Context) -> bool {
-    ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.pointer.any_down())
+    crate::framework::escape_pressed(ctx) && !ctx.input(|i| i.pointer.any_down())
 }
 
 /// Keep a dialog's `draft` as a mouse press begins; Escape while the button is held puts it back,
@@ -386,7 +387,8 @@ pub fn escape_closes(ctx: &egui::Context) -> bool {
 /// The draft is put back on every frame until the button comes up: on the Escape frame itself a
 /// color picker's popup, drawn after this call, still sets its color from the pointer.
 pub fn revert_drag_on_escape<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: egui::Id, draft: &mut T) {
-    let (pressed, down, escape) = ctx.input(|i| (i.pointer.any_pressed(), i.pointer.any_down(), i.key_pressed(egui::Key::Escape)));
+    let (pressed, down) = ctx.input(|i| (i.pointer.any_pressed(), i.pointer.any_down()));
+    let escape = crate::framework::escape_pressed(ctx);
     if pressed && down {
         ctx.data_mut(|d| d.insert_temp(id, (draft.clone(), false)));
         return;

@@ -214,7 +214,7 @@ fn key_drag_id() -> egui::Id {
 /// it to delete it. Runs after the timeline's own interaction, so they are above the clip.
 pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, aclip: Rect) {
     let held: Option<KeyDrag> = ui.data(|d| d.get_temp(key_drag_id()));
-    if held.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if held.is_some() && crate::framework::escape_pressed(ui.ctx()) {
         if let Some(h) = held
             && h.begun
         {

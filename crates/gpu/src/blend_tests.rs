@@ -19,7 +19,10 @@ pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let adapter = checked_gpu_result(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())), required)?;
     let info = adapter.get_info();
     eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
-    checked_gpu_result(pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())), required)
+    checked_gpu_result(
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: optional_features(&adapter), ..Default::default() })),
+        required,
+    )
 }
 
 // Test-only policy: local machines may lack an adapter, but the CI software-GPU leg must

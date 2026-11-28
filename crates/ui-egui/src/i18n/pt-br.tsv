@@ -612,6 +612,11 @@
 	(gap)	(lacuna)
 	Out: {name}	Saída: {name}
 	In: {name}	Entrada: {name}
+	Previous: {name}	Anterior: {name}
+	Next: {name}	Próximo: {name}
+	Slip: {offset} frame	Deslizar conteúdo: {offset} quadro
+	Slip: {offset} frames	Deslizar conteúdo: {offset} quadros
+	at the media limit	no limite da mídia
 	Play Around Edit (Space loops, Shift+K once)	Reproduzir ao redor da edição (Espaço em loop, Shift+K uma vez)
 	Trim Backward Many	Aparar muitos para trás
 	Trim Backward	Aparar para trás
@@ -3593,6 +3598,7 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+	Set Playhead	Definir cursor de reprodução
 	Enter a positive duration within the supported speed range.	Insira uma duração positiva dentro do intervalo de velocidade compatível.
 	Show Video Names	Mostrar nomes de vídeo
 	Show Audio Names	Mostrar nomes de áudio

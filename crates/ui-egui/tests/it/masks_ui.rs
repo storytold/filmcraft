@@ -4,104 +4,55 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes PNGs there.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_settled_shot, with_shots};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(pub(crate) Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
+        Self::open(demo_session(), with_shots(builder().with_step_dt(1.0 / 60.0)))
     }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
+    pub(crate) fn rect(&mut self, id: &str) -> [f64; 4] {
+        self.expect_rect(id)
     }
-    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let t0 = std::time::Instant::now();
-        while !done(self) {
-            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits
+    /// inside the panel's upper part, where the user sees it: next's dock gives a panel a shorter
+    /// body than the old dock did. Stops when the element no longer moves (the list's end).
+    fn reveal(&mut self, id: &str) {
+        let p = self.rect("panel.EffectControls");
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            let dy = if e[1] < p[1] + 40.0 {
+                40.0
+            } else if e[1] + e[3] > p[1] + p[3] * 0.6 {
+                -40.0
+            } else {
+                return;
+            };
+            if last == Some(e[1]) {
+                return;
             }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": dy}));
+            self.frames(3);
         }
-        panic!("no reply to {method} {params}");
     }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-    fn rect(&mut self, id: &str) -> [f64; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        [r[0], r[1], r[2], r[3]]
-    }
-    fn center(&mut self, id: &str) -> (f64, f64) {
+    pub(crate) fn center(&mut self, id: &str) -> (f64, f64) {
         let r = self.rect(id);
         (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
     }
-    fn drag(&mut self, id: &str, dx: f64, dy: f64) {
+    pub(crate) fn drag(&mut self, id: &str, dx: f64, dy: f64) {
         let (x, y) = self.center(id);
         self.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + dx, "y": y + dy}, "steps": 6}));
         self.frames(2);
     }
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().is_some_and(|a| a.iter().any(|e| e["id"] == id))
-    }
-    fn masks(&mut self) -> Vec<Value> {
+    pub(crate) fn masks(&mut self) -> Vec<Value> {
         self.exec("masks.list", json!({}))["masks"].as_array().unwrap().clone()
     }
-    fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        // let the background frame workers finish the (blurred) frame
-        for _ in 0..40 {
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+    pub(crate) fn shot(&mut self, name: &str) {
+        save_settled_shot(self, &format!("{name}.png"));
     }
 }
 
@@ -180,14 +131,17 @@ fn create_and_edit_masks_on_the_monitor() {
     // Inverted checkbox (fold Opacity so the row is on screen)
     d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
     d.frames(2);
+    d.reveal("effectControls.gaussian_blur.mask0.inverted");
     d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask0.inverted"}));
     d.frames(2);
     assert_eq!(d.masks()[0]["inverted"], true);
     d.shot("mask-inverted");
+    d.reveal("effectControls.effect.opacity.twirl");
     d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
     d.frames(2);
 
     // pen mask on Opacity: four clicks, then click the first point to close
+    d.reveal("effectControls.opacity.mask.pen");
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask.pen"}));
     d.frames(2);
     let pic = d.rect("program.picture");
@@ -209,6 +163,7 @@ fn create_and_edit_masks_on_the_monitor() {
     // mask tracking buttons on the Mask Path row: forward one frame runs a job
     d.rect("effectControls.opacity.mask0.track.fwd");
     d.rect("effectControls.opacity.mask0.trackMethod");
+    d.reveal("effectControls.opacity.mask0.track.fwdFrame");
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask0.track.fwdFrame"}));
     d.wait_until("the tracking job to finish", |d| {
         let jobs = d.exec("jobs.list", json!({}));
@@ -442,6 +397,53 @@ fn shift_constrains_pen_mask_segments_to_45_degrees() {
     let out = &pen["path"]["vertices"][3]["out"];
     let (ox, oy) = (out[0].as_f64().unwrap(), out[1].as_f64().unwrap());
     assert!(ox > 10.0 && oy.abs() < 1e-6, "handle constrained horizontal: {pen}");
+}
+
+/// The modal owns the first Escape. Without the modal, another Escape cancels the pen draft.
+#[test]
+fn marker_dialog_escape_does_not_discard_an_unfinished_pen_mask() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Effects"}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    let time = start + dur / 2;
+    d.exec("playhead.set", json!({"time": time}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    let marker_time = filmcraft_time::Tick::from_seconds_f64(2.0).0;
+    let marker = d.exec("markers.add", json!({"time": marker_time, "name": "Mask draft"}))["marker"].as_u64().unwrap();
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "effectControls.opacity.mask.pen"}));
+    d.frames(2);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.3}));
+    d.frames(2);
+    let points = d.harness.state().ui.mask_pen.as_ref().unwrap().points.clone();
+    assert_eq!(points.len(), 1);
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.frames(3);
+    let r = d.rect(&format!("timeline.marker.{marker}"));
+    let pos = egui::pos2((r[0] + r[2] / 2.0) as f32, (r[1] + r[3] / 2.0) as f32);
+    // Match sequence_ui's physical click pacing: the control channel waits
+    // for each action and cannot guarantee a double click within egui's guard.
+    d.frames(60);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+    d.frames(1);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            d.harness.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            d.frames(1);
+        }
+    }
+    d.frames(3);
+    assert!(d.harness.state().ui.marker_properties.is_some());
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.marker_properties.is_none(), "the modal must close");
+    assert_eq!(d.harness.state().ui.mask_pen.as_ref().unwrap().points, points, "the same draft must remain");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.mask_pen.is_none(), "without the modal, Escape should cancel the draft");
 }
 
 /// Delete / Backspace and Cmd+Z take back the last pen point while a mask is drawn: the draft is

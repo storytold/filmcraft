@@ -668,9 +668,19 @@ software either way and show the run-to-run spread. The decoded pictures are ide
 
 What is left on the CPU per H.264 frame is the host side of stateless decoding (parsing, DPB,
 filling the VA buffers) and the read-back: `vaGetImage` into an NV12 image and the copy into
-planar Y'CbCr. One picture is decoded at a time and read back as soon as the DPB outputs it, so
+planar Y'CbCr (since then `vaDeriveImage`, below). One picture is decoded at a time and read back as soon as the DPB outputs it, so
 4K throughput (56 fps) is bound by that round trip, not by the video engine; overlapping decode
 and read-back, or zero-copy into wgpu, would raise it.
+
+### VA-API read-back through `vaDeriveImage`
+
+The read-back maps the decoded surface's own NV12 / P010 memory (`vaDeriveImage`) instead of
+copying it into a second image with `vaGetImage` first; a driver that cannot derive a surface
+switches the session back to `vaGetImage` (logged once). Sequential decode of a 4K50 HEVC Main 10
+file on an AMD Radeon RX 9070 XT (Mesa 26.2.5, radeonsi), before and after the change: 35 →
+66–68 fps, pictures bit-identical to the software decoder. *Measured during development; the load
+average was not recorded and it was not run through `cargo xtask bench`*, so treat it as an
+indication until the bench table is re-measured.
 
 ### HEVC through VA-API (HW5 follow-up)
 
@@ -931,6 +941,24 @@ were skipped; draft decoding at 1/2 and 1/4 is within run-to-run noise in this c
 is the ~9 % of decoder cycles above, plus a quarter / sixteenth of the texture upload), while the
 frame jobs wait for the decoder less (decode ms/job 212 → 67 at 1/2, 98 → 44 at 1/4 in the busy
 round). On an idle machine the 4K clip needs about two cores.
+
+### Video Scopes: UI pass time, 2160p PQ (`egui_kittest`)
+
+A 4K50 HEVC Main 10 PQ clip (ffmpeg `testsrc2`, `target/fixtures`) in a Rec. 2100 PQ sequence,
+the Video Scopes panel showing (HDR waveform): the playhead steps one frame at a time and each UI
+pass is timed (60 steps, release build, 1600×980 harness; hardware decoding is not registered in
+the harness, so the clip decodes in software). Ryzen 7 5800X3D, load average ~5. Measured once,
+before and after the scope worker on the same tree (the 11 PRs of the HDR / playback series
+merged); a temporary test, not committed.
+
+| | UI pass p50 | p95 | max |
+|---|---|---|---|
+| scopes closed | 3.4–3.6 ms | 8–11 ms | 13–29 ms |
+| scopes open, before (signal and scopes in the UI pass) | 24.1 ms | 780.5 ms | 968.5 ms |
+| scopes open, after (scope worker) | 3.3 ms | 10.5 ms | 19.4 ms |
+
+Before, each new frame rendered the working-space picture (decoding the source) inside the UI
+pass; after, the UI pass with the scopes open costs what it costs without them.
 
 ## What M4.9 changed
 

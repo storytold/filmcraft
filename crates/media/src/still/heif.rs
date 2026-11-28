@@ -71,7 +71,8 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         };
         rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], a]);
     }
-    Ok(Raster { width: d.width, height: d.height, rgba, has_alpha })
+    // craft-heif has already applied the container's irot / imir / clap: the pixels are upright
+    Ok(Raster { width: d.width, height: d.height, rgba, has_alpha, orientation: image::metadata::Orientation::NoTransforms })
 }
 
 /// The primaries the decoded samples are in. An ICC profile names them by its colorants (iPhone

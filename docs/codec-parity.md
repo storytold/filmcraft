@@ -5,7 +5,7 @@
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
 paths per platform in [hardware-parity.md](hardware-parity.md). All our codecs are clean-room
-pure Rust from public specifications ([AGENTS.md](../AGENTS.md) §2); ffmpeg is a test oracle only.
+pure Rust from public specifications ([clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)); ffmpeg is a test oracle only.
 
 Premiere's list comes from Adobe's published supported-formats pages and the names of the
 installed bundle's `MediaIO/systempresets` and `Frameworks` entries (listings only, never their
@@ -29,7 +29,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | JPEG XS | decode (`libjpegxs`) | none | none | — | 0% | 20–40 h |
 | DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
 | MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
-| Apple Intermediate Codec (`icod`, iMovie / Final Cut) | not in Adobe's supported-formats list | none (#3646): Apple publishes no specification, so a clean-room decoder needs a maintainer ruling ([AGENTS.md](../AGENTS.md) §2); import names the codec and the Project panel's Unreadable badge shows "no decoder for Apple Intermediate Codec video" on hover | none | — | 0% | — (no estimate without a specification) |
+| Apple Intermediate Codec (`icod`, iMovie / Final Cut) | not in Adobe's supported-formats list | none (#3646): Apple publishes no specification, so a clean-room decoder needs a maintainer ruling ([clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)); import names the codec and the Project panel's Unreadable badge shows "no decoder for Apple Intermediate Codec video" on hover | none | — | 0% | — (no estimate without a specification) |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
 | CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
 | Camera RAW: R3D (incl. R3D NE), ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW (plug-in) | decode (vendor SDKs) | none (#383) | — | — | 0% | 50–90 h for the ones with public specs; vendor-SDK-only formats need an owner decision |
