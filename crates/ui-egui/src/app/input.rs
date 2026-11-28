@@ -88,6 +88,8 @@ impl FilmcraftApp {
 
     /// [`Self::import_dropped`] for the files at `paths`.
     fn import_paths(&mut self, ctx: &egui::Context, paths: Vec<String>, pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        // Only drops initiated in Edit can queue an insertion on the Timeline.
+        let started_in_edit = self.ui.mode == crate::state::Mode::Edit;
         let paths: Vec<String> = paths.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
         if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
             // one project is open at a time: the rest of the drop is not imported into either
@@ -118,7 +120,12 @@ impl FilmcraftApp {
             }
             Err(e) => self.ui.status = e.to_string(),
         }
+        // Successful media imports from Home should reveal the editor, just like Browse files.
+        if dropped_media_opens_editor(self.ui.mode, &imported) {
+            self.ui.mode = crate::state::Mode::Edit;
+        }
         if let Ok(v) = imported
+            && started_in_edit
             && let Some((pos, viewport)) = pointer
             && self.session.prefs.timeline.drop_import_to_timeline
         {
@@ -208,5 +215,41 @@ mod screen_px_tests {
             let p = screen_px_to_ui((10, 20), ppp, egui::pos2(0.0, 0.0));
             assert!(p.x.is_finite() && p.y.is_finite());
         }
+    }
+}
+
+/// Only a successful import of at least one item should leave the Home/Import screen.
+fn dropped_media_opens_editor<E>(mode: crate::state::Mode, imported: &Result<serde_json::Value, E>) -> bool {
+    mode == crate::state::Mode::Import && imported.as_ref().is_ok_and(|v| v["items"].as_array().is_some_and(|items| !items.is_empty()))
+}
+
+#[cfg(test)]
+mod home_file_drop_tests {
+    use super::dropped_media_opens_editor;
+    use crate::state::Mode;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn successful_drop_on_home_opens_editor() {
+        let result: Result<Value, &str> = Ok(json!({"items": [42]}));
+        assert!(dropped_media_opens_editor(Mode::Import, &result));
+    }
+
+    #[test]
+    fn failed_or_empty_drop_stays_on_home() {
+        let failure: Result<Value, &str> = Err("unsupported media");
+        let empty: Result<Value, &str> = Ok(json!({"items": []}));
+        let partial_errors_only: Result<Value, &str> = Ok(json!({"errors": ["unsupported media"]}));
+        let presets_only: Result<Value, &str> = Ok(json!({"presets": ["example.prfpset"]}));
+        for result in [&failure, &empty, &partial_errors_only, &presets_only] {
+            assert!(!dropped_media_opens_editor(Mode::Import, result));
+        }
+    }
+
+    #[test]
+    fn drop_does_not_change_another_mode() {
+        let result: Result<Value, &str> = Ok(json!({"items": [42]}));
+        assert!(!dropped_media_opens_editor(Mode::Edit, &result));
+        assert!(!dropped_media_opens_editor(Mode::Export, &result));
     }
 }
