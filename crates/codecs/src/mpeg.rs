@@ -633,12 +633,18 @@ impl MpegSource {
             st.dec = Some(AudioDecoder::new(a.codec, a.rate, a.channels, a.latm.clone())?);
         }
         let dec = st.dec.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
+        // false when the pre-roll read failed (an I/O error, or a deferred web read): the unit is
+        // concealed for this request but not cached, so the next request primes again (#5014)
+        let mut primed = true;
         if st.last.is_none_or(|l| l + 1 != i) {
             dec.reset();
-            if i > 0
-                && let Ok(prev) = read(i - 1)
-            {
-                let _ = dec.decode(&prev);
+            if i > 0 {
+                match read(i - 1) {
+                    Ok(prev) => {
+                        let _ = dec.decode(&prev);
+                    }
+                    Err(_) => primed = false,
+                }
             }
         }
         let data = match a.codec {
@@ -663,8 +669,11 @@ impl MpegSource {
             Ok(v) => v,
             Err(_) => vec![vec![0.0; a.lens[i] as usize]; a.channels],
         };
-        st.last = Some(i);
+        st.last = primed.then_some(i);
         let p = Arc::new(out);
+        if !primed {
+            return Ok(p);
+        }
         st.cache.insert(i, p.clone());
         st.order.push_back(i);
         if st.order.len() > 2048

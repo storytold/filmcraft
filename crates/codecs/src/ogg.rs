@@ -124,21 +124,30 @@ impl OggSource {
         if st.decoder.is_none() {
             st.decoder = Some(PacketDecoder::opus(head.clone())?);
         }
+        // false when a pre-roll read failed (an I/O error, or a deferred web read): the packet is
+        // concealed for this request but not cached, so the next request primes again (#5014)
+        let mut primed = true;
         // Non-sequential access: reset and decode the pre-roll (RFC 7845 §4.6; see OPUS_PRE_ROLL).
         if st.last_decoded.is_none_or(|l| l + 1 != i) {
             let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
             d.reset();
             let from = timing.starts.partition_point(|&x| x <= timing.starts[i].saturating_sub(OPUS_PRE_ROLL as i64)).saturating_sub(1);
             for j in from..i {
-                if let Ok(prev) = read(j) {
-                    let _ = d.decode(&prev, 0);
+                match read(j) {
+                    Ok(prev) => {
+                        let _ = d.decode(&prev, 0);
+                    }
+                    Err(_) => primed = false,
                 }
             }
         }
         let data = read(i)?;
         let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, 0);
-        st.last_decoded = Some(i);
+        st.last_decoded = primed.then_some(i);
         let p = Arc::new(r.unwrap_or_default());
+        if !primed {
+            return Ok(p);
+        }
         st.packets.insert(i, p.clone());
         st.order.push(i);
         if st.order.len() > 2048 {

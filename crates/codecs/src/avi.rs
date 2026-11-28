@@ -449,6 +449,9 @@ impl AviSource {
             return Ok(p.clone());
         }
         let data = self.packet(a, i)?;
+        // false when the pre-roll read failed (an I/O error, or a deferred web read): the packet is
+        // concealed for this request but not cached, so the next request primes again (#5014)
+        let mut primed = true;
         let decoded = match &a.codec {
             ACodec::Pcm(cfg) => decode_pcm(&data, cfg),
             ACodec::Unsupported(name) => return Err(CodecError::Unsupported(name.clone())),
@@ -463,18 +466,25 @@ impl AviSource {
                 // non-sequential access: reset and prime with the packet before (the bit reservoir)
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
                     d.reset();
-                    if let Some(prev) = i.checked_sub(1).and_then(|j| self.packet(a, j).ok()) {
-                        let _ = d.decode(&prev, 0);
+                    if let Some(j) = i.checked_sub(1) {
+                        match self.packet(a, j) {
+                            Ok(prev) => {
+                                let _ = d.decode(&prev, 0);
+                            }
+                            Err(_) => primed = false,
+                        }
                     }
                 }
                 let start = a.starts.get(i).copied().unwrap_or(0).max(0) as u64;
                 let r = d.decode(&data, start);
-                st.last_decoded = Some(i);
+                st.last_decoded = primed.then_some(i);
                 r.unwrap_or_default()
             }
         };
         let p = Arc::new(decoded);
-        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
+        if primed {
+            crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
+        }
         Ok(p)
     }
 }

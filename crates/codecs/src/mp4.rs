@@ -434,6 +434,9 @@ impl Mp4Source {
         track.samples.get(i).ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
         let pk_start = a.starts.get(i).copied().unwrap_or(0);
         let data = self.read(ti, i)?;
+        // false when a pre-roll read failed (an I/O error, or a deferred web read): the packet is
+        // concealed for this request but not cached, so the next request primes again (#5014)
+        let mut primed = true;
         let (samples, failed) = match &entry.codec {
             CodecConfig::Pcm(p) => (decode_pcm(&data, p), false),
             c => {
@@ -451,13 +454,16 @@ impl Mp4Source {
                         i.saturating_sub(1)
                     };
                     for j in from..i {
-                        if let Ok(prev) = self.read(ti, j) {
-                            let _ = d.decode(&prev, 0);
+                        match self.read(ti, j) {
+                            Ok(prev) => {
+                                let _ = d.decode(&prev, 0);
+                            }
+                            Err(_) => primed = false,
                         }
                     }
                 }
                 let result = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, pk_start.max(0) as u64);
-                st.last_decoded = Some(i);
+                st.last_decoded = primed.then_some(i);
                 match result {
                     Ok(samples) => (samples, false),
                     Err(_) => (Vec::new(), true),
@@ -465,7 +471,9 @@ impl Mp4Source {
             }
         };
         let p = Arc::new(DecodedAudioPacket { samples, failed });
-        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
+        if primed {
+            crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
+        }
         Ok(p)
     }
 }
