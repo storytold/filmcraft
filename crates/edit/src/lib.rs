@@ -1212,14 +1212,23 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         let old_end = it.end();
         let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
         let (_, next_start) = neighbours(tr, *clip);
-        if !ripple {
-            new_dur = new_dur.min(next_start - it.start);
+        let cut_short = !ripple && next_start - it.start < new_dur;
+        if cut_short {
+            new_dur = next_start - it.start;
         }
         let delta = new_dur - it.duration;
         let (_, it) = work.find_item_mut(*clip).ok_or(EditError::NoItem(*clip))?;
         it.speed = speed;
         it.reverse = reverse;
         it.duration = new_dur;
+        // A reversed clip plays from its source Out. When the next clip leaves no room for all of
+        // its media, the media it would play last (at the source In) is what does not fit, as an
+        // Out trim of a reversed clip takes it, so a reversed picture and its sound start on the
+        // same source frame whatever room each has.
+        if reverse && cut_short {
+            let src_in = it.source_in;
+            it.source_in = (src_in + src_len - src_of(new_dur, speed)).max(src_in);
+        }
         let frame = work.settings.frame_rate.frame_duration();
         let track = work.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
         fades_follow_edges(track, *clip);
