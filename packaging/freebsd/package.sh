@@ -58,6 +58,12 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 if [[ "$SKIP_BUILD" = 0 ]]; then
   # Official packages include Kokoro natural voices (downloaded on first use). #2318 #3773
   (cd "$ROOT" && cargo build --release --locked ${CARGO_BUILD_TARGET:+--target "$CARGO_BUILD_TARGET"} -p filmcraft -p filmcraft-cli --features filmcraft/neural-voices)
+  # The man-and-completions example writes filmcraft-cli's man pages and shell completions below; a
+  # cross build can't run it. It is built in its own cargo run so its dev-dependencies' features
+  # aren't unified into the binaries.
+  if [[ -z "${CARGO_BUILD_TARGET:-}" || "$CARGO_BUILD_TARGET" == "$(rustc -vV | sed -n 's/^host: //p')" ]]; then
+    (cd "$ROOT" && cargo build --release --locked ${CARGO_BUILD_TARGET:+--target "$CARGO_BUILD_TARGET"} -p filmcraft-cli --example man-and-completions)
+  fi
 fi
 WORK="$CARGO_TARGET_DIR/freebsd-package"
 STAGE="$WORK/$BASENAME"
@@ -93,6 +99,25 @@ copy_docs "$STAGE/share/doc/filmcraft"
 for f in NOTICE ATTRIBUTION.md; do
   if [[ -f "$ROOT/$f" ]]; then install -m 644 "$ROOT/$f" "$STAGE/share/doc/filmcraft/"; fi
 done
+# filmcraft-cli's man pages and shell completions, from its clap definition. A dry run builds
+# nothing, a cross build can't run the example, and a --skip-build run whose prebuilt binaries came
+# without it has none: all leave them out.
+CLI_DOCS="$BIN/examples/man-and-completions"
+if [[ "$DRY_RUN" = 1 ]]; then
+  :
+elif [[ -n "${CARGO_BUILD_TARGET:-}" && "$CARGO_BUILD_TARGET" != "$(rustc -vV | sed -n 's/^host: //p')" ]]; then
+  warn "cross-building $ARCH, so filmcraft-cli's man pages and completions are left out"
+elif [[ ! -x "$CLI_DOCS" ]]; then
+  warn "$CLI_DOCS is not built, so filmcraft-cli's man pages and completions are left out"
+else
+  "$CLI_DOCS" "$WORK/cli-docs"
+  mkdir -p "$STAGE/man/man1" "$STAGE/share/bash-completion/completions" \
+    "$STAGE/share/zsh/site-functions" "$STAGE/share/fish/vendor_completions.d"
+  install -m 644 "$WORK"/cli-docs/man/*.1 "$STAGE/man/man1/"
+  install -m 644 "$WORK/cli-docs/completions/filmcraft-cli.bash" "$STAGE/share/bash-completion/completions/filmcraft-cli"
+  install -m 644 "$WORK/cli-docs/completions/_filmcraft-cli" "$STAGE/share/zsh/site-functions/_filmcraft-cli"
+  install -m 644 "$WORK/cli-docs/completions/filmcraft-cli.fish" "$STAGE/share/fish/vendor_completions.d/filmcraft-cli.fish"
+fi
 
 for f in bin/filmcraft bin/filmcraft-cli "share/applications/$APP_ID.desktop" \
   "share/icons/hicolor/256x256/apps/$APP_ID.png" "share/icons/hicolor/scalable/apps/$APP_ID.svg" \

@@ -9,7 +9,9 @@
 //! the process ends, however it ends, so a crash leaves nothing stale. The file itself stays, since
 //! removing it would let one run wait on the old file while another locks a new one.
 
-use crate::args::Args;
+use crate::cli::Global;
+use crate::error::Failure;
+use crate::io::Io;
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
@@ -23,7 +25,7 @@ fn lock_path(project: &Path) -> PathBuf {
 }
 
 /// Do two paths name one existing file?
-fn same_file(a: &str, b: &str) -> bool {
+fn same_file(a: &Path, b: &Path) -> bool {
     a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
@@ -38,17 +40,17 @@ fn same_file(a: &str, b: &str) -> bool {
 /// and this run would edit and save it with no lock. Checking first also means the paths compared
 /// below exist, so `canonicalize` tells exactly whether they are one file, however they are spelt.
 /// A project that exists but isn't a file gets no lock file beside it, and opening it reports why.
-fn saved_in_place(a: &Args) -> Result<Option<&Path>, String> {
-    // `--bridge` with `--project` is a usage error, which `Backend::open` reports
-    let Some(project) = a.opt("--project").filter(|_| a.opt("--bridge").is_none()) else { return Ok(None) };
+fn saved_in_place(g: &Global) -> Result<Option<&Path>, Failure> {
+    // `--bridge` with `--project` is a usage error, which clap reports
+    let Some(project) = g.project.as_deref().filter(|_| g.bridge.is_none()) else { return Ok(None) };
     match Path::new(project).metadata() {
         Ok(meta) if meta.is_file() => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{project}: {e}")),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Err(Failure::Io { path: project.to_path_buf(), source }),
         _ => return Ok(None),
     }
-    match a.opt("--save-as") {
-        Some(target) if same_file(target, project) => Ok(Some(Path::new(target))),
-        None if a.flag("--save") => Ok(Some(Path::new(project))),
+    match g.save_as.as_deref() {
+        Some(target) if same_file(target, project) => Ok(Some(target)),
+        None if g.save => Ok(Some(project)),
         _ => Ok(None),
     }
 }
@@ -67,20 +69,19 @@ fn lock(project: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Take the project's lock if this run saves over the file it opens, or exit if `--project` is
+/// Take the project's lock if this run saves over the file it opens, or fail if `--project` is
 /// missing. Call it before opening the project and keep the result until the save is done. Blocks
 /// while another run holds the lock, which is fine here: nothing else is running yet. A lock that
 /// can't be had (a read-only folder, a file system without locks) is a warning and not an error, so
 /// that saving works where it did.
-pub fn for_save(a: &Args) -> Option<File> {
-    let project = saved_in_place(a).unwrap_or_else(|e| crate::fail(e))?;
+pub fn for_save(g: &Global, io: &mut Io<'_>) -> Result<Option<File>, Failure> {
+    let Some(project) = saved_in_place(g)? else { return Ok(None) };
     let shown = project.display();
-    let waiting = || crate::diag(format_args!("filmcraft-cli: waiting for another run saving {shown}"));
-    match lock(project, waiting) {
-        Ok(file) => Some(file),
+    match lock(project, || io.diag(format_args!("waiting for another run saving {shown}"))) {
+        Ok(file) => Ok(Some(file)),
         Err(e) => {
-            crate::diag(format_args!("filmcraft-cli: warning: can't lock {shown} ({e}); another run saving it now could overwrite these edits"));
-            None
+            io.warning(format_args!("can't lock {shown} ({e}); another run saving it now could overwrite these edits"));
+            Ok(None)
         }
     }
 }
@@ -89,8 +90,17 @@ pub fn for_save(a: &Args) -> Option<File> {
 mod tests {
     use super::*;
 
-    fn args(list: &[&str]) -> Args {
-        Args::parse(list.iter().map(|s| s.to_string()))
+    /// The options of a run on `project` with these save options.
+    fn global(project: Option<&str>, save: bool, save_as: Option<&str>, bridge: bool) -> Global {
+        Global {
+            project: project.map(PathBuf::from),
+            demo: false,
+            save,
+            save_as: save_as.map(PathBuf::from),
+            bridge: bridge.then(|| crate::cli::BridgeAddr("127.0.0.1:1".into())),
+            data_dir: None,
+            compact: false,
+        }
     }
 
     /// The moment between this check and `Backend::open` can't be hit on demand, so this pins the
@@ -110,20 +120,21 @@ mod tests {
         let in_new_dir = in_new_dir.to_str().unwrap();
         let in_new_dir_alias = new_dir.join(".").join("p.fcproj");
         let in_new_dir_alias = in_new_dir_alias.to_str().unwrap();
-        for list in [
-            &["--project", gone, "--save", "exec"][..],
-            &["--project", gone, "--save-as", gone, "exec"],
-            &["--project", gone, "--save-as", alias, "exec"],
-            &["--project", &name, "--save-as", &dotted, "exec"],
-            &["--project", in_new_dir, "--save-as", in_new_dir_alias, "exec"],
-            &["--project", gone, "--save-as", "other.fcproj", "exec"],
-            &["--project", gone, "exec"],
+        for g in [
+            global(Some(gone), true, None, false),
+            global(Some(gone), false, Some(gone), false),
+            global(Some(gone), false, Some(alias), false),
+            global(Some(&name), false, Some(&dotted), false),
+            global(Some(in_new_dir), false, Some(in_new_dir_alias), false),
+            global(Some(gone), false, Some("other.fcproj"), false),
+            global(Some(gone), false, None, false),
         ] {
-            let error = saved_in_place(&args(list)).unwrap_err();
-            assert!(error.starts_with(list[1]), "{list:?}: {error}");
+            let error = saved_in_place(&g).unwrap_err().to_string();
+            let project = g.project.as_deref().unwrap().display().to_string();
+            assert!(error.starts_with(&project), "{g:?}: {error}");
         }
-        // --project with --bridge is a usage error, which `Backend::open` reports
-        assert_eq!(saved_in_place(&args(&["--bridge", "127.0.0.1:1", "--project", gone, "--save", "exec"])), Ok(None));
+        // --project with --bridge is a usage error, which clap reports
+        assert!(matches!(saved_in_place(&global(Some(gone), true, None, true)), Ok(None)));
     }
 
     #[test]

@@ -891,7 +891,8 @@ class LinuxNightlyTarTemplate(unittest.TestCase):
         # The drop commands are a prefix of the first sed expression: `sed "$DROP_LIB_TREE" -e ...`
         # reads an empty or command-shaped argument as an input file and dies.
         self.assertNotIn('sed "$DROP_LIB_TREE"', package)
-        self.assertIn('sed "${DROP_LIB_TREE}s|', package)
+        self.assertNotIn('sed "$DROP_ZSH_LINK"', package)
+        self.assertIn('sed "${DROP_ZSH_LINK}${DROP_LIB_TREE}s|', package)
         self.assertIn('cp "$ROOT/ATTRIBUTION.md" "$destination/"', (ROOT / "packaging/nightly-common.sh").read_text(),
                       "the tar and the macOS bundle require ATTRIBUTION.md")
 

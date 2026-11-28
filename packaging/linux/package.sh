@@ -82,9 +82,14 @@ if [[ "$SKIP_BUILD" = 0 ]]; then
     # include natural voices (downloaded on first use); the UI hides the download when this
     # feature is off (#2318, #3773).
     (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli --target "$CROSS_TARGET")
+    (cd "$ROOT" && cargo build --release --locked -p filmcraft-cli --example man-and-completions --target "$CROSS_TARGET")
   else
     # Official packages include Kokoro natural voices (downloaded on first use). #2318 #3773
     (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli --features filmcraft/neural-voices)
+    # The man-and-completions example writes filmcraft-cli's man pages and shell completions below.
+    # It is built in its own cargo run: built with the binaries, its dev-dependencies' features
+    # would be unified into them.
+    (cd "$ROOT" && cargo build --release --locked -p filmcraft-cli --example man-and-completions)
   fi
 fi
 BIN="$CARGO_TARGET_DIR/${CROSS_TARGET:+$CROSS_TARGET/}release"
@@ -96,6 +101,30 @@ rm -rf "$WORK"
 install -Dm755 "$BIN/filmcraft" "$STAGE/usr/bin/filmcraft"
 install -Dm755 "$BIN/filmcraft-cli" "$STAGE/usr/bin/filmcraft-cli"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/filmcraft" "$STAGE/usr/bin/filmcraft-cli" 2>/dev/null || true
+# filmcraft-cli's man pages and shell completions, from its clap definition, written by the example
+# built above. A cross build runs it through $EMULATOR, like the --version check at the end, and
+# leaves them out without one, as does a --skip-build run whose prebuilt binaries came without the
+# example. A Nightly leaves them out: its CLI is installed as filmcraft-nightly-cli, so the stable
+# names would clash with the stable package's files. zsh reads site-functions on Fedora and
+# openSUSE; the deb also links the completion into Debian's vendor-completions (nfpm.yaml).
+CLI_DOCS="$BIN/examples/man-and-completions"
+if [[ "$IS_NIGHTLY" = 1 ]]; then
+  :
+elif [[ -n "${CROSS_TARGET:-}" ]] && [[ -z "${EMULATOR:-}" ]]; then
+  warn "no EMULATOR to run the $CROSS_TARGET build, so filmcraft-cli's man pages and completions are left out"
+elif [[ ! -x "$CLI_DOCS" ]]; then
+  warn "$CLI_DOCS is not built, so filmcraft-cli's man pages and completions are left out"
+else
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
+    "$EMULATOR" "$CLI_DOCS" "$WORK/cli-docs"
+  else
+    "$CLI_DOCS" "$WORK/cli-docs"
+  fi
+  install -Dm644 -t "$STAGE/usr/share/man/man1" "$WORK"/cli-docs/man/*.1
+  install -Dm644 "$WORK/cli-docs/completions/filmcraft-cli.bash" "$STAGE/usr/share/bash-completion/completions/filmcraft-cli"
+  install -Dm644 "$WORK/cli-docs/completions/_filmcraft-cli" "$STAGE/usr/share/zsh/site-functions/_filmcraft-cli"
+  install -Dm644 "$WORK/cli-docs/completions/filmcraft-cli.fish" "$STAGE/usr/share/fish/vendor_completions.d/filmcraft-cli.fish"
+fi
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 if [[ "$IS_NIGHTLY" = 1 ]]; then
   sed -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.filmcraft.nightly-v1|' \
@@ -212,7 +241,12 @@ WRAPPER
   [[ -d "$NFPM_STAGE/usr/lib" ]] || DROP_LIB_TREE='\|^  - src: \${STAGE}/usr/lib/|,+2d;'
   # The drop commands are a prefix of the first expression: with `-e` sed would read them as a file.
   # shellcheck disable=SC2016
-  sed "${DROP_LIB_TREE}s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  # Without the completions (a Nightly, or a cross build with no EMULATOR) the deb's zsh symlink
+  # would dangle, so its entry is dropped too.
+  DROP_ZSH_LINK=
+  # shellcheck disable=SC2016
+  [[ -f "$NFPM_STAGE/usr/share/zsh/site-functions/_filmcraft-cli" ]] || DROP_ZSH_LINK='\|^  - src: /usr/share/zsh/site-functions/|,/packager: deb/d;'
+  sed "${DROP_ZSH_LINK}${DROP_LIB_TREE}s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done

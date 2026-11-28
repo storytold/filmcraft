@@ -76,6 +76,12 @@ contents:
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree
+  # Debian's zsh reads vendor-completions, not /usr/share/zsh/site-functions as Fedora's and
+  # openSUSE's do (its debian/rules sets --enable-additional-fpath).
+  - src: /usr/share/zsh/site-functions/_filmcraft-cli
+    dst: /usr/share/zsh/vendor-completions/_filmcraft-cli
+    type: symlink
+    packager: deb
 
 scripts:
   postinstall: packaging/linux/postinst.sh

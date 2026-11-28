@@ -8,6 +8,9 @@ license.workspace = true
 [lints]
 workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "filmcraft-cli"
 path = "src/main.rs"
@@ -30,8 +33,13 @@ filmcraft-platform = { workspace = true }
 craft-media = { workspace = true, features = ["mpegts", "mxf", "ogg"] }
 filmcraft-automation = { workspace = true }
 serde_json = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
+# shell completions and man pages (examples/generate.rs)
+clap_complete = "4"
+clap_mangen = "0.2"
 filmcraft-testkit = { workspace = true }
 tempfile = "3"
