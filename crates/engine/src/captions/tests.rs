@@ -429,3 +429,47 @@ fn caption_export_warns_about_characters_608_and_708_cannot_carry() {
     assert_eq!(export(&mut s, "srt")["warnings"], json!([]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A line break in a caption's text starts the next caption: the pieces follow each other over the
+/// original span, longer lines get more time, and it is one undo step.
+#[test]
+fn split_text_cuts_a_caption_at_its_line_breaks() {
+    let mut s = demo();
+    s.execute("playhead.set", json!({"seconds": 2.0})).unwrap();
+    let r = s.execute("captions.add", json!({"text": "x", "durationSeconds": 4.0})).unwrap();
+    let id = r["caption"].as_u64().unwrap();
+    let span = |s: &Session| {
+        let c = &s.active_sequence().unwrap().caption_tracks[0].captions;
+        (c.first().unwrap().start, c.last().unwrap().end(), c.clone())
+    };
+    let (start, end, _) = span(&s);
+
+    let r = s.execute("captions.splitText", json!({"caption": id, "text": "Bonjour\n\nça va très bien\r\nmerci"})).unwrap();
+    assert_eq!(r["captions"].as_array().unwrap().len(), 3, "blank lines make no caption: {r}");
+    let (s0, e0, caps) = span(&s);
+    assert_eq!((s0, e0), (start, end), "the pieces fill the original span");
+    assert_eq!(caps.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["Bonjour", "ça va très bien", "merci"]);
+    assert!(caps.windows(2).all(|w| w[0].end() == w[1].start), "back to back");
+    assert!(caps[1].duration > caps[0].duration && caps[1].duration > caps[2].duration, "the longest line gets the most time");
+    s.active_sequence().unwrap().check().unwrap();
+
+    s.execute("edit.undo", json!({})).unwrap();
+    let (_, _, caps) = span(&s);
+    assert_eq!(caps.len(), 1, "one undo step");
+    assert_eq!(caps[0].text, "x");
+}
+
+#[test]
+fn split_text_refuses_what_cannot_be_split() {
+    let mut s = demo();
+    let r = s.execute("captions.add", json!({"text": "x", "durationSeconds": 0.001})).unwrap();
+    let id = r["caption"].as_u64().unwrap();
+    assert!(s.execute("captions.splitText", json!({"caption": id, "text": "a\nb"})).is_err(), "a one-frame caption cannot hold two");
+    assert!(s.execute("captions.splitText", json!({"caption": id, "text": " \n "})).is_err(), "no text");
+    assert!(s.execute("captions.splitText", json!({"caption": id})).is_err(), "`text` is required");
+    let c = &s.active_sequence().unwrap().caption_tracks[0].captions;
+    assert_eq!((c.len(), c[0].text.as_str()), (1, "x"), "a refused split changes nothing");
+    // a single line only replaces the text
+    s.execute("captions.splitText", json!({"caption": id, "text": "just one"})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions[0].text, "just one");
+}

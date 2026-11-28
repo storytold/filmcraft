@@ -498,6 +498,41 @@ pub fn commands() -> Vec<CommandSpec> {
             s.edit_sequence("Edit Caption", |q, _, _| Ok(edit::captions::set_caption(q, id, text.as_deref(), speaker.as_ref().map(|o| o.as_deref()))?))?;
             Ok(Value::Null)
         }),
+        spec("captions.splitText", "Split Caption at Line Breaks", &[], None, r#"{"caption":id?,"text":str}"#, has_captions, |s, p| {
+            let cmd = "captions.splitText";
+            let id = one_caption(s, p, cmd)?;
+            let text = str_p(p, "text").ok_or_else(|| bad(cmd, "`text` is required"))?;
+            // each non-empty line becomes a caption; they share the caption's time in proportion to their length
+            let lines: Vec<String> = text.replace("\r\n", "\n").split('\n').map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            if lines.is_empty() {
+                return Err(bad(cmd, "the text is empty"));
+            }
+            let (start, dur) = s
+                .active_sequence()
+                .and_then(|q| q.find_caption(id))
+                .map(|(_, c)| (c.start, c.duration))
+                .ok_or(EngineError::Edit(edit::EditError::NoItem(id)))?;
+            let rate = s.sequence_rate();
+            let weights: Vec<i128> = lines.iter().map(|l| l.chars().count().max(1) as i128).collect();
+            let total: i128 = weights.iter().sum();
+            let mut seen = 0i128;
+            let cuts: Vec<Tick> = weights
+                .iter()
+                .take(weights.len().saturating_sub(1))
+                .map(|w| {
+                    seen += w;
+                    // i128: a caption can be hours long, and ticks are 254 016 000 000 per second
+                    let at = i128::from(dur.0) * seen / total;
+                    rate.snap_nearest(start + Tick(i64::try_from(at).unwrap_or(i64::MAX)))
+                })
+                .collect();
+            let ids = s.edit_sequence("Split Caption Text", |q, ctx, st| {
+                let ids = edit::captions::split_caption_into(q, id, &cuts, &lines, ctx)?;
+                st.caption_selection = ids.clone();
+                Ok(ids)
+            })?;
+            Ok(json!({"captions": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+        }),
         spec(
             "captions.setTimes",
             "Set Caption In/Out",
