@@ -139,10 +139,8 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     }
     if go && !busy {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
-        match app.session.execute("export.quick", p) {
-            Ok(v) => app.ui.status = tlf!("Quick Export: {path}", path = v["path"].as_str().unwrap_or("")),
-            Err(e) => app.ui.status = e.to_string(),
-        }
+        let path = app.ui.export.quick_path.clone();
+        super::export_or_ask(app, "export.quick", &path, p);
         close = true;
     }
     if close || crate::widgets::escape_closes(ctx) || (clicked_elsewhere && !toggled) {

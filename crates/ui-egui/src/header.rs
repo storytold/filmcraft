@@ -106,6 +106,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("quick-export-toggled"), true));
     }
     crate::panels::export_mode::quick_export(app, ui.ctx(), pos2(qx - 340.0, rect.max.y + 4.0));
+    crate::panels::export_mode::replace_prompt(app, ui.ctx());
     // Appearance Mode: click for the next one (Auto, Light, Dark); the icon shows the current one.
     let (icon, mode) = match app.session.prefs.appearance.appearance_mode.as_str() {
         "auto" => (Icon::Monitor, tl!("Sync with system")),
