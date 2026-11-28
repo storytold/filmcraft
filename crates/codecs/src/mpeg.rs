@@ -11,7 +11,7 @@
 //!   are placed on the timeline from their PTS relative to the first video frame,
 //!   sample-contiguously (re-anchored only at gaps).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use craft_media::mpegts::{Codec, File, Kind, Unit};
@@ -68,7 +68,8 @@ enum ACodec {
 struct AudioState {
     dec: Option<AudioDecoder>,
     cache: HashMap<usize, Arc<Vec<Vec<f32>>>>,
-    order: VecDeque<usize>,
+    order: Vec<usize>,
+    bytes: usize,
     last: Option<usize>,
 }
 
@@ -617,7 +618,7 @@ impl MpegSource {
             lens,
             latm,
             byte_starts,
-            state: Mutex::new(AudioState { dec: None, cache: HashMap::new(), order: VecDeque::new(), last: None }),
+            state: Mutex::new(AudioState { dec: None, cache: HashMap::new(), order: Vec::new(), bytes: 0, last: None }),
         })
     }
 
@@ -665,13 +666,7 @@ impl MpegSource {
         };
         st.last = Some(i);
         let p = Arc::new(out);
-        st.cache.insert(i, p.clone());
-        st.order.push_back(i);
-        if st.order.len() > 2048
-            && let Some(old) = st.order.pop_front()
-        {
-            st.cache.remove(&old);
-        }
+        crate::audio::cache_packet(&mut st.cache, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
@@ -891,6 +886,20 @@ mod tests {
         }
         assert_eq!(stream_rate(Some(FrameRate::FPS_25), Some(25.0)), FrameRate::FPS_25);
         assert_eq!(stream_rate(None, Some(50.0)), FrameRate::from_f64(50.0));
+    }
+
+    /// The packet cache bounds bytes, not only entries: one unit can decode to far more than it
+    /// holds (120 ms of 8 channels is 184 KB), so a count-only cache can hold gigabytes.
+    #[test]
+    fn audio_cache_keeps_within_the_byte_budget() {
+        let mut st = AudioState { dec: None, cache: HashMap::new(), order: Vec::new(), bytes: 0, last: None };
+        let big = Arc::new(vec![vec![0.0f32; 5_760]; 8]);
+        for i in 0..2_000 {
+            crate::audio::cache_packet(&mut st.cache, &mut st.order, &mut st.bytes, i, &big);
+        }
+        assert!(st.cache.len() <= crate::audio::MAX_PACKET_CACHE_ENTRIES);
+        assert!(st.bytes <= crate::audio::MAX_PACKET_CACHE_BYTES, "{} bytes", st.bytes);
+        assert!(st.cache.len() < 2_000, "the byte budget must evict before the count does");
     }
 
     /// MPEG-1 layer II frame, 48 kHz 192 kb/s (576 bytes).
