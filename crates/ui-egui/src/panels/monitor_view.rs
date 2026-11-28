@@ -151,6 +151,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             v.transparency_grid = toggled(v.transparency_grid, params);
             Ok(json!({"monitor": pfx, "transparencyGrid": v.transparency_grid}))
         }
+        "markerNotes" => {
+            let v = &mut app.ui.program;
+            v.marker_notes = toggled(v.marker_notes, params);
+            Ok(json!({"monitor": "program", "markerNotes": v.marker_notes}))
+        }
         "showRulers" => {
             let v = view_mut(app, w);
             v.show_rulers = toggled(v.show_rulers, params);
@@ -311,6 +316,7 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
         "highQualityPlayback" => Some(v.high_quality),
         "safeMargins" => Some(v.safe_margins),
         "transparencyGrid" => Some(v.transparency_grid),
+        "markerNotes" => Some(app.ui.program.marker_notes),
         "showRulers" => Some(v.show_rulers),
         "showGuides" => Some(v.show_guides),
         "lockGuides" => Some(v.lock_guides),
@@ -835,6 +841,9 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         pick(ui, &mut out, "snapInProgramMonitor", tl!("Snap in Program Monitor"), v.snap);
     }
     pick(ui, &mut out, "transparencyGrid", tl!("Transparency Grid"), v.transparency_grid);
+    if w == Which::Program {
+        pick(ui, &mut out, "markerNotes", tl!("Marker Notes"), v.marker_notes);
+    }
     ui.separator();
     let pfx = prefix(w);
     for (key, r, label, clicked) in out {

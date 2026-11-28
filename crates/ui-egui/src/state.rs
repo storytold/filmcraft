@@ -327,6 +327,9 @@ pub struct MonitorView {
     pub safe_margins: bool,
     /// Transparency Grid: a checkerboard behind the picture shows its transparent areas.
     pub transparency_grid: bool,
+    /// Marker Notes (Program monitor): while the playhead is parked on a sequence marker, its name
+    /// and notes are written over the bottom of the picture.
+    pub marker_notes: bool,
     pub show_transport: bool,
     /// Transport buttons hidden through the monitor's Button Editor. Stored per monitor.
     pub transport_hidden: Vec<String>,
@@ -354,6 +357,7 @@ impl Default for MonitorView {
             time_zoom: None,
             safe_margins: false,
             transparency_grid: false,
+            marker_notes: true,
             show_transport: true,
             // Optional buttons (Loop, Go to Previous/Next Edit Point) are available from the editor
             // without altering default layouts, as in Premiere.

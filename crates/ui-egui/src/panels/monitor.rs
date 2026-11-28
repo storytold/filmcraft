@@ -204,6 +204,103 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     }
 }
 
+/// Coincident markers looked at for Marker Notes: every one whose plate fits is shown; the bound
+/// only limits the work for a damaged project with very many markers on one frame.
+const MARKER_NOTES_SCAN: usize = 64;
+
+/// Whether the frame `frame` is on the marker `m`: its own frame, or any frame of a range marker.
+fn on_marker(m: &filmcraft_project::Marker, frame: i64, rate: filmcraft_time::FrameRate) -> bool {
+    let first = rate.frame_at(m.start);
+    let last = if m.duration > Tick::ZERO { (rate.frame_at(Tick(m.start.0.saturating_add(m.duration.0))) - 1).max(first) } else { first };
+    (first..=last).contains(&frame)
+}
+
+/// Marker Notes: while the Program playhead is parked on sequence markers, their names and notes
+/// are written over the bottom of the visible picture `area`, each with its marker's colour.
+/// Monitor display only: nothing is rendered into the sequence or an export.
+fn marker_notes(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    which: Which,
+    mv: &crate::state::MonitorView,
+    area: Rect,
+    time: Tick,
+    rate: filmcraft_time::FrameRate,
+) {
+    if which != Which::Program || !mv.marker_notes || app.playback.playing || area.width() < 80.0 || area.height() < 60.0 {
+        return;
+    }
+    let frame = rate.frame_at(time);
+    let labels = &app.session.prefs.labels;
+    let notes: Vec<(u64, String, String, Color32)> = app
+        .session
+        .active_sequence()
+        .map(|q| {
+            q.markers
+                .iter()
+                .filter(|m| on_marker(m, frame, rate) && !(m.name.trim().is_empty() && m.comment.trim().is_empty()))
+                .take(MARKER_NOTES_SCAN)
+                .map(|m| {
+                    let c = m.custom_color.map_or_else(|| labels.rgb(m.color), |c| c.0);
+                    (m.id.0, m.name.trim().to_owned(), m.comment.trim().to_owned(), Color32::from_rgb(c[0], c[1], c[2]))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if notes.is_empty() {
+        return;
+    }
+    // Over the picture, not the panel: a dark plate keeps white text readable on any frame, in every theme.
+    let size = (area.height() * 0.04).clamp(11.0, 22.0);
+    let pad = (size * 0.6).round();
+    let width = (area.width() * 0.8).min(size * 40.0);
+    let wrap = width - 2.0 * pad - 4.0;
+    let painter = ui.painter().clone();
+    let mut bottom = area.max.y - (area.height() * 0.06).max(pad);
+    for (id, name, comment, colour) in notes.into_iter().rev() {
+        if bottom - area.min.y < size + 2.0 * pad {
+            break;
+        }
+        let galley_of = |text: &str, font: egui::FontId, rows: usize| {
+            let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, Color32::WHITE, wrap);
+            job.wrap.max_rows = rows;
+            painter.layout_job(job)
+        };
+        let title = (!name.is_empty()).then(|| galley_of(&name, Tokens::semibold(size), 1));
+        let body = (!comment.is_empty()).then(|| galley_of(&comment, Tokens::ui(size * 0.85), 3));
+        let gap = if title.is_some() && body.is_some() { (size * 0.25).round() } else { 0.0 };
+        let text_w = title.iter().chain(body.iter()).map(|g| g.size().x).fold(0.0, f32::max);
+        let text_h = title.as_ref().map_or(0.0, |g| g.size().y) + gap + body.as_ref().map_or(0.0, |g| g.size().y);
+        let plate_w = (text_w + 2.0 * pad + 4.0).min(width);
+        let plate = Rect::from_min_max(pos2(area.center().x - plate_w / 2.0, bottom - text_h - 2.0 * pad), pos2(area.center().x + plate_w / 2.0, bottom));
+        if plate.min.y < area.min.y {
+            // too tall for the space left: a shorter plate after it may still fit
+            continue;
+        }
+        painter.rect_filled(plate, 3.0, Color32::from_black_alpha(185));
+        painter.rect_filled(Rect::from_min_size(plate.min, vec2(4.0, plate.height())), 0.0, colour);
+        let x = plate.min.x + 4.0 + pad;
+        let mut y = plate.min.y + pad;
+        if let Some(g) = title {
+            let h = g.size().y;
+            painter.galley(pos2(x, y), g, Color32::WHITE);
+            y += h + gap;
+        }
+        if let Some(g) = body {
+            painter.galley(pos2(x, y), g, Color32::WHITE);
+        }
+        let label = match (name.is_empty(), comment.is_empty()) {
+            (false, false) => format!("{name}: {comment}"),
+            (false, true) => name,
+            _ => comment,
+        };
+        let response = ui.interact(plate, egui::Id::unique(("program-marker-notes", id)), Sense::hover());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &label));
+        app.auto.add(&format!("program.markerNotes.{id}"), plate, &label);
+        bottom = plate.min.y - (pad * 0.5).round();
+    }
+}
+
 fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which: Which, t: &Tokens) {
     if which == Which::Program && app.playback.playing && !app.ui.fullscreen_program {
         let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
@@ -220,6 +317,7 @@ fn shown_view(saved: &crate::state::MonitorView, cinema: bool) -> crate::state::
         mv.multicam = false;
         mv.safe_margins = false;
         mv.transparency_grid = false;
+        mv.marker_notes = false;
         mv.zoom = None;
         mv.show_rulers = false;
     }
@@ -385,6 +483,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             &mv,
             PictureCtx { target, frame_size, rate, time, duration, drop_frame, time_display, compare, ref_area, pic, video_area, prefix },
         );
+        marker_notes(app, ui, which, &mv, pic.intersect(video_area), time, rate);
     }
     drop_indicator(app, ui, video_area, which, &t);
     if cinema {
