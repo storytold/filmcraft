@@ -1215,7 +1215,7 @@ mod tests {
         ("Lights & Glows", &["Echo Glow", "Edge Glow", "Glint", "Lens Flare", "Light Leaks", "RGB Split", "Volumetric Rays", "Wonder Glow"]),
         ("Noise & Grain", &["Noise"]),
         ("Perspective", &["Basic 3D", "Drop Shadow", "Long Shadow"]),
-        ("Stylize", &["Brush Strokes", "Color Emboss", "Find Edges", "Mosaic", "Posterize", "Roughen Edges", "Strobe Light"]),
+        ("Stylize", &["Brush Strokes", "Color Emboss", "Find Edges", "Mosaic", "Posterize", "Roughen Edges", "Strobe Light", "Threshold"]),
         ("Time", &["Posterize Time"]),
         (
             "Transform",
@@ -1257,6 +1257,7 @@ mod tests {
         "Twirl (Legacy)",
     ];
 
+    /// Every effect of Premiere 26's Video Effects bin exists in its folder, and nothing else does.
     #[test]
     fn premiere_26_video_effects_catalogue() {
         let mut n = 0;
@@ -1269,7 +1270,7 @@ mod tests {
                 n += 1;
             }
         }
-        assert_eq!(n, 93);
+        assert_eq!(n, 94);
         assert_eq!(CATALOGUE.len(), 16);
         // nothing else sits in the current folders
         for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Video && d.category.first() == Some(&"Video Effects")) {
