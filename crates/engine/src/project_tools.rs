@@ -640,7 +640,8 @@ fn save_as_template(s: &mut Session, p: &Value) -> Result<Value> {
     let mut proj = (*s.project).clone();
     proj.name = name.clone();
     proj.root.name = name.clone();
-    s.services.write_file(&path, &filmcraft_format::encode(&proj, false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let stored = crate::doc_path::project_for_document(&proj, Some(&path), |p| s.media.follow(p));
+    s.services.write_file(&path, &filmcraft_format::encode(&stored, false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "name": name}))
 }
 
@@ -669,8 +670,9 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         templates_dir(s).map(|d| d.join(format!("{}.fcproj", sanitize(t))).to_string_lossy().to_string()).unwrap_or_else(|| t.to_string())
     };
-    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file_bounded(&path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut proj = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?.project;
+    crate::doc_path::absolutize(&mut proj, Some(&path));
     if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
@@ -756,6 +758,9 @@ pub fn closure(p: &Project, roots: &[ItemId]) -> BTreeSet<ItemId> {
         }
         match &it.kind {
             ItemKind::Subclip { parent, .. } => todo.push(*parent),
+            ItemKind::Script(doc) => {
+                todo.extend(doc.slates.iter().flat_map(|slate| slate.takes.iter()).filter_map(|take| take.source));
+            }
             ItemKind::Sequence(q) => {
                 for t in q.all_tracks() {
                     todo.extend(t.items.iter().map(|i| i.item));
@@ -811,7 +816,8 @@ fn export_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let name = std::path::Path::new(&path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| sub.name.clone());
     sub.name = name.clone();
     sub.root.name = name;
-    s.services.write_file(&path, &filmcraft_format::encode(&sub, false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let stored = crate::doc_path::project_for_document(&sub, Some(&path), |p| s.media.follow(p));
+    s.services.write_file(&path, &filmcraft_format::encode(&stored, false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "items": keep.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
@@ -825,7 +831,8 @@ fn export_ale(s: &mut Session, p: &Value) -> Result<Value> {
         // the whole project, in Project panel order
         s.project.root.all_items(&mut items);
     }
-    let doc = filmcraft_interchange::ale::export_items(&s.project, &items);
+    let resolved = crate::doc_path::resolved_project(&s.project, |p| s.media.follow(p));
+    let doc = filmcraft_interchange::ale::export_items(&resolved, &items);
     if doc.rows.is_empty() {
         return Err(EngineError::Other("none of the items is a clip that can be logged".into()));
     }
@@ -1129,6 +1136,11 @@ fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
             paths.push(path.to_string());
         }
     }
+    // the files as media access resolves them: a stored path it refuses is not handed to the system
+    let paths = paths
+        .iter()
+        .map(|path| s.media.follow(path).map_err(|why| bad("edit.editOriginal", format!("{path} is not opened: {why}"))))
+        .collect::<Result<Vec<String>>>()?;
     if paths.is_empty() {
         return Err(EngineError::Other("select a clip with a media file".into()));
     }
@@ -1212,7 +1224,15 @@ fn update_metadata(s: &mut Session, p: &Value) -> Result<Value> {
     for id in targets(s, p) {
         let Some(it) = s.project.item(id) else { continue };
         let Some(path) = media_of(&s.project, id).and_then(|(_, m)| file_path(m)) else { continue };
-        let side = sidecar_path(path);
+        // the media file as media access resolves it: a refused stored path gets no sidecar written beside it
+        let file = match s.media.follow(path) {
+            Ok(file) => file,
+            Err(why) => {
+                skipped.push(json!({"item": id.0, "path": path, "reason": format!("{path} is not opened: {why}")}));
+                continue;
+            }
+        };
+        let side = sidecar_path(&file);
         if let Ok(old) = s.services.read_file(&side)
             && !String::from_utf8_lossy(&old).contains("xmp:CreatorTool=\"FilmCraft\"")
         {

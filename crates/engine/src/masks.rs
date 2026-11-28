@@ -169,6 +169,7 @@ fn source_size(s: &Session, clip: ClipId) -> (f64, f64) {
         filmcraft_project::ItemKind::Subclip { parent, .. } => {
             s.project.item(*parent).and_then(|pp| pp.as_media()).and_then(|m| m.info.video.as_ref()).map(|v| (v.width, v.height))
         }
+        filmcraft_project::ItemKind::Script(_) => None,
     });
     let (w, h) = dims.or_else(|| seq.map(|q| (q.settings.width, q.settings.height))).unwrap_or((1920, 1080));
     (w as f64, h as f64)
@@ -714,7 +715,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
                 seconds: secs,
                 bytes: 0,
                 render_fps: done as f64 / secs.max(1e-6),
-                extra_files: Vec::new(),
+                ..Default::default()
             }),
         };
         *lock(&prog.status) = match &err {

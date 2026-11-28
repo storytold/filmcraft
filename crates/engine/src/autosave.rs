@@ -500,11 +500,37 @@ pub fn portable_data_dir(exe_dir: &Path) -> Option<PathBuf> {
     exe_dir.join(PORTABLE_MARKER).is_file().then(|| exe_dir.join("data"))
 }
 
-/// The data directory. `FILMCRAFT_DATA_DIR` overrides; a portable install ([`PORTABLE_MARKER`] next
-/// to the executable) uses `<exe dir>/data`; otherwise the per-user directory:
+/// The private data directory a hosted (Nightly) start selected before its first write.
+///
+/// One place, so every root derived from the data directory follows it: preferences, workspaces,
+/// presets and shortcuts, auto-save and recovery, the media cache and the model downloads, and
+/// (in the desktop app) the log folder. The launcher installs it once, before anything reads a
+/// data path; nothing else may replace it.
+static DATA_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Install the data directory for this process. Fails when one is already selected, so a second,
+/// different root cannot silently take over the session.
+pub fn set_data_dir_override(root: PathBuf) -> Result<(), String> {
+    if root.as_os_str().is_empty() || !root.is_absolute() {
+        return Err("the selected data root must be an absolute path".into());
+    }
+    DATA_DIR_OVERRIDE.set(root).map_err(|_| "the data directory was already selected".to_owned())
+}
+
+/// The data directory in use, when one is selected (see [`set_data_dir_override`]).
+pub fn data_dir_override() -> Option<&'static Path> {
+    DATA_DIR_OVERRIDE.get().map(PathBuf::as_path)
+}
+
+/// The data directory. A selected private root ([`set_data_dir_override`]) wins; otherwise
+/// `FILMCRAFT_DATA_DIR` overrides; a portable install ([`PORTABLE_MARKER`] next to the executable)
+/// uses `<exe dir>/data`; otherwise the per-user directory:
 /// macOS `~/Library/Application Support/FilmCraft`, Windows `%APPDATA%\FilmCraft`,
 /// elsewhere `$XDG_DATA_HOME/filmcraft` or `~/.local/share/filmcraft`.
 pub fn default_data_dir() -> Option<PathBuf> {
+    if let Some(root) = data_dir_override() {
+        return Some(root.to_path_buf());
+    }
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     if let Some(d) = env("FILMCRAFT_DATA_DIR") {
         return Some(d);
@@ -602,7 +628,8 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
 
 /// Load a candidate's snapshot.
 pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded, String> {
-    let b = fs::read(c.dir.join(SNAPSHOT)).map_err(|e| format!("{}: {e}", c.dir.display()))?;
+    let b = filmcraft_media::reader::read_regular_file_bounded(&c.dir.join(SNAPSHOT), filmcraft_format::MAX_PROJECT_BYTES)
+        .map_err(|e| format!("{}: {e}", c.dir.display()))?;
     filmcraft_format::decode(&b).map_err(|e| e.to_string())
 }
 
@@ -638,6 +665,8 @@ pub(crate) struct Sent {
 
 struct Snapshot {
     project: Arc<Project>,
+    /// The media pool the project's stored paths resolve through ([`crate::doc_path`]).
+    media: Arc<crate::MediaPool>,
     revision: u64,
     path: Option<String>,
 }
@@ -787,8 +816,8 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        self.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(&self, project: Arc<Project>, media: Arc<crate::MediaPool>, revision: u64, path: Option<String>) {
+        self.send(Msg::Dirty(Snapshot { project, media, revision, path }));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -1033,7 +1062,10 @@ impl Worker {
     fn write_journal(&mut self) -> Result<u64, String> {
         let Some(s) = &self.latest else { return Err("no unsaved recovery state to write".into()) };
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        // Recovery installs the snapshot with `meta.project_path` as its document: stored paths
+        // are relative to the project's own file (#3067).
+        let stored = crate::doc_path::project_for_document(&s.project, s.path.as_deref(), |p| s.media.follow(p));
+        let bytes = filmcraft_format::encode(&stored, false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
@@ -1086,11 +1118,15 @@ impl Worker {
             }
             (None, _) => (self.data_dir.join(names::AUTO_SAVE_DIR), s.project.name.clone()),
         };
+        let unix = unix_now();
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        // Stored paths are relative to the file holding them: the timestamped copy in the
+        // auto-save directory, and the project file when Auto Save also saves the project (#3067).
+        let dst = dir.join(names::auto_save_name(&name, unix, (self.local_offset)(unix)));
+        let stored = crate::doc_path::project_for_document(&s.project, dst.to_str(), |p| s.media.follow(p));
+        let bytes = filmcraft_format::encode(&stored, false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
-        let unix = unix_now();
         let r = names::write_auto_save(&dir, &name, unix, (self.local_offset)(unix), &bytes, self.prefs.max_versions as usize);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
@@ -1100,7 +1136,8 @@ impl Worker {
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
-                    match filmcraft_format::atomic_write(Path::new(p), &bytes) {
+                    let stored = crate::doc_path::project_for_document(&s.project, Some(p.as_str()), |x| s.media.follow(x));
+                    match filmcraft_format::atomic_write(Path::new(p), &filmcraft_format::encode(&stored, false)) {
                         Ok(()) => {
                             let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
                         }

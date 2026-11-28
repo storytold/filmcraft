@@ -433,7 +433,7 @@ fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, label: &str, current: &
     let mut chosen = None;
     let mut items: Vec<(String, Rect, String)> = Vec::new();
     // the current choice is cut to the box's width (the open list shows it whole)
-    let r = craft_ui::ComboBox::from_id_salt(("settings", key))
+    let r = crate::legacy_dropdown::Dropdown::from_id_salt(("settings", key))
         .selected_text(RichText::new(crate::i18n::t(&shown)).size(12.5))
         .width(width.min(ui.available_width()))
         .truncate()
@@ -978,7 +978,10 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         open(&mut app, "appearance").unwrap();
-        let mut h = Harness::builder().with_size(vec2(1400.0, 1000.0)).build_eframe(move |_| app);
+        let mut h = Harness::builder().with_size(vec2(1400.0, 1000.0)).build_eframe(move |cc| {
+            crate::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         h.run_steps(4);
         h.get_by_label("Add to favorites: Dark").click();
         h.run_steps(3);

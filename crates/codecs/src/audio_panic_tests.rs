@@ -172,6 +172,6 @@ fn a_latm_payload_length_beyond_the_frame_is_refused_before_it_is_reserved() {
     let mut frame = vec![0x56, 0xE0, 0x00];
     frame.extend([0xFF; 20]);
     frame.push(0x7F);
-    let mut last = Some(LatmConfig { asc: vec![0x11, 0x90], sample_rate: 48_000, channels: 2 });
+    let mut last = Some(LatmConfig::new(vec![0x11, 0x90], 48_000, 2));
     assert_eq!(latm_split(&frame, &mut last), None);
 }

@@ -752,6 +752,25 @@ pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit:
     Ok(())
 }
 
+/// `timeline.slip`'s edit: `clips` (a clip and its linked partners) slipped by one media delta,
+/// clamped together so picture and sound stay in sync (#529). The Slip Monitor runs this same
+/// function on a copy of the sequence ([`crate::slip::preview`]), so the drag shows what the
+/// release commits.
+pub(crate) fn slip_linked(q: &mut filmcraft_project::Sequence, ctx: &mut edit::EditCtx<'_>, clips: &[ClipId], delta: Tick) -> Result<()> {
+    let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, delta)).collect();
+    slip_together(q, ctx, &deltas)
+}
+
+/// The media delta of `timeline.slip` / `timeline.slipPreview`: `delta` ticks, else `deltaFrames`
+/// sequence frames, else none.
+fn slip_delta_p(s: &Session, p: &Value) -> Tick {
+    p.get("delta")
+        .and_then(Value::as_i64)
+        .map(Tick)
+        .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
+        .unwrap_or_default()
+}
+
 /// Clips an audio effect should land on: audio ids as given, plus the linked audio of any video
 /// clip in the list (so applying Parametric EQ to an A/V pair hits the sound).
 pub fn audio_effect_targets(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
@@ -1438,6 +1457,10 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
         ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
+        // A subclip shows its parent media's picture, so its anchor resolves
+        // against the parent's size: without this a clip placed from a subclip
+        // baked its anchor from the sequence frame instead (#4613 follow-up).
+        ItemKind::Subclip { .. } => s.project.source_size(item),
         _ => None,
     }
     .unwrap_or((1920, 1080));
@@ -3131,7 +3154,16 @@ fn build() -> Vec<CommandSpec> {
                 let comment = str_p(p, "comment").unwrap_or("").to_string();
                 let (color, custom_color) = marker_color_p(p, "markers.add")?.unwrap_or((Label::Green, None));
                 let author = marker_author_p(p, "markers.add")?.unwrap_or_default();
-                let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
+                let dur = match p.get("durationFrames").filter(|v| !v.is_null()) {
+                    None => Tick::ZERO,
+                    Some(value) => {
+                        let frames = value
+                            .as_i64()
+                            .filter(|f| (0..=10_000_000).contains(f))
+                            .ok_or_else(|| bad("markers.add", "durationFrames must be a whole number from 0 to 10000000"))?;
+                        s.sequence_rate().tick_of(frames)
+                    }
+                };
                 let id = s.edit_sequence("Add Marker", |q, ctx, _| {
                     let id = MarkerId(ctx.alloc());
                     q.markers.push(Marker {
@@ -3264,18 +3296,22 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Source monitor =================
-        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?,"clip":id?}"#, always, |s, p| {
+        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?,"clip":id?,"focus":bool?}"#, always, |s, p| {
             if let Some(clip) = clip_p(p, "clip") {
                 return crate::source_monitor::open_clip(s, clip);
             }
             let id = item_p(p, "item")
                 .or(s.state.project_selection.first().copied())
                 .ok_or_else(|| bad("source.open", "need `item` (or a Project panel selection)"))?;
-            s.project.item(id).ok_or_else(|| bad("source.open", "no such item"))?;
+            let source = s.project.item(id).ok_or_else(|| bad("source.open", "no such item"))?;
+            if matches!(source.kind, ItemKind::Script(_)) {
+                return Err(bad("source.open", "Scripts open in the Script panel, not the Source monitor"));
+            }
             s.state.source_item = Some(id);
             // a subclip opens at its In point
             s.state.source_playhead = crate::clip_ops::source_view(s, id).map(|v| v.start).unwrap_or_default();
-            s.events.push(crate::Event::OpenSource(id));
+            let event = if p.get("focus").and_then(Value::as_bool) == Some(false) { crate::Event::CueSource(id) } else { crate::Event::OpenSource(id) };
+            s.events.push(event);
             Ok(Value::Null)
         }),
         // Source panel: Close / Close All, for the clip shown and the list of recent clips (#313)
@@ -3554,19 +3590,15 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("timeline.slip", "Slip", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slip", "need `clip`"))?;
-            let d = p
-                .get("delta")
-                .and_then(Value::as_i64)
-                .map(Tick)
-                .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
-                .unwrap_or_default();
+            let d = slip_delta_p(s, p);
             let clips = with_links(s, &[c]);
-            s.edit_sequence("Slip", |q, ctx, _| {
-                // clamp across all linked partners, then slip them by the common delta
-                let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, d)).collect();
-                slip_together(q, ctx, &deltas)
-            })?;
+            s.edit_sequence("Slip", |q, ctx, _| slip_linked(q, ctx, &clips, d))?;
             Ok(Value::Null)
+        }),
+        // What `timeline.slip` with the same params would do, without editing: the Slip Monitor
+        query!("timeline.slipPreview", "Slip Preview", r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, |s, p| {
+            let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slipPreview", "need `clip`"))?;
+            crate::slip::preview(s, c, slip_delta_p(s, p))
         }),
         cmd!("timeline.slide", "Slide", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slide", "need `clip`"))?;
@@ -4106,6 +4138,28 @@ fn build() -> Vec<CommandSpec> {
                     pr.items.remove(i);
                     pr.root.remove_item(*i);
                 }
+                let invalid_take_sources: std::collections::HashSet<ItemId> = pr
+                    .items
+                    .values()
+                    .filter_map(filmcraft_project::ProjectItem::as_script)
+                    .flat_map(|doc| doc.slates.iter().flat_map(|slate| &slate.takes))
+                    .filter_map(|take| take.source)
+                    .filter(|source| {
+                        !pr.item(*source).is_some_and(|item| match &item.kind {
+                            ItemKind::Media(_) => true,
+                            ItemKind::Subclip { .. } => pr.resolve_media(*source).is_some(),
+                            ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                            _ => false,
+                        })
+                    })
+                    .collect();
+                for it in pr.items.values_mut() {
+                    if let Some(doc) = it.as_script_mut() {
+                        for source in gone.iter().chain(&offlined).chain(&retained_subclips).chain(&invalid_take_sources) {
+                            doc.unbind_source(*source);
+                        }
+                    }
+                }
                 let seq_ids: Vec<ItemId> = pr.sequences().map(|q| q.id).collect();
                 for sid in seq_ids {
                     if let Some(q) = pr.sequence_mut(sid) {
@@ -4230,6 +4284,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
     v.extend(crate::paste_media::commands());
+    v.extend(crate::script_commands::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);
@@ -4313,6 +4368,15 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
+        // the parameter's hard range, as `effects.setParam` checks it (a mask's own parameters have no definition)
+        let range = if p.get("mask").is_none_or(Value::is_null) {
+            e.def().and_then(|d| d.param(&pid)).and_then(|d| match d.kind {
+                filmcraft_project::ParamKind::Float { min, max, .. } => Some((min, max)),
+                _ => None,
+            })
+        } else {
+            None
+        };
         let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
         match op {
             "add" => {
@@ -4320,6 +4384,17 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 let added = !prm.remove_keyframe_at(mt_now);
                 if added {
                     prm.add_keyframe(mt_now);
+                    if let Some(v) = p.get("value")
+                        && let Some(k) = prm.keyframes.iter_mut().find(|k| k.time == mt_now)
+                    {
+                        let value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
+                        if let (Some((min, max)), ParamValue::Float(x)) = (range, &value)
+                            && !(min..=max).contains(x)
+                        {
+                            return Err(bad("keyframe", format!("`{pid}` must be between {min} and {max}, got {x}")));
+                        }
+                        k.value = value;
+                    }
                 }
                 reply = json!({"added": added, "mediaTime": mt_now.0});
             }
@@ -5335,12 +5410,15 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
-    let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
+    // media paths are stored relative to the file when they can be (#3067): the session's project
+    // keeps its own paths
+    let stored = crate::doc_path::project_for_document(&s.project, Some(path), |p| s.media.follow(p));
+    let bytes = filmcraft_format::encode_with_view(&stored, Some(&view), false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
         if s.services.read_file(&b).is_err()
-            && let Ok(old) = s.services.read_file(path)
+            && let Ok(old) = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES)
         {
             s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
             backup = Some(b);
@@ -5363,13 +5441,19 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    // Stored paths become the files they name at load; what cannot be followed keeps its stored
+    // path and the pool refuses it (#3067).
+    crate::doc_path::absolutize(&mut proj, path.as_deref());
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.media.add_stored(&proj, path.as_deref());
+    // Projects saved before stills applied EXIF Orientation keep a portrait still's
+    // unturned size and the anchors baked from it (#4613).
+    crate::still_migration::migrate_legacy_still_sizes(&mut proj, &s.media, &*s.services);
     s.project = std::sync::Arc::new(proj);
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -5393,7 +5477,7 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
 }
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
-    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);

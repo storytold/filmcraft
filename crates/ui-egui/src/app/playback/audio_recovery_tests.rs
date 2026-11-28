@@ -367,6 +367,7 @@ fn only_a_running_transport_has_something_to_stop() {
         punch_out: None,
         format: filmcraft_engine::voiceover::InputFormat { sample_rate: 48_000, channels: 1 },
         channel: 0,
+        epoch: app.session.document_epoch,
     });
     assert!(app.transport_running(), "a voice-over take runs one");
     app.session.voiceover.rec = None;

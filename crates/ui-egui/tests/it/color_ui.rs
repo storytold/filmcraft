@@ -6,123 +6,16 @@
 
 #![allow(dead_code)]
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, with_snapshots};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn element(&mut self, id: &str) -> Option<[f32; 4]> {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array()?.iter().find(|e| e["id"] == id).map(|e| {
-            let r = &e["rect"];
-            [r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32]
-        })
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    /// Offscreen render of the window (or the bounding box of the elements under `prefix`).
-    fn snapshot(&mut self, name: &str, prefix: Option<&str>) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        let crop = prefix.map(|p| {
-            let v = self.ok("ui.elements", json!({"prefix": p}));
-            let mut bb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-            for e in v.as_array().unwrap() {
-                let r = &e["rect"];
-                let (x, y, w, h) = (r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32);
-                bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x + w), bb[3].max(y + h)];
-            }
-            bb
-        });
-        self.frames(2);
-        let img = match self.harness.render() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("snapshot {name} skipped: {e}");
-                return;
-            }
-        };
-        let ppp = img.width() as f32 / 1600.0;
-        let img = match crop {
-            Some(bb) => {
-                let x0 = ((bb[0] - 24.0) * ppp).max(0.0) as u32;
-                let y0 = ((bb[1] - 30.0) * ppp).max(0.0) as u32;
-                let x1 = (((bb[2] + 16.0) * ppp) as u32).min(img.width());
-                let y1 = (((bb[3] + 46.0) * ppp) as u32).min(img.height());
-                image::imageops::crop_imm(&img, x0, y0, x1 - x0, y1 - y0).to_image()
-            }
-            None => img,
-        };
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        img.save(&path).unwrap();
-        eprintln!("snapshot: {}", path.display());
+        Self::open(demo_session(), with_snapshots(builder()))
     }
 }
 
@@ -287,8 +180,10 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     assert_eq!(st["workingSpace"], "rec2100-pq");
     // the scopes switch to the HDR waveform (cd/m², PQ scale)
     d.ok("ui.panel.show", json!({"panel": "LumetriScopes"}));
-    d.frames(6);
-    assert!(d.ids("scopes.").iter().any(|i| i == "scopes.hdrWaveform"), "{:?}", d.ids("scopes."));
+    // (the HDR render runs on the scope worker; the waveform appears when it is done)
+    d.wait_for("scopes.hdrWaveform");
+    // the program slot's own result, so a texture job on the worker cannot satisfy it
+    assert_eq!(filmcraft_ui_egui::panels::scopes::worker_signal_pq(d.app(), "program"), Some(true), "the HDR scope render ran on the scope worker");
     d.snapshot("color-hdr-scopes", None);
     // undo the working space and the interpretation
     d.exec("edit.undo", json!({}));
@@ -326,8 +221,16 @@ fn apply_match_from_the_color_wheels_section() {
 }
 
 impl Driver {
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
+    /// Run frames until `id` is on screen (work done off the UI pass, such as the scopes).
+    fn wait_for(&mut self, id: &str) {
+        for _ in 0..400 {
+            if self.ids(id).iter().any(|i| i == id) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            self.frames(1);
+        }
+        panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap_or(id)));
     }
 }
 

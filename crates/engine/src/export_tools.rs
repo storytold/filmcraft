@@ -491,11 +491,17 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     let range = filmcraft_export::export_range(project, seq, settings).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut doc = filmcraft_captions::document_from_track(track, range.start);
     doc.cues.retain_mut(|cue| {
-        cue.end = cue.end.min(range.duration);
+        cue.end = cue.end.min(filmcraft_captions::Tick(range.duration.0));
         cue.start < cue.end
     });
-    let bytes =
-        filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
+    let bytes = filmcraft_captions::write(
+        &doc,
+        format,
+        filmcraft_captions::write_options(
+            q.settings.drop_frame,
+            Some(filmcraft_captions::FrameRate { num: q.settings.frame_rate.num, den: q.settings.frame_rate.den }),
+        ),
+    );
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -532,7 +538,8 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         return Ok(id);
     }
     let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+        let r = filmcraft_export::on_own_threads(settings.max_threads, || filmcraft_export::export(&project, seq, &settings, &provider, &prog))
+            .map_err(|e| e.to_string());
         *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -565,6 +572,9 @@ pub(crate) fn guard_job(
             progress.finished.store(true, Ordering::Relaxed);
             *result.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(msg));
         }
+        // the parts of a job (preview segments, proxies) share the renderers they kept; the job
+        // is over, so free them (GPU devices and memory) instead of holding them idle
+        filmcraft_export::release_idle_renderers();
     }
 }
 
@@ -725,6 +735,9 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "job": it.job,
         "error": it.error,
         "offlineMedia": it.job.map_or_else(|| json!([]), |j| offline_media_json(s, j)),
+        // the finished export's report, as `file.exportMedia` and `jobs.list` give it: the encoder
+        // that ran and its warnings (`null` until it is done, and when it failed)
+        "result": job.and_then(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).clone()).and_then(std::result::Result::ok),
     })
 }
 

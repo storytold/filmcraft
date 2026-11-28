@@ -88,7 +88,7 @@ FilmCraft is a professional non-linear editor: familiar panels, workspaces, tool
 **A timeline you already know.** Source and Program monitors, bins with thumbnails, a multi-track timeline with patch and target buttons, sync locks and linked selection. The Editing, Assembly, Color, Effects and Audio workspaces are all there, and every panel docks wherever you want it.
 
 - **Three-point editing.** Mark In and Out in the Source monitor, then insert (`,`) or overwrite (`.`) onto the patched tracks. Lift (`;`) and extract (`'`) take ranges back out.
-- **Every trim.** Ripple, roll, slip, slide, rate stretch and razor tools. Trim mode selects edit points as ripple, roll or trim, nudges them a frame at a time (`⌥←` `⌥→`, ×5 with `⇧`), toggles the trim type with `⌃T` and extends them to the playhead with `E`. `Q` and `W` ripple-trim to the playhead. The **Trim Monitor** shows both sides of the edit, and **dynamic trimming** trims live while it plays: `L` forward, `J` back, `K` to stop and commit as one undo step.
+- **Every trim.** Ripple, roll, slip, slide, rate stretch and razor tools. Trim mode selects edit points as ripple, roll or trim, nudges them a frame at a time (`⌥←` `⌥→`, ×5 with `⇧`), toggles the trim type with `⌃T` and extends them to the playhead with `E`. `Q` and `W` ripple-trim to the playhead. The **Trim Monitor** shows both sides of the edit, the **Slip Monitor** shows the frames around a slip as you drag it (previous clip's Out, the new In and Out, next clip's In), and **dynamic trimming** trims live while it plays: `L` forward, `J` back, `K` to stop and commit as one undo step.
 - **Exact time.** Every edit is computed on integer ticks: 254,016,000,000 per second, which divides evenly by every common frame rate and sample rate. 23.976, 29.97 drop-frame and 59.94 are exact, not approximate.
 - **The details pros rely on.** Markers with colours, names and durations; export sequence review notes with **Markers ▸ Export Markers as CSV…**; add edit (`⌘K`) on one or all tracks; nesting; copy, paste and paste insert; ripple delete and close gap; snapping; unlimited undo with a History panel.
 - **Your keys.** A Keyboard Shortcuts editor (`⌥⌘K`) with a drawn keyboard, panel-specific shortcuts, conflict warnings and presets for FilmCraft and standard NLE key layouts.
@@ -259,7 +259,7 @@ New to editing in FilmCraft? Follow [Getting started: video fades and audio volu
 
 ```sh
 cargo run --release -p filmcraft                           # the desktop app, with a demo project
-cargo run --release -p filmcraft -- --control 9876         # plus the JSON-lines control server
+cargo run --release -p filmcraft -- --control 9886         # plus the JSON-lines control server
 cargo run --release -p filmcraft-cli -- commands           # list every engine command
 cargo run --release -p filmcraft-cli -- mcp                # MCP server (headless)
 ```
@@ -315,7 +315,7 @@ A layered Cargo workspace:
 
 | Layer | Crates |
 |---|---|
-| Codecs and containers | `h264`, `h264enc`, `hevc`, `vp9`, `prores`, `aac`, `opus`, `isobmff`, `matroska`, `avi`, `bitstream` |
+| Codecs and containers | `h264`, `hevc`, `vp9`, `prores`, `aac`, `opus`, `isobmff`, `matroska`, `avi`, `bitstream` |
 | Foundations | `time`, `geom`, `color`, `frame`, `media`, `text`, `project`, `audio-dsp` |
 | Editing and interchange | `edit`, `codecs`, `captions`, `format` (project files), `interchange` |
 | Rendering and output | `render`, `gpu`, `export` |

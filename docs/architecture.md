@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · apv · dng · aac · ac3 · mpa · opus
+     codecs/containers: isobmff · matroska · cfb · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 decoder and encoder · hevc · vp9 · av1 · mpeg2 · apv · prores decoder and encoder) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -37,28 +37,18 @@ and `filmcraft-cli`.
 
 | Crate | Layer | Purpose |
 |---|---|---|
-| `time` | L0 | `Tick`, `FrameRate`, `TimeRange`, timecode parse/format (NDF/DF, frames, feet+frames, samples) |
+| `time` | L0 | `Tick`, `FrameRate`, `TimeRange`, timecode parse/format (NDF/DF, frames, feet+frames, samples): a re-export of `craft_timeline::time` from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/timeline), where its code and tests live |
 | `geom` | L0 | `Vec2`, `Rect`, `Affine`, Motion-transform composition |
 | `color` | L0 | colour spaces, transfer functions, YUV↔RGB matrices, LUTs |
 | `bitstream` | L0 | bit reader/writer, Exp-Golomb, emulation prevention |
 | `isobmff` | L0 | MP4/MOV demux and mux |
 | `matroska` | L0 | MKV/WebM demux |
-| `mxf` | L0 | MXF demux and mux (SMPTE ST 377-1): OP1a / OP-Atom, index tables, AVC / VC-3 / ProRes / MPEG-2 identification, PCM / AES3 sound, timecode; writer for OP1a / OP-Atom with VC-3, ProRes, AVC and PCM ([README](../crates/mxf/README.md)) |
-| `cfb` | L0 | Compound File Binary ([MS-CFB] structured storage) reader and writer, the container of AAF ([README](../crates/cfb/README.md)) |
-| `mpegts` | L0 | MPEG-2 Systems demux (H.222.0): transport streams (188 / 192-byte BDAV / 204), program streams (MPEG-2 / MPEG-1, VOB, MOD), PSI, PES, PTS / PCR, access-unit index built on open ([README](../crates/mpegts/README.md)) |
-| `ogg` | L0 | Ogg demux (RFC 3533), Ogg Opus timing (RFC 7845 granules, pre-skip, end trimming), Vorbis headers |
-| `h264`, `h264enc` | L0 | H.264 decoder; H.264 encoder |
-| `hevc` | L0 | H.265 Main/Main 10 decoder |
-| `prores` | L0 | ProRes decoder and encoder |
+| `cfb` | L0 | Compatibility facade over shared `craft-cfb`; AAF container parsing/writing lives in craft-libs ([README](../crates/cfb/README.md)) |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
-| `apv` | L0 | Advanced Professional Video (IETF RFC 9924) decoder and encoder ([README](../crates/apv/README.md)) |
 | `dng` | L0 | DNG / CinemaDNG camera RAW decoder: TIFF container, uncompressed and lossless JPEG raw data, DNG processing to linear Rec. 709 ([README](../crates/dng/README.md)) |
-| `av1` | L0 | AV1 decoder (Main profile; bit-exact with libdav1d; see its README for the stage table) |
-| `mpeg2v` | L0 | MPEG-2 video (Main / 4:2:2 profile; frame and field pictures, dual prime) and MPEG-1 video decoder ([README](../crates/mpeg2v/README.md)) |
-| `aac` | L0 | AAC-LC decoder and encoder |
-| `mp3enc` | L0 | MPEG-1/2 Audio Layer III (MP3) encoder: CBR, mono / stereo / joint stereo, bit reservoir ([README](../crates/mp3enc/README.md)) |
-| `ac3` | L0 | AC-3 (ATSC A/52) decoder ([README](../crates/ac3/README.md)) |
-| `mpa` | L0 | MPEG-1/2 Audio Layer I and II (MP1 / MP2) decoder ([README](../crates/mpa/README.md)) |
+| `craft-audio` | shared | the audio codecs, from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/audio): AAC-LC decoder and encoder, AC-3 / E-AC-3 decoder, MPEG-1/2 Audio Layer I and II decoder, Opus decoder, FLAC encoder, MPEG-1/2 Layer III (MP3) encoder. They moved there from this repository; fixes go to craft-libs |
+| `craft-media` | shared | containers from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/media): ISO BMFF, Matroska, AVI / OpenDML, MPEG-2 transport and program streams, MXF (OP1a / OP-Atom demux and writer), and the Ogg demuxer with Ogg Opus timing and Vorbis headers |
+| `craft-video` | shared | video codecs from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/video): H.264, H.265 (Main / Main 10), VP9, AV1 and MPEG-2 / MPEG-1 decoders; APV decoder and encoder; ProRes decoder and encoder. They moved there from this repository; fixes, their READMEs and their conformance tests are in craft-libs |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
@@ -79,7 +69,7 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
-| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
+| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take; lowers the priority of background job threads (macOS: default QoS at relative priority −15, [ADR 0002](adr/0002-background-thread-priority.md)). The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
@@ -289,7 +279,8 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   exports are otherwise byte-identical from run to run. NVENC (`platform::nvenc`, the driver's
   `nvEncodeAPI64.dll` / `libnvidia-encode.so.1` loaded at run time) then takes RGBA frames, converted to 4:2:0 by the software
   encoder's own conversion, and produces the H.264 samples and `avcC` of an MP4 / MOV. It declines
-  (the software encoder runs, counted in `export.hardware.declined`) two-pass VBR, HDR, MXF,
+  (the software encoder runs, counted in `export.hardware.declined`, and the export's `Report` names
+  the encoder in `encoder` and says why in `warnings`) two-pass VBR, HDR, MXF,
   interlaced output, sizes outside NVENC's limits, and systems without an NVIDIA GPU or driver.
   A failure during an export ends it with an error: the software encoder cannot take over a hardware
   stream. The same NVENC session also encodes H.265 (HEVC Main 8-bit 4:2:0 SDR, or Main 10 HDR: PQ / HLG,
@@ -359,7 +350,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
   replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more
   than the workers can render in real time (CPU effects), it starts only frames that can still be
-  on time and spaces them evenly (`playback_plan`). When decoding is what falls behind, each job
+  on time and spaces them evenly (`playback_plan`). When one decoder cannot produce the frame rate (a
+  slow 4K source; `source_cannot_keep_up`, estimated from the source time of the recent jobs that
+  fetched from the source being played), playback
+  asks for only the next `SOURCE_BOUND_AHEAD` (3) frames, because the decoder is the serialized
+  stage and a longer queue only adds latency, and the monitor shows the newest picture the source
+  has (`plan_lookback`: behind the playhead in the play direction by the measured picture latency,
+  at most one second) instead of
+  freezing on one. When decoding is what falls behind, each job
   tells its sources which frames are already late (`filmcraft_media::cancel::with_catch_up`: the
   playhead's distance, two seconds for a scrubbed-to frame), and the GOP cache skips
   non-reference pictures of late frames on the way (`VideoDecoder::is_disposable`, H.264
@@ -371,7 +369,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   requests only (a paused frame, render or export decodes them again exactly), and draft plans
   hand the GPU box-decimated Y'CbCr planes at the drawn size. `perf.stats` reports the counters.
   GPU plans carry their texels already converted for upload (`filmcraft_gpu::prepare`), so the UI
-  thread only copies them.
+  thread only copies them. Where the adapter has 16-bit normalized textures (Vulkan, Metal,
+  DX12; `filmcraft_gpu::optional_features`), 10- and 12-bit planes are left as their codes
+  (`prepare_with`) and upload as `R16Unorm`; elsewhere (WebGPU) they are converted to half floats.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
   Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline
@@ -611,7 +611,11 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
   values above SDR white are never sent to the display. The scopes of an HDR sequence show the
-  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
+  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope). The Video Scopes
+  panel computes its signal and images on the UI's scope worker (`crates/ui-egui/src/scope_worker.rs`),
+  never in the UI pass: the newest request per scope wins and the last result stays on screen until
+  the next lands. An HDR scope render (the frame rendered again, in working space) starts at most
+  every 100 ms while playing.
 - **LUTs.** Color Grading Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
@@ -682,13 +686,13 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 
 | Format | Encoder | Container |
 |---|---|---|
-| `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `filmcraft-aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
-| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
-| `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
+| `h264` | `craft_video::h264::Encoder` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `craft_audio::aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
+| `prores` | `craft_video::prores` (Proxy / LT / 422 / HQ) | MOV |
+| `dnxhr` | `craft-video` `dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
-| `aac` | `filmcraft-aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
-| `mp3` | `filmcraft-mp3enc` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
-| `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
+| `aac` | `craft_audio::aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
+| `mp3` | `craft_audio::mp3` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
+| `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`craft_media::mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
 | `mxf-opatom` | as `mxf-op1a` | Avid-style MXF OP-Atom: clip-wrapped picture at `path`, one mono PCM file per channel (`<stem>_A1.mxf` …, `Report::extra_files`) |
 | `png`, `tiff`, `bmp`, `jpg` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
 | `tga`, `dpx`, `exr` | built in (`raster.rs`: uncompressed Targa 24/32-bit; DPX 10-bit RGB, SMPTE ST 268; OpenEXR half-float linear RGB(A), uncompressed scan lines) | numbered stills, as above |

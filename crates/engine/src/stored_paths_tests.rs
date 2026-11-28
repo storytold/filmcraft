@@ -115,7 +115,8 @@ fn stored_media_paths_open_only_on_this_computer_or_beside_the_project() {
     }
     let rel = items[refused];
     assert_eq!(t.media.offline_status(rel), None, "a path beside the project opens");
-    assert!(t.media_stamps.contains_key("b.mov"));
+    // a stored path opens as the file it resolves to, and the watch stamps that file
+    assert!(t.media_stamps.contains_key(beside.to_string_lossy().as_ref()));
 
     // linking a file in this session opens it, even at the path the project stored
     if let Some(path) = slashed(&a) {

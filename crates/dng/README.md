@@ -112,7 +112,7 @@ JPEG XL DNG, deflate / floating-point DNG (HDR merges), planar raw data, colour
 filters other than red / green / blue (CMY, RGBE), non-rectangular CFA layouts, DefaultScale and
 BestQualityScale (non-square pixels are shown square), DNG 1.6 IlluminantData for illuminant 255
 (calibration 1 is used) and lossless JPEG restart intervals that split a line. This crate reads
-DNG frames only; MXF-wrapped CinemaDNG is unwrapped by the MXF reader (`crates/mxf`, #1078),
+DNG frames only; MXF-wrapped CinemaDNG is unwrapped by the MXF reader (`craft_media::mxf`, #1078),
 which hands the frames to it.
 
 Known deviation: the rescale step divides by WhiteLevel minus each pixel's own black level;

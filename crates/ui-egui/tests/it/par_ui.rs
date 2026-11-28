@@ -6,55 +6,17 @@
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes `par-*.png`.
 
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, builder, driver, shots_dir, with_shots};
 use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemId, ItemKind};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
+        Self::open(session, with_shots(builder()))
     }
     fn exec(&mut self, command: &str, params: Value) -> Value {
         let r = self.ok("engine.execute", json!({"command": command, "params": params}));
@@ -62,7 +24,7 @@ impl Driver {
         r
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
+        let Some(dir) = shots_dir() else { return };
         // give the frame workers time to deliver the pictures
         for _ in 0..8 {
             self.frames(3);

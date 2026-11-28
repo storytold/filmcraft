@@ -48,24 +48,30 @@ pub mod crash;
 pub mod credits;
 pub mod dock;
 mod dock_ui;
-pub use dock_ui::area_id as dock_area_id;
+pub mod exit_hook;
+mod legacy_dropdown;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
 
 pub mod frames;
+pub mod framework;
 pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
+pub mod ime_composer;
 mod ime_reset;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
+pub mod notices;
+pub mod os_window;
 pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
 mod rtl;
+pub mod scope_worker;
 pub mod scrub;
 mod shuttle;
 pub mod source_playback;
@@ -75,9 +81,9 @@ mod theme_favorites;
 pub mod updates_ui;
 pub mod widgets;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 
 use egui::ime_context::ImeTarget;
 use egui::{TextureHandle, TextureOptions};
@@ -85,7 +91,7 @@ use filmcraft_engine::{Services, Session};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-pub use control::ControlRequest;
+pub use control::{ControlRequest, ControlStatus};
 use dock::{LayoutExt as _, PanelKind};
 use frames::{FrameKey, FrameServer, Target};
 use native_dialogs::FileDialog;
@@ -102,7 +108,7 @@ use audio::shuttle_mix_rate;
 pub use audio::{AUDIO_RETRY_S, AUDIO_STALL_S, playback_mix};
 pub use gpu::{gpu_compositor_unsupported, software_rasterizer};
 pub use hooks::{AudioDevices, AudioOut, ClipboardMedia, HostHooks, RelinkHint, SystemThemeFn};
-pub(crate) use raw_input::rewrite_native_window_input;
+pub(crate) use raw_input::drop_native_input;
 
 pub use ime_reset::install_ime_reset_callbacks;
 pub(crate) use native_dialogs::EXPORT_SAVE_DIALOGS;
@@ -190,9 +196,17 @@ pub(crate) enum ImeComposition {
 /// `control_server::DisabledWhy` onto this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlNotice {
-    /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed. (A bind failure is only logged until
-    /// #3318 reworks port-collision reporting.)
+    /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed.
     Token,
+    /// The port could not be bound — usually another program is already listening on it (#3313).
+    Bind { port: u16, error: String },
+}
+
+/// A file drop claimed by a native Timeline viewport, ready for the next root input pass.
+struct NativeTimelineDrop {
+    paths: Vec<String>,
+    point: egui::Pos2,
+    viewport: egui::ViewportId,
 }
 
 pub struct FilmcraftApp {
@@ -200,6 +214,8 @@ pub struct FilmcraftApp {
     pub ui: UiState,
     pub tokens: Tokens,
     pub frames: Arc<FrameServer>,
+    /// Video Scopes signals and images, computed off the UI pass.
+    pub scope_worker: scope_worker::ScopeWorker,
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
@@ -232,7 +248,7 @@ pub struct FilmcraftApp {
     ime_composition_viewport: Option<egui::ViewportId>,
     /// The input method at the Program monitor's text caret: event order, the keys it uses, the
     /// marked text drawn on the video until it commits, and the published IME descriptor.
-    pub(crate) ime_composer: craft_ui::ime::Composer,
+    pub(crate) ime_composer: crate::ime_composer::Composer,
     /// The edit target `ime_composer` was made for; another target gets a new composer, so a
     /// new IME context.
     pub(crate) ime_composer_target: Option<ImeTarget>,
@@ -254,10 +270,27 @@ pub struct FilmcraftApp {
     /// `FILMCRAFT_CONTROL_TOKEN`, a port that cannot be bound): shown whenever the status bar is
     /// idle (#3436). It is also in `filmcraft.log`; `None` when the server is running.
     pub(crate) control_notice: Option<ControlNotice>,
-    /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
-    pub(crate) pending_panel_raise: Option<PanelKind>,
+    /// How the `--control` listener came up (set by the host): `ui.inspect` reports it under
+    /// `control`, so a port that failed to bind is visible to agents, not just stderr (#3313).
+    pub control_status: Option<ControlStatus>,
+    /// The workspace the dock area shows: `ui.dock` stays the saved source of truth, and this
+    /// follows it (`dock_ui::sync_live`). One `Arc` across frames, so an idle pass reads no spec.
+    pub(crate) dock_live: Arc<dock::Workspace>,
+    /// The panels' specs the dock area reads (titles, window kinds).
+    pub(crate) dock_specs: craft_ui::contract::Tracked<dock_ui::FilmSpecs>,
+    /// The OS windows the floating windows showed in last pass, by a panel of each.
+    pub(crate) dock_windows: Vec<(PanelKind, egui::ViewportId)>,
+    /// Where the dock area floated panels last pass, for docking commands run outside it.
+    pub(crate) dock_float_space: Option<craft_ui::docking::FloatSpace<PanelKind>>,
+    /// The panel the app brought forward since the last dock pass (the last applied Activate): the
+    /// next pass asks the dock area to focus it once, which raises its floating window.
+    pub(crate) dock_focus: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
+    /// Set while a control-channel `engine.execute` runs: a command whose menu form opens a
+    /// dialog to ask for parameters runs the engine command instead (an agent cannot see or
+    /// close a dialog; `ui.menu.invoke` keeps the menu behaviour, #1540).
+    pub(crate) engine_call: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
     pub(crate) native_window_focused: Option<bool>,
     /// Modifiers owned by an in-flight control gesture, carried between its input frames.
@@ -296,15 +329,6 @@ pub struct FilmcraftApp {
     ui_clock_offset: Option<f64>,
     #[cfg(test)]
     test_now: Option<f64>,
-    /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
-    /// translated too even if Control is let go mid-click. AppKit delivers Control+Click to the
-    /// view as a *primary* press with the Control modifier (`rightMouseDown:` only fires for a
-    /// right button or two-finger click), so the app does the platform's translation itself.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    mac_ctrl_click_armed: bool,
-    /// [`Self::mac_ctrl_click_armed`] for each dock panel's own OS window, shared with the dock
-    /// area's input hook.
-    pub(crate) native_ctrl_click_armed: Arc<Mutex<HashMap<egui::ViewportId, bool>>>,
     /// The mouse press in progress (its start time) and the undo history when it began, for Escape
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,
@@ -338,6 +362,9 @@ pub struct FilmcraftApp {
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
     /// button back to the default mode (see [`graphics_notice`]).
     pub graphics_notice: Option<graphics_notice::GraphicsNotice>,
+    /// A plain notice the host posts (Nightly session health), shown above the status bar
+    /// until dismissed (see [`notices`]). Not a modal: a Launcher start has nobody to dismiss one.
+    pub notice: Option<notices::Notice>,
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,
@@ -358,9 +385,12 @@ pub struct FilmcraftApp {
     clip_mismatch: Option<(String, serde_json::Value)>,
     /// Files being dragged over a window from the OS (count, pointer, viewport): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2, egui::ViewportId)>,
-    /// Files dragged over or dropped on dock panels in their own OS windows last frame; the
-    /// dock area reports them after the panels have drawn, so they are imported next frame.
-    window_files: Vec<craft_ui::docking::WindowFiles<PanelKind>>,
+    /// Files dropped on the dock's floating windows last frame; the dock area reports them after
+    /// the panels have drawn, so they are imported next frame.
+    window_files: Vec<craft_ui::runtime::drag::OsFile>,
+    /// Files the native Timeline accepted in its own viewport. Import only in root input
+    /// handling, before any dock body draws: an import can open a different project.
+    native_timeline_drops: VecDeque<NativeTimelineDrop>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,

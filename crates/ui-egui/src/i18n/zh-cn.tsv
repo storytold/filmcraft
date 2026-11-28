@@ -607,6 +607,11 @@
 	(gap)	（间隙）
 	Out: {name}	出点：{name}
 	In: {name}	入点：{name}
+	Previous: {name}	上一个：{name}
+	Next: {name}	下一个：{name}
+	Slip: {offset} frame	错动：{offset} 帧
+	Slip: {offset} frames	错动：{offset} 帧
+	at the media limit	已到媒体边界
 	Play Around Edit (Space loops, Shift+K once)	围绕编辑点播放（空格循环，Shift+K 触发一次）
 	Trim Backward Many	大幅向后修剪
 	Trim Backward	向后修剪
@@ -3611,6 +3616,7 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Set Playhead	设置播放头
 # Markers: the Edit Marker dialog (#2416).
 	Edit Marker…	编辑标记…
 	In:	入点：
