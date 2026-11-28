@@ -274,6 +274,20 @@ fn exec_save_as_then_reopen() {
 }
 
 #[test]
+fn exec_does_not_print_a_result_when_the_requested_save_fails() {
+    let dir = private_dir("fc-cli-save-error");
+    let blocker = dir.join("not-a-directory");
+    std::fs::write(&blocker, b"older file").unwrap();
+    let project = blocker.join("out.fcproj");
+    let out = cli(&["--demo", "--save-as", project.to_str().unwrap(), "exec", "file.newBin", "name=CLI Selects"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("saving:"));
+    assert!(out.stdout.is_empty());
+    assert_eq!(std::fs::read(&blocker).unwrap(), b"older file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn run_keep_going_reports_failures() {
     let mut child = crate::filmcraft_command().args(["--demo", "--keep-going", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"{\"id\":\"no.such\"}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"x\"}}\n").unwrap();

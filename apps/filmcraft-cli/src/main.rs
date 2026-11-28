@@ -418,11 +418,12 @@ async fn cli_exec(a: &Args) {
     let params = a.params_from(2).unwrap_or_else(|e| usage(e));
     let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
-    match b.exec(id, params).await {
-        Ok(v) => print(a, &v),
+    let result = match b.exec(id, params).await {
+        Ok(v) => v,
         Err(e) => fail(format!("{id}: {e}")),
-    }
+    };
     b.finish(a).await;
+    print(a, &result);
 }
 
 async fn cli_run(a: &Args) {
@@ -475,11 +476,12 @@ async fn cli_import(a: &Args) {
     }
     let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
-    match b.exec("file.import", json!({"paths": paths})).await {
-        Ok(v) => print(a, &v),
+    let result = match b.exec("file.import", json!({"paths": paths})).await {
+        Ok(v) => v,
         Err(e) => fail(format!("import: {e}")),
-    }
+    };
     b.finish(a).await;
+    print(a, &result);
 }
 
 async fn cli_export(a: &Args) {
