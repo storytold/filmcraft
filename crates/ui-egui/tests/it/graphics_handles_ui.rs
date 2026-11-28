@@ -2049,3 +2049,42 @@ fn shift_click_selects_several_layers_and_a_drag_moves_them_together() {
     assert!(moved(0).0 < -20.0 && near(moved(0), moved(2)), "{before:?} → {after:?}");
     assert_eq!(after[1], before[1]);
 }
+
+/// Double-clicking a text layer row in the Properties panel selects it and enters Program monitor
+/// text editing with all text selected, so typing replaces the layer's text.
+#[test]
+fn double_clicking_text_layer_in_properties_starts_editing() {
+    let mut d = Driver::new();
+    let (clip, _) = d.point_text();
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(4);
+    let r = d.rect("graphics.layers.0");
+    d.ok("ui.click", json!({"x": r[0] + r[2] * 0.4, "y": r[1] + r[3] / 2.0, "count": 2}));
+    d.frames(4);
+    let edit = d.harness.state().ui.gfx_edit.as_ref().map(|e| (e.clip, e.layer, e.anchor, e.caret));
+    assert_eq!(edit, Some((clip, 0, 0, "Title".len())), "double-clicking a text layer in Properties selects all text for editing");
+    d.ok("ui.type", json!({"text": "Updated"}));
+    d.frames(3);
+    assert_eq!(layer_texts(&mut d, clip), vec!["Updated".to_string()]);
+}
+
+/// Double-clicking a text layer in Properties reveals the Program monitor if it was closed so
+/// editing can proceed immediately.
+#[test]
+fn double_clicking_text_layer_in_properties_reveals_closed_program_panel() {
+    let mut d = Driver::new();
+    let (clip, _) = d.point_text();
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.ok("ui.panel.close", json!({"panel": "Program"}));
+    d.frames(4);
+    assert!(!d.harness.state().ui.dock.contains(&filmcraft_ui_egui::dock::PanelKind::Program));
+    let r = d.rect("graphics.layers.0");
+    d.ok("ui.click", json!({"x": r[0] + r[2] * 0.4, "y": r[1] + r[3] / 2.0, "count": 2}));
+    d.frames(4);
+    assert!(d.harness.state().ui.dock.contains(&filmcraft_ui_egui::dock::PanelKind::Program));
+    let edit = d.harness.state().ui.gfx_edit.as_ref().map(|e| (e.clip, e.layer, e.anchor, e.caret));
+    assert_eq!(edit, Some((clip, 0, 0, "Title".len())));
+    d.ok("ui.type", json!({"text": "Revealed"}));
+    d.frames(3);
+    assert_eq!(layer_texts(&mut d, clip), vec!["Revealed".to_string()]);
+}
