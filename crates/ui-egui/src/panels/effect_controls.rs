@@ -925,7 +925,8 @@ fn param_value_widget(
             let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
             let combo = if pd.id == "font" {
                 crate::legacy_dropdown::Dropdown::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
-                    for (f, _) in &fams {
+                    let query = crate::widgets::font_search(ui, salt);
+                    for (f, _) in fams.iter().filter(|(f, _)| crate::widgets::font_matches(f, &query)) {
                         let r = ui.selectable_label(f == current, f);
                         app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
                         if r.clicked() {

@@ -60,6 +60,30 @@ fn caption_font_picker_sets_the_track_font() {
     assert_eq!(d.font(track), "Noto Serif");
 }
 
+#[test]
+fn typing_in_the_font_list_narrows_it_to_matching_families() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let track = d.ok("engine.execute", json!({"command": "captions.newTrack", "params": {"format": "Subtitle"}}))["track"].as_u64().unwrap();
+    d.ok("engine.execute", json!({"command": "captions.add", "params": {"track": track, "text": "Hello", "seconds": 1.0}}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.captions.style.font"}));
+    d.frames(3);
+    let all = d.ids("text.captions.style.font.option.");
+    d.ok("ui.type", json!({"text": "noto serif"}));
+    d.frames(3);
+    let shown = d.ids("text.captions.style.font.option.");
+    assert!(!shown.is_empty(), "something matches");
+    // the list was scrolled to the top, so its first family is not a Noto Serif and has to be gone
+    assert!(!all[0].to_lowercase().contains("noto serif") && !shown.contains(&all[0]), "{} is still listed: {shown:?}", all[0]);
+    assert!(shown.iter().all(|o| o.to_lowercase().contains("noto serif")), "only matches are listed: {shown:?}");
+    d.ok("ui.click", json!({"id": "text.captions.style.font.option.Noto Serif"}));
+    d.frames(3);
+    assert_eq!(d.font(track), "Noto Serif");
+}
+
 /// Every text shape on screen, with the colour of its first run.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Color32)> {
     painted_texts(&d.harness).iter().filter_map(|t| t.galley.job.sections.first().map(|sec| (t.galley.text().to_string(), sec.format.color))).collect()

@@ -682,7 +682,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(
                 &mut vui,
                 |ui| {
-                    for (f, _) in &fams {
+                    let query = crate::widgets::font_search(ui, ("gfx-font", clip.0, l));
+                    for (f, _) in fams.iter().filter(|(f, _)| crate::widgets::font_matches(f, &query)) {
                         if ui.selectable_label(*f == family, f).clicked() {
                             cx.set("font", json!(f));
                         }
