@@ -19,7 +19,7 @@ use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, Medi
 use filmcraft_time::Tick;
 
 use crate::CodecError;
-use crate::audio::{OPUS_PRE_ROLL, OPUS_RATE, PacketDecoder, check_decoded_budget, read_resampled};
+use crate::audio::{OPUS_PRE_ROLL, OPUS_RATE, PacketDecoder, cache_packet, check_decoded_budget, read_resampled};
 
 pub fn sniff(head: &[u8]) -> bool {
     craft_media::ogg::sniff(head)
@@ -29,6 +29,7 @@ struct OpusState {
     decoder: Option<PacketDecoder>,
     packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
     order: Vec<usize>,
+    bytes: usize,
     last_decoded: Option<usize>,
 }
 
@@ -81,7 +82,7 @@ impl OggSource {
                     Kind::Opus {
                         head: Box::new(head),
                         timing,
-                        state: Mutex::new(OpusState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
+                        state: Mutex::new(OpusState { decoder: None, packets: HashMap::new(), order: Vec::new(), bytes: 0, last_decoded: None }),
                     },
                     OPUS_RATE,
                     channels,
@@ -139,12 +140,7 @@ impl OggSource {
         let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, 0);
         st.last_decoded = Some(i);
         let p = Arc::new(r.unwrap_or_default());
-        st.packets.insert(i, p.clone());
-        st.order.push(i);
-        if st.order.len() > 2048 {
-            let old = st.order.remove(0);
-            st.packets.remove(&old);
-        }
+        cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
@@ -344,5 +340,19 @@ mod cut_tests {
     fn resampled_opus_does_not_depend_on_the_read_cuts() {
         let src = OggSource::open("cuts.opus", opus_file(30).into()).unwrap();
         filmcraft_testkit::cuts::assert_cut_independent("Opus 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
+    }
+
+    /// The packet cache bounds bytes, not only entries: one Opus packet can decode to far more
+    /// than it holds (120 ms of 8 channels is 184 KB), so a count-only cache can hold gigabytes.
+    #[test]
+    fn opus_cache_keeps_within_the_byte_budget() {
+        let mut st = OpusState { decoder: None, packets: HashMap::new(), order: Vec::new(), bytes: 0, last_decoded: None };
+        let big = Arc::new(vec![vec![0.0f32; 5_760]; 8]);
+        for i in 0..2_000 {
+            cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &big);
+        }
+        assert!(st.packets.len() <= crate::audio::MAX_PACKET_CACHE_ENTRIES);
+        assert!(st.bytes <= crate::audio::MAX_PACKET_CACHE_BYTES, "{} bytes", st.bytes);
+        assert!(st.packets.len() < 2_000, "the byte budget must evict before the count does");
     }
 }
