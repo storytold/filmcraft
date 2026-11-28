@@ -5,6 +5,8 @@
 use std::sync::mpsc::channel;
 
 use crate::support::{Drive, Launch, driver};
+use egui::accesskit::Role;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::project::{ItemKind, Label};
 use serde_json::{Value, json};
 
@@ -31,6 +33,19 @@ impl Driver {
     /// The app sent `cmd` to the window in the last frame.
     fn sent(&self, cmd: &egui::ViewportCommand) -> bool {
         self.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(cmd))
+    }
+
+    /// Answer the quit prompt, then deliver the close that the answer requested.
+    fn confirm_quit(&mut self, answer: &str) {
+        self.harness.get_by_role_and_label(Role::Button, answer).click();
+        self.frames(1);
+        assert!(self.sent(&egui::ViewportCommand::Close), "confirming Quit requests a window close");
+        assert!(self.app().quit_confirmed && !self.app().session.is_dirty());
+        self.request_close();
+        assert!(self.app().ui.clip_dialog.is_none());
+        assert!(!self.sent(&egui::ViewportCommand::Minimized(false)), "a confirmed close must not raise the window to ask again");
+        // On macOS the runtime keeps the window alive until AppKit terminates the process.
+        assert_eq!(self.sent(&egui::ViewportCommand::CancelClose), cfg!(target_os = "macos"));
     }
 
     /// Make an unsaved change.
@@ -396,11 +411,7 @@ fn quitting_with_unsaved_changes_asks_to_save() {
     assert!(d.sent(&egui::ViewportCommand::CancelClose), "asks again");
     d.frames(2);
     // Don't Save discards the changes (and their recovery snapshot) and closes the window
-    d.click("quit.dontSave");
-    assert!(d.app().quit_confirmed && !d.app().session.is_dirty());
-    assert!(d.app().ui.clip_dialog.is_none());
-    d.request_close();
-    assert!(!d.sent(&egui::ViewportCommand::CancelClose), "the confirmed quit goes through");
+    d.confirm_quit("Don't Save");
 }
 
 /// #1943: the macOS menu bar's Quit (Cmd+Q) sends `app.quit` to the command inbox; with unsaved
@@ -439,12 +450,9 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
     d.click("quit.save");
     assert!(d.app().ui.clip_dialog.is_some() && !d.app().quit_confirmed);
     // saved: the project is written and the window closes
-    d.click("quit.save");
-    assert!(d.app().quit_confirmed && !d.app().session.is_dirty());
+    d.confirm_quit("Save");
     assert!(path.exists(), "saved to the chosen file");
     let _ = std::fs::remove_file(&path);
-    d.request_close();
-    assert!(!d.sent(&egui::ViewportCommand::CancelClose));
     // the control channel's app.quit quits without the prompt
     let mut d = Driver::demo();
     d.edit();
