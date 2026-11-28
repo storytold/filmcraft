@@ -187,6 +187,29 @@ pub fn drag_span(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick
     }
 }
 
+/// Like [`drag_span`] for an end dragged with the other end mirrored about the cut (#5164): the
+/// transition stays as wide on one side of the cut as on the other, so growing a centred dissolve
+/// from 1 s to 2 s takes half a second from each side. `edge` is the end the pointer holds;
+/// the middle, and a fade to or from nothing, behave as in [`drag_span`] (there is no cut to
+/// mirror about). Clamped to where it may be, and at least one `frame` wide.
+pub fn drag_span_mirrored(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick, frame: Tick) -> Option<(Tick, Tick)> {
+    let (Some(edge), Some(_), Some(_)) = (edge, tr.from, tr.to) else { return drag_span(track, tr, edge, delta, frame) };
+    let (lo, cut, hi) = bounds(track, tr)?;
+    let frame = frame.max(Tick(1));
+    // how far the held end is from the cut after the drag, as far as both ends can go
+    let reach = (cut - lo).min(hi - cut);
+    let held = match edge {
+        Edge::In => cut - (tr.start + delta),
+        Edge::Out => (tr.end() + delta) - cut,
+    };
+    // each side at least half a frame wide (a whole frame in all), mirrored about the cut
+    let half = held.clamp(Tick((frame.0 + 1) / 2), reach.max(Tick((frame.0 + 1) / 2)));
+    let (st, en) = (cut - half, cut + half);
+    // keep to the clips on a cut that sits close to a clip end: never past either bound
+    let (st, en) = (st.max(lo), en.min(hi));
+    (en > st).then_some((st, en - st))
+}
+
 /// Remove transitions (on unlocked tracks). Returns how many went.
 pub fn remove(seq: &mut Sequence, ids: &[TransitionId]) -> Result<usize> {
     if seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|x| ids.contains(&x.id))) {
@@ -380,6 +403,32 @@ mod tests {
             let (st, d) = drag_span(t, x, edge, f(n), f(1)).unwrap();
             let mut c = q.clone();
             set_span(&mut c, TransitionId(id), st, d, f(1), f(1)).unwrap();
+        }
+    }
+
+    #[test]
+    fn dragging_an_end_mirrored_about_the_cut() {
+        let q = seq();
+        let mirrored = |id: u64, edge: Edge, frames: i64| {
+            let (t, x) = find(&q, TransitionId(id)).unwrap();
+            let (st, d) = drag_span_mirrored(t, x, Some(edge), f(frames), f(1)).unwrap();
+            (R.frame_at(st), R.frame_at(d))
+        };
+        // centred (36..60 over the cut at 48): both ends move by the same amount, so it stays centred
+        assert_eq!(mirrored(1, Edge::In, -4), (32, 32));
+        assert_eq!(mirrored(1, Edge::Out, 4), (32, 32));
+        assert_eq!(mirrored(1, Edge::Out, -4), (40, 16));
+        // it stops a frame wide, and where the clips end
+        assert_eq!(mirrored(1, Edge::Out, -100), (47, 1), "a frame wide at least, still over the cut");
+        assert_eq!(mirrored(1, Edge::In, -100), (0, 96), "as wide as the shorter clip side allows, on both sides");
+        // a fade has no cut to mirror about: it drags as before
+        assert_eq!(mirrored(2, Edge::Out, 3), (0, 15));
+        // whatever comes out is a span set_span accepts
+        for (edge, n) in [(Edge::In, -70), (Edge::Out, 99), (Edge::In, 5), (Edge::Out, -99)] {
+            let (t, x) = find(&q, TransitionId(1)).unwrap();
+            let (st, d) = drag_span_mirrored(t, x, Some(edge), f(n), f(1)).unwrap();
+            let mut c = q.clone();
+            set_span(&mut c, TransitionId(1), st, d, f(1), f(1)).unwrap();
         }
     }
 

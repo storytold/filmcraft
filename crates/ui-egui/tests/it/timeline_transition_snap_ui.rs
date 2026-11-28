@@ -100,3 +100,25 @@ fn a_transition_end_passes_over_a_target_it_cannot_reach_for_the_next() {
     assert_eq!(drag_transition_after(".out", -25.3, 0, true, setup), (48, 53, "start".to_owned()), "on the marker");
     assert_eq!(drag_transition_after(".out", -25.3, 0, false, setup), (48, 50, "start".to_owned()), "snapping off: the raw frame");
 }
+
+/// #5164: an end dragged with Alt held mirrors about the cut, so a centred transition stays
+/// centred: dragging the end out 6 frames also moves the start out 6, and either end does it.
+#[test]
+fn an_end_dragged_with_alt_resizes_the_transition_about_the_cut() {
+    for (part, dx, want) in [(".out", 15.5, (27, 69)), (".in", -15.5, (27, 69)), (".out", -15.5, (39, 57))] {
+        let mut h = harness(false);
+        let frame = h.state().session.sequence_rate().tick_of(1).0;
+        h.state_mut().session.state.snapping = false;
+        step(&mut h);
+        let id = h.state().session.active_sequence().unwrap().video_tracks[0].transitions[0].id.0;
+        let p0 = rect(&h, &format!("timeline.transition.{id}{part}")).center();
+        h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+        pointer(&mut h, p0, Some(true));
+        for i in 1..=5 {
+            pointer(&mut h, pos2(p0.x + dx * i as f32 / 5.0, p0.y), None);
+        }
+        pointer(&mut h, pos2(p0.x + dx, p0.y), Some(false));
+        let tr = h.state().session.active_sequence().unwrap().video_tracks[0].transitions[0].clone();
+        assert_eq!((tr.start.0 / frame, tr.end().0 / frame), want, "{part} {dx}: both ends move by the same distance, about the cut at 48f");
+    }
+}

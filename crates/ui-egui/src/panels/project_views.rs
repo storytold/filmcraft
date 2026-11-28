@@ -463,12 +463,18 @@ pub fn clear_params(selection: &[filmcraft_project::ItemId], selected_bin: Optio
 /// Drop project items dragged onto a bin: move them (the selection when the dragged item is in it).
 /// A dragged bin nests in it, unless that would put the bin inside itself.
 fn accept_bin_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, actions: &mut Actions) -> bool {
+    accept_drop_into(app, ui, r, Some(bin), actions)
+}
+
+/// Like [`accept_bin_drop`] for any target: `None` is the project's top level.
+pub(super) fn accept_drop_into(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, target: Option<u64>, actions: &mut Actions) -> bool {
+    let into = target.map_or(app.session.project.root.id, BinId);
     let items: Vec<u64> = if let Some(item) = crate::panels::dragged_project_item(ui) {
         let sel = &app.session.state.project_selection;
         if sel.contains(&item) { sel.iter().map(|i| i.0).collect() } else { vec![item.0] }
     } else if let Some(dragged) = crate::panels::dragged_bin(ui) {
         let root = &app.session.project.root;
-        if root.find_bin(BinId(dragged)).is_none_or(|d| d.find_bin(BinId(bin)).is_some()) {
+        if root.find_bin(BinId(dragged)).is_none_or(|d| d.find_bin(into).is_some()) {
             return false;
         }
         vec![dragged]
@@ -480,7 +486,7 @@ fn accept_bin_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, actions
     }
     ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, app.tokens.accent), StrokeKind::Inside);
     if ui.input(|i| i.pointer.any_released()) {
-        actions.push(("project.moveToBin".into(), json!({"items": items, "bin": bin})));
+        actions.push(("project.moveToBin".into(), json!({"items": items, "bin": target})));
         crate::panels::clear_drag(ui);
     }
     true
