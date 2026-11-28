@@ -274,6 +274,32 @@ fn subclip_placement_keeps_parent_streams_range_and_history() {
 }
 
 #[test]
+fn new_sequence_from_subclip_uses_its_source_span() {
+    for (restrict_trims, explicit_rate) in [(true, None), (false, None), (true, Some(48.0))] {
+        let (mut s, sub) = subclip_session(true, true);
+        s.execute("clip.editSubclip", json!({"item": sub.0, "restrictTrims": restrict_trims})).unwrap();
+        let source = clip_ops::source_view(&s, sub).unwrap();
+        let before = s.project.to_json();
+        let mut params = if restrict_trims { json!({"fromItems": [sub.0]}) } else { json!({"fromItem": sub.0}) };
+        if let Some(rate) = explicit_rate {
+            params["fps"] = json!(rate);
+        }
+        s.execute("file.newSequence", params).unwrap();
+
+        assert_subclip_placement(&s, sub, (1, 1));
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.settings.frame_rate.as_f64(), explicit_rate.unwrap_or(source.rate.as_f64()));
+        for clip in q.all_tracks().flat_map(|track| &track.items) {
+            assert_eq!(clip.start, Tick::ZERO);
+            assert_eq!(clip.duration, source.selected_range().duration);
+        }
+
+        s.undo();
+        assert_eq!(s.project.to_json(), before);
+    }
+}
+
+#[test]
 fn subclip_audio_can_be_placed_on_an_audio_track() {
     for video in [false, true] {
         let (mut s, sub) = subclip_session(video, true);

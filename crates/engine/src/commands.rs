@@ -1671,10 +1671,13 @@ fn build() -> Vec<CommandSpec> {
                 if let Some(one) = item_p(p, "fromItem") {
                     from_ids.insert(0, one);
                 }
-                let mut st = SequenceSettings::default();
-                if let Some(from) = from_ids.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media()) {
-                    st = default_seq_settings_for(from);
-                }
+                let (mut st, subclip_range) = match from_ids.first().and_then(|id| s.project.resolve_media(*id)) {
+                    // The subclip's bounds are in its source frames. Match that frame grid
+                    // by default so snapping the duration keeps the intended Out point.
+                    Some((_, media, Some(range))) => (SequenceSettings { frame_rate: media.frame_rate(), ..SequenceSettings::default() }, Some(range)),
+                    Some((_, media, None)) => (default_seq_settings_for(media), None),
+                    None => (SequenceSettings::default(), None),
+                };
                 if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
                     st.width = w;
                 }
@@ -1729,7 +1732,7 @@ fn build() -> Vec<CommandSpec> {
                         s,
                         ItemPlacement {
                             item: from,
-                            range: TimeRange::new(Tick::ZERO, dur),
+                            range: subclip_range.unwrap_or_else(|| TimeRange::new(Tick::ZERO, dur)),
                             at: Tick::ZERO,
                             vdest: tg.video_dest,
                             adest: tg.audio_dest,
