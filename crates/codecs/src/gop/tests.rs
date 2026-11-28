@@ -216,17 +216,30 @@ fn rayon_frame_requests_while_decoding_on_rayon_never_deadlock() {
 /// Waits for `rx` while `done` keeps growing. Returns `Err` with the count in `done` once
 /// `limit` has passed since the count last grew (or since the call, before it grows).
 fn wait_while_answered(rx: &std::sync::mpsc::Receiver<()>, done: &AtomicUsize, limit: Duration) -> Result<(), usize> {
+    let start = Instant::now();
+    wait_while_answered_on(|timeout| rx.recv_timeout(timeout), || start.elapsed(), done, limit)
+}
+
+/// The loop of [`wait_while_answered`]. `recv` waits up to the given time for the end, and
+/// `elapsed` returns the time since the call started.
+fn wait_while_answered_on(
+    mut recv: impl FnMut(Duration) -> Result<(), std::sync::mpsc::RecvTimeoutError>,
+    elapsed: impl Fn() -> Duration,
+    done: &AtomicUsize,
+    limit: Duration,
+) -> Result<(), usize> {
     let mut answered = done.load(Ordering::Relaxed);
-    let mut last_answer = Instant::now();
+    let mut last_answer = elapsed();
     loop {
-        match rx.recv_timeout(limit / 120) {
+        match recv(limit / 120) {
             Ok(()) => return Ok(()),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let now = done.load(Ordering::Relaxed);
+                let at = elapsed();
                 if now > answered {
                     answered = now;
-                    last_answer = Instant::now();
-                } else if last_answer.elapsed() >= limit {
+                    last_answer = at;
+                } else if at.saturating_sub(last_answer) >= limit {
                     return Err(now);
                 }
             }
@@ -237,20 +250,27 @@ fn wait_while_answered(rx: &std::sync::mpsc::Receiver<()>, done: &AtomicUsize, l
 
 #[test]
 fn a_stall_right_after_an_answer_is_reported_once_the_limit_has_passed() {
-    let (_tx, rx) = std::sync::mpsc::channel();
-    let done = Arc::new(AtomicUsize::new(0));
-    let answering = done.clone();
-    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
-    let limit = Duration::from_secs(2);
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        let answer = Instant::now();
-        answering.fetch_add(1, Ordering::Relaxed);
-        let _ = answer_tx.send(answer);
-    });
-    assert_eq!(wait_while_answered(&rx, &done, limit), Err(1));
-    let waited = answer_rx.recv().expect("answer time").elapsed();
-    assert!(waited >= limit && waited < limit * 3 / 2, "the stall was reported {waited:?} after the answer");
+    let limit = Duration::from_secs(120);
+    let poll = limit / 120;
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let done = AtomicUsize::new(0);
+    let answer = std::cell::Cell::new(None);
+    let mut waits = 0;
+    // Each wait times out and moves the clock on by its timeout. The one answer arrives at the
+    // start of the third wait, while the helper is running, right after it last looked at `done`.
+    let recv = |timeout: Duration| {
+        waits += 1;
+        if waits == 3 {
+            answer.set(Some(clock.get()));
+            done.fetch_add(1, Ordering::Relaxed);
+        }
+        clock.set(clock.get() + timeout);
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    };
+    assert_eq!(wait_while_answered_on(recv, || clock.get(), &done, limit), Err(1));
+    let answered_at = answer.get().expect("the answer arrived");
+    let waited = clock.get() - answered_at;
+    assert!(waited >= limit && waited <= limit + poll, "the stall was reported {waited:?} after the answer");
 }
 
 #[test]
