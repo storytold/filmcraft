@@ -218,18 +218,17 @@ fn pcm(ffmpeg: &Path, input: &str, stream: usize) -> Vec<f32> {
     raw.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
 }
 
-/// Times (s) where the signal rises above a quarter of its peak, at least 0.2 s apart.
-fn onsets(x: &[f32]) -> Vec<f64> {
-    let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
+/// Sample indices where the 48 kHz signal crosses a quarter of its peak after more than 0.2 s of quiet.
+fn onsets(x: &[f32]) -> Vec<usize> {
+    let threshold = x.iter().fold(0f32, |m, v| m.max(v.abs())) / 4.0;
     let mut out = Vec::new();
-    let mut last = f64::NEG_INFINITY;
-    for (i, block) in x.chunks(48).enumerate() {
-        let t = i as f64 * 48.0 / 48_000.0;
-        if block.iter().any(|v| v.abs() > peak / 4.0) && t - last > 0.2 {
-            out.push(t);
-        }
-        if block.iter().any(|v| v.abs() > peak / 4.0) {
-            last = t;
+    let mut last = None;
+    for (sample, value) in x.iter().enumerate() {
+        if value.abs() > threshold {
+            if last.is_none_or(|previous| sample - previous > 9_600) {
+                out.push(sample);
+            }
+            last = Some(sample);
         }
     }
     out
@@ -367,7 +366,12 @@ fn verify_phone_export(ffmpeg: &Path, ffprobe: &Path, src: &str, out: &str) {
     let got_pcm = pcm(ffmpeg, out, 0);
     let beeps = onsets(&got_pcm);
     assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
-    for (beep, flash) in beeps.iter().zip([1.0, 59.0 / 30.0]) {
+    let audio_frames = presentation_frames(ffprobe, out, "a:0");
+    let video_frames = presentation_frames(ffprobe, out, "v:0");
+    assert_eq!(video_frames.len(), got.len());
+    for (&beep_sample, flash_frame) in beeps.iter().zip([30, 59]) {
+        let beep = audio_presentation_time(&audio_frames, beep_sample);
+        let flash = num(&video_frames[flash_frame]["pts_time"]);
         assert!((beep - flash).abs() <= 1.0 / 30.0, "beep at {beep:.3} s, flash at {flash:.3} s");
     }
     let change = db(rms(&got_pcm, 1.01, 1.09) / rms(&src_pcm, 1.01, 1.09));
@@ -489,4 +493,101 @@ fn end_frame_of(project: &str) -> Option<u64> {
     let o = crate::filmcraft_command().args(["--project", project, "inspect", "sequence"]).output().ok()?;
     let v: Value = serde_json::from_slice(&o.stdout).ok()?;
     v["video"][0]["items"][0]["endFrame"].as_u64()
+}
+
+/// Decoded frame timestamps on the container timeline, in presentation order.
+fn presentation_frames(ffprobe: &Path, path: &str, stream: &str) -> Vec<Value> {
+    let out = Command::new(ffprobe)
+        .args(["-v", "error", "-of", "json", "-select_streams", stream, "-show_frames", "-show_entries", "frame=pts_time,nb_samples", path])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "ffprobe {path}: {}", String::from_utf8_lossy(&out.stderr));
+    let mut info: Value = serde_json::from_slice(&out.stdout).unwrap();
+    serde_json::from_value(info["frames"].take()).unwrap()
+}
+
+/// Map a position in the decoded 48 kHz PCM to the timestamp of its audio frame.
+fn audio_presentation_time(frames: &[Value], decoded_sample: usize) -> f64 {
+    let mut sample = decoded_sample;
+    for frame in frames {
+        let count = usize::try_from(frame["nb_samples"].as_u64().unwrap()).unwrap();
+        if sample < count {
+            return num(&frame["pts_time"]) + sample as f64 / 48_000.0;
+        }
+        sample -= count;
+    }
+    panic!("beep at PCM sample {decoded_sample} is outside the probed audio frames");
+}
+
+#[test]
+fn onset_at_a_frame_boundary_uses_the_crossing_sample() {
+    let mut samples = vec![0.0; 2048];
+    samples[1025] = 1.0;
+    let frame_info = [serde_json::json!({"nb_samples": 1024, "pts_time": "0.000000"}), serde_json::json!({"nb_samples": 1024, "pts_time": "0.100000"})];
+    let beeps = onsets(&samples);
+    assert_eq!(beeps, [1025]);
+    assert!((audio_presentation_time(&frame_info, beeps[0]) - (0.1 + 1.0 / 48_000.0)).abs() < 1e-9);
+}
+
+/// One bad file in a batch must not block editing and exporting the good clip.
+#[test]
+fn truncated_file_in_batch_does_not_block_healthy_clip_edit() {
+    let (ffmpeg, ffprobe) = filmcraft_testkit::require_oracles!();
+    let Some(src) = phone_vfr_mp4(&ffmpeg) else {
+        return filmcraft_testkit::skip("damaged MP4 workflow", "ffmpeg could not make the VFR H.264/AAC fixture (libx264?)");
+    };
+    let src_bytes = std::fs::read(&src).unwrap();
+    assert!(src_bytes.len() > 32, "the source must be longer than the truncated file");
+
+    let dir = Scratch::new("truncated_batch");
+    let truncated = dir.path("truncated.mp4");
+    std::fs::write(&truncated, &src_bytes[..32]).unwrap();
+    let mut m = Mcp::start(&dir.path("data"));
+    let imported = m.tool("media_import", json!({"paths": [truncated, src]}));
+    let errors = imported["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{imported}");
+    assert!(errors[0].as_str().is_some_and(|error| error.contains("truncated.mp4")), "{imported}");
+    let items = imported["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{imported}");
+    let item = items[0].as_u64().unwrap();
+    let made = m.run("file.newSequenceFromClip", json!({"items": [item]}));
+    assert!(made["sequence"].is_u64(), "{made}");
+
+    // Mark Out includes its frame, so the extract removes 31 of the source's 120 frames.
+    m.run("markers.markIn", json!({"seconds": 1.5}));
+    m.run("markers.markOut", json!({"seconds": 2.5}));
+    m.run("sequence.extract", json!({}));
+
+    let out = dir.path("healthy_edit.mp4");
+    let r = m.run("file.exportMedia", json!({"path": out, "format": "h264", "range": "entire", "gpuRendering": "off", "wait": true}));
+    assert_eq!(r["result"]["frames"], 89, "{r}");
+    assert_eq!(r["offlineMedia"], json!([]), "{r}");
+
+    let info = probe(&ffprobe, &out);
+    let (video, audio) = (streams(&info, "video"), streams(&info, "audio"));
+    assert_eq!((video.len(), audio.len()), (1, 1), "{info}");
+    assert_eq!(video[0]["codec_name"], "h264", "{info}");
+    assert_eq!(video[0]["nb_read_frames"], "89", "{info}");
+    assert_eq!(audio[0]["codec_name"], "aac", "{info}");
+    assert!(num(&audio[0]["nb_read_frames"]) > 0.0, "{info}");
+
+    // The source flash and beep at 3 s move together when 31 frames are removed.
+    let flash_at = 59;
+    let picture = frames(&ffmpeg, &out, None, "gray");
+    assert_eq!(picture.len(), 89);
+    let flash = &picture[flash_at];
+    let brightness = flash.iter().map(|&pixel| f64::from(pixel)).sum::<f64>() / flash.len() as f64;
+    assert!(brightness > 200.0, "expected the second white flash at frame {flash_at}, got brightness {brightness}");
+    let samples = pcm(&ffmpeg, &out, 0);
+    let beeps = onsets(&samples);
+    assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
+    // The ordinal identifies the white frame. Its timestamp and the beep's timestamp
+    // must agree on the MP4 timeline, including any offset or gap in either stream.
+    let video_frames = presentation_frames(&ffprobe, &out, "v:0");
+    assert_eq!(video_frames.len(), picture.len());
+    let flash_time = num(&video_frames[flash_at]["pts_time"]);
+    assert_eq!(num(&audio[0]["sample_rate"]), 48_000.0);
+    let audio_frames = presentation_frames(&ffprobe, &out, "a:0");
+    let beep_time = audio_presentation_time(&audio_frames, beeps[1]);
+    assert!((beep_time - flash_time).abs() <= 1.0 / 30.0, "second beep at {beep_time:.3} s, flash at {flash_time:.3} s");
 }
