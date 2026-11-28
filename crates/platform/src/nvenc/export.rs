@@ -1,4 +1,4 @@
-//! NVENC as an Export encoder: [`factory`] is registered in front of the software H.264 encoder
+//! NVENC as an Export encoder (Windows and 64-bit Linux): [`factory`] is registered in front of the software H.264 encoder
 //! (`filmcraft_export::register_encoder`).
 //!
 //! - H.264: it takes an export only when Export ▸ Hardware encoding is Auto and NVENC can do what
@@ -220,8 +220,7 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
 /// The Export encoder factory (see the module documentation).
 pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format == Format::Hevc {
-        // H.265 through NVENC is Windows-only for now; on Linux this backend takes H.264 only
-        return if cfg!(target_os = "windows") { hevc_factory(w, h, rate, s) } else { None };
+        return hevc_factory(w, h, rate, s);
     }
     factory_with(format, w, h, rate, s, |cfg| open(cfg, &Signal::default()))
 }
@@ -270,7 +269,7 @@ fn factory_with(
     }
 }
 
-/// The H.265 side of [`factory`]: FilmCraft's only HEVC encoder on Windows, so the Hardware encoding toggle
+/// The H.265 side of [`factory`]: FilmCraft's only HEVC encoder on Windows and Linux, so the Hardware encoding toggle
 /// does not apply and a request NVENC cannot take is an error, not a fall-through.
 fn hevc_factory(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     let declined = |why: &str| {

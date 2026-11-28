@@ -92,15 +92,9 @@ pub fn register() -> Availability {
     }
     // Export ▸ H.265: NVENC is FilmCraft's only HEVC encoder on Windows, so the format is available
     // when a small HEVC session opens. That takes about half a second, so it is asked on a thread of
-    // its own now rather than by the first draw of the format list.
+    // its own now rather than by the first draw of the format list. (Linux: below, after VA-API.)
     #[cfg(target_os = "windows")]
-    {
-        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
-        // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
-        // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
-        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
-        nvenc::warm_hevc_probe();
-    }
+    register_nvenc_hevc();
     #[cfg(target_os = "windows")]
     {
         static ENCODERS: std::sync::Once = std::sync::Once::new();
@@ -139,12 +133,30 @@ pub fn register() -> Availability {
             }
             Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
         }
+        // Export ▸ H.265 through NVENC, as on Windows. Only now: the probe thread calls `cuInit`, and
+        // NVIDIA's VA-API driver (nvidia-vaapi-driver) calls `cuInit` from its constructor, inside the
+        // `dlopen` that `vaInitialize` does under the dynamic loader's lock. A `cuInit` in progress
+        // on another thread waits for that lock while the constructor waits for it: a deadlock. By
+        // here VA-API is initialised and NVDEC has run `cuInit`, so the probe's `cuInit` returns at once.
+        #[cfg(target_pointer_width = "64")]
+        register_nvenc_hevc();
         available
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Availability::Unavailable("no hardware video decoder for this system yet")
     }
+}
+
+/// Make H.265 an Export format where NVENC has an HEVC encoder (see [`register`]), and HDR sequences
+/// export as HEVC Main 10 (PQ / HLG) only where it has a 10-bit one; elsewhere (and on macOS, whose
+/// VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before. The probes run on a thread of
+/// their own.
+#[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
+fn register_nvenc_hevc() {
+    filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
+    filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+    nvenc::warm_hevc_probe();
 }
 
 /// Whether [`register`] has put a hardware decoder factory in front of our decoders.
