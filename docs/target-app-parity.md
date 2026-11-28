@@ -1,5 +1,7 @@
 # Parity with Adobe Premiere Pro
 
+> **Last reviewed:** 2026-11-15 · **Last updated:** 2026-11-15 · **Change:** minor (FilmCraft v0.20.0 and v0.20.1 (Flatpak updater fix); ProRes decode and encode, MP3 decode and encode, VP8 and MJPEG decode, Ogg audio, containers, exact time formats and EDL reading and writing now come from craft-libs; export names the encoder that ran and when hardware encoding fell back to software (#3952), APV 4:4:4 exports carry full-resolution chroma (#4656) and resampled audio no longer depends on where a read starts (#4710); narration ships natural voices in official packages (#2318, #3773); the scrub playhead no longer waits for the audio device (#2633); graphics start tries each mode in a child process and falls back to the integrated GPU when the chosen adapter cannot draw to the window (#2553, #2581, #2634); Project panel Reveal in Project scrolls to the source clip and restores a sideways-scrolled list (#4760); update prompts open release notes through the desktop host and the updater reports installing, ready, installed and failed; project files are capped at 256 MiB on every read; interchange, still and animated decode, audio buffers, mixer graphs, AV1/HEVC/MPEG-2 decoding, pin chains and CFB storages take bounded work; screenshots, session logs and voice-over takes use private temp folders; CI runs a nightly release dry run, clippy and tests for Windows-only crates, and Harden-Runner on every job; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (AVI import #650, E-AC-3 decode #647 and Russian menus #610 no longer counted as missing; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
@@ -220,7 +222,7 @@ full-area depth (e.g. the ~20 common effects rather than all 93 and their approx
 | Titles and captions | 7% | 75% | Text, shapes, templates, SRT / SCC / VTT; `.mogrt` not read by design |
 | Export with presets | 9% | 75% | H.264, HEVC (hardware), ProRes, DNxHR, presets, queue; bitrate miss (#371) |
 | Save, reopen, auto-save, relink, proxies | 4% | 80% | Atomic saves, migrations, recovery, Link Media |
-| Playback speed on their machine | 9% | 65% | 4K H.264 / HEVC real time with hardware decode on macOS; lag / CPU reports (#523, #525) |
+| Playback speed on their machine | 9% | 65% | 4K H.264 / HEVC real time with hardware decode on macOS; lag / CPU reports (#523, #525); a source slower than real time drops frames instead of freezing the Program monitor (#2696) |
 | **Weighted depth** | 100% | **74.8%** | |
 
 Discounts for what still stops real work:
@@ -357,6 +359,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-12 | minor | Outdated entries corrected from merged work: AVI import (#650) and E-AC-3 decode (#647, via #788) removed from the failing lists; VP8 WebM decodes (#432, via #1064); localization "4 of 12" now 9 of 12 (localization-parity.md); scores and hours not re-measured |
+| 2026-10-24 | minor | Performance: Program playback on a source slower than real time drops frames instead of freezing (#2696) |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
