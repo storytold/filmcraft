@@ -267,6 +267,22 @@ pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
+
+/// Command parameters are a JSON object, or `null` for none. Commands read their parameters by
+/// key, so anything else would find no keys and run on its defaults, reported as a success: an
+/// agent that sent `params` as a string holding JSON got a text layer reading "New Text" at the
+/// default size, position and length, and no hint why.
+pub fn check_params(cmd: &str, params: &Value) -> Result<()> {
+    let got = match params {
+        Value::Object(_) | Value::Null => return Ok(()),
+        Value::String(_) => "a string (send the object itself, not a string that holds it)",
+        Value::Array(_) => "an array",
+        Value::Number(_) => "a number",
+        Value::Bool(_) => "a boolean",
+    };
+    Err(bad(cmd, format!("`params` must be a JSON object, not {got}")))
+}
+
 /// A call that only reports, so it is not journaled although its command edits: `sequence.settings`
 /// with nothing to change (`null` or `{}`) answers the settings, as `sequence.inspect` does (#1540).
 pub(crate) fn reports_only(id: &str, p: &Value) -> bool {

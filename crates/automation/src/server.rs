@@ -56,7 +56,10 @@ pub struct RunParams {
     /// Command id, e.g. `sequence.addEdit`, `timeline.trim`, `effects.apply`, `file.import`.
     pub id: String,
     /// Parameters object (see `params` in `command_list`).
+    // the schema says "object", so a client doesn't send a string holding the JSON; the engine
+    // refuses anything else (`check_params`)
     #[serde(default)]
+    #[schemars(with = "Option<serde_json::Map<String, Value>>")]
     pub params: Option<Value>,
 }
 
@@ -66,6 +69,7 @@ pub struct BatchStep {
     pub id: String,
     /// Parameters object.
     #[serde(default)]
+    #[schemars(with = "Option<serde_json::Map<String, Value>>")]
     pub params: Option<Value>,
 }
 

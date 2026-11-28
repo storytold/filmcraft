@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use crate::Session;
+use crate::{EngineError, Session};
 
 /// The demo project with three labeled edits, then two of them undone.
 fn three_edits_two_undone() -> Session {
@@ -127,14 +127,24 @@ fn undo_steps_keep_the_command_that_made_them() {
     assert_eq!(s.history.undo.last().map(|h| h.0.as_str()), Some("Group"));
 }
 
+/// Unknown keys and `null` are ignored; params that are not an object are refused and delete
+/// nothing.
 #[test]
 fn history_commands_ignore_unexpected_parameters() {
-    for p in [json!(null), json!([1, 2]), json!({"deleted": -1}), json!("x")] {
+    for p in [json!(null), json!({"deleted": -1})] {
         let mut s = three_edits_two_undone();
         let undo = s.history.undo.len();
         assert_eq!(s.execute("history.deleteRedoable", p.clone()).unwrap(), json!({"deleted": 2}), "{p}");
         assert_eq!(s.history.undo.len(), undo, "{p}");
         assert_eq!(s.execute("history.clear", p.clone()).unwrap(), json!({"deleted": undo}), "{p}");
         assert_eq!(s.execute("history.list", json!({})).unwrap(), json!({"undo": [], "redo": []}), "{p}");
+    }
+    for p in [json!([1, 2]), json!("x")] {
+        let mut s = three_edits_two_undone();
+        let (undo, redo) = (s.history.undo.len(), s.history.redo.len());
+        for command in ["history.deleteRedoable", "history.clear"] {
+            assert!(matches!(s.execute(command, p.clone()), Err(EngineError::BadParams { .. })), "{command} {p}");
+        }
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "{p}");
     }
 }

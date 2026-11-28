@@ -307,6 +307,22 @@ fn sequence_settings_report_is_not_journaled() {
     assert_eq!(s.journal.len(), journal + 1);
 }
 
+/// Params that are not an object are refused for every command before it runs, and change
+/// nothing. A string holding the JSON used to run `graphics.newText` on its defaults ("New Text",
+/// 5 s) and report success. `null` still means no params.
+#[test]
+fn params_that_are_not_an_object_are_refused() {
+    let mut s = demo();
+    let (project, history, journal) = ((*s.project).clone(), s.history.undo.len(), s.journal.len());
+    for p in [json!(r#"{"text":"Hello","seconds":8.2}"#), json!([]), json!(3), json!(true)] {
+        let e = s.execute("graphics.newText", p.clone()).unwrap_err();
+        assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "graphics.newText"), "{p}: {e:?}");
+    }
+    assert_eq!(*s.project, project);
+    assert_eq!((s.history.undo.len(), s.journal.len()), (history, journal));
+    assert!(s.execute("graphics.newText", Value::Null).is_ok(), "null is no params");
+}
+
 /// `null` and `{}` are "nothing to change"; any other non-object params are refused, not taken for
 /// a request to report the settings.
 #[test]

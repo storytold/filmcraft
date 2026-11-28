@@ -110,7 +110,9 @@ driven one app can drive the others.
   tool, set them in its `#[tool(...)]` attribute; a test checks every listed tool.
 - **Strict arguments.** An unknown tool argument is a JSON-RPC `-32602` error that names it and the
   accepted ones (`unknown argument "filtr" for command_list; expected: enabled_only, filter`), not a
-  silently ignored key. `command_run.params` goes to the command unchanged.
+  silently ignored key. `command_run.params` goes to the command unchanged. It must be a JSON
+  object (or absent or `null` for none): a string that holds the JSON, an array, a number or a
+  boolean is an `isError` result, not a run on the command's defaults.
 - **Errors.** A failing command is an `isError` result with the engine's message. A line that is not
   JSON gets a `-32700` parse error (id `null`) and the server keeps serving. A command that panics is
   reported as `internal error: …`, and the session stays usable.

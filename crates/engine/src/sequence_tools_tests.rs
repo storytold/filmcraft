@@ -273,10 +273,14 @@ fn duplicate_frame_markers_follow_speed_reverse_and_holds() {
     assert!(duplicates(&mut s).is_empty());
     // parameters of the wrong type are ignored: `on` that is not a boolean toggles
     s.state.show_duplicate_frame_markers = false;
-    for p in [json!({"on": "yes"}), json!({"on": [1]}), json!(null), json!(7)] {
+    for p in [json!({"on": "yes"}), json!({"on": [1]}), json!(null)] {
         let on = s.state.show_duplicate_frame_markers;
         assert_eq!(s.execute("sequence.showDuplicateFrameMarkers", p).unwrap()["showDuplicateFrameMarkers"], json!(!on));
     }
+    // params that are not an object are refused and toggle nothing
+    let on = s.state.show_duplicate_frame_markers;
+    assert!(s.execute("sequence.showDuplicateFrameMarkers", json!(7)).is_err());
+    assert_eq!(s.state.show_duplicate_frame_markers, on);
     assert!(s.execute("sequence.duplicateFrames", json!({"clips": "x", "ranges": -1})).is_ok());
     // without a sequence there is nothing to list
     s.state.active_sequence = None;

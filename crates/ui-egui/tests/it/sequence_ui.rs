@@ -1725,6 +1725,23 @@ fn project_panel_sequence_menu_opens_its_settings() {
     assert_eq!(d.app().session.state.active_sequence.map(|i| i.0), Some(vertical));
 }
 
+/// Params sent as a string holding the JSON looked like none: from `ui.menu.invoke` New Sequence
+/// opened instead of an error, and from `engine.execute` a default sequence was made. Both refuse
+/// them now, and nothing opens or is made.
+#[test]
+fn new_sequence_refuses_params_that_are_not_an_object() {
+    let mut d = Driver::demo();
+    let n0 = d.app().session.project.sequences().count();
+    for method in ["ui.menu.invoke", "engine.execute"] {
+        let r = d.call(method, json!({"command": "file.newSequence", "params": r#"{"name":"Vertical","fromItem":1}"#}));
+        assert_eq!(r["ok"], json!(false), "{method}: {r}");
+        assert!(r["error"].as_str().is_some_and(|e| e.contains("`params`")), "{method}: {r}");
+    }
+    d.frames(2);
+    assert!(d.ids("sequenceSettings.").is_empty(), "no dialog opened");
+    assert_eq!(d.app().session.project.sequences().count(), n0, "no sequence made");
+}
+
 /// File ▸ New ▸ Sequence… (Cmd+N) made a default sequence at once; it opens New Sequence: the
 /// Sequence Settings dialog from the default settings, named like the command would name it, with
 /// a Tracks tab. OK makes the sequence with what was chosen (one undo step); Cancel makes none.

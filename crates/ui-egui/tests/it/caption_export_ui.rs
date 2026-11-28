@@ -169,19 +169,24 @@ fn caption_export_keeps_the_command_parameters() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Params that are not an object are refused before the menu routing, so no dialog opens, and
+/// the export still works afterwards.
 #[test]
 fn caption_export_survives_parameters_that_are_not_an_object() {
     let dir = tmp("hostile");
     let mut d = Driver::new(session(), dir.clone());
-    for (i, params) in [json!("oops"), json!([1, 2]), json!(7)].into_iter().enumerate() {
-        let name = format!("hostile-{i}.srt");
-        *d.typed.lock().unwrap() = Some(name.clone());
-        d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": params}));
+    for params in [json!("oops"), json!([1, 2]), json!(7)] {
+        let r = d.call("ui.menu.invoke", json!({"id": "captions.export", "params": params}));
+        assert_eq!(r["ok"], json!(false), "{params}: {r}");
         d.frames(3);
-        d.ok("ui.click", json!({"id": "captionExport.ok"}));
-        d.frames(4);
-        assert!(dir.join(&name).exists(), "export {i} did not write {name}");
+        assert!(d.elements("captionExport.").is_empty(), "{params} opened the dialog");
     }
+    *d.typed.lock().unwrap() = Some("after.srt".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    assert!(dir.join("after.srt").exists(), "the export still writes");
     let _ = std::fs::remove_dir_all(dir);
 }
 
