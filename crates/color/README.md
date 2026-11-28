@@ -70,11 +70,18 @@ the result against the published BT.709 RGB→XYZ and BT.2087 BT.709→BT.2020 m
 * **HLG** (ARIB STD-B67 / BT.2100): inverse OETF to scene light, then the BT.2100 OOTF
   `Fd = Lw·Ys^(γ−1)·E` with Lw = 1000 cd/m², γ = 1.2 and Ys from BT.2020 luma, then ÷ 203. A 75 %
   HLG signal lands at reference white (BT.2408). HLG export applies the inverse OOTF and the OETF.
+  HLG entering a Rec. 709 working space with Auto Tone Map on instead uses the OOTF adapted to an SDR
+  display: `F = Ys^(γ−1)·E` with γ = 0.85 and the signal's peak at SDR white (see below).
 
 ## Tone mapping (HDR/log → SDR)
 
-When an HDR or log source enters a Rec. 709 working space with **Auto Tone Map Media** on (the
-default), and on the monitors of an HDR sequence, FilmCraft applies the **ITU-R BT.2390 EETF**:
+**HLG into Rec. 709** with **Auto Tone Map Media** on (the default) has no knee: HLG is
+scene-referred, so BT.2100 adapts it to a dimmer display through the system gamma, 1.2 + 0.42·log10(Lw/1000).
+FilmCraft uses γ = 0.85 (the formula at about 150 cd/m²), which matches the macOS SDR rendering of
+iPhone HLG footage to about 6 of 255 levels; BT.2390 from 1000 cd/m² rendered it about 35 levels off.
+
+When a **PQ or log** source enters a Rec. 709 working space with Auto Tone Map on, and on the
+monitors of an HDR sequence, FilmCraft applies the **ITU-R BT.2390 EETF**:
 
 1. m = max(R, G, B) in working units, converted to cd/m² (×203) and PQ-encoded, normalised by the
    PQ value of the source peak;
@@ -82,8 +89,7 @@ default), and on the monitors of an HDR sequence, FilmCraft applies the **ITU-R 
    unchanged; above it a Hermite spline maps the rest of the range onto [KS, maxLum];
 3. RGB is scaled by m'/m, which keeps hue and saturation.
 
-Source peak: the content's mastering peak for PQ when known (default 1000 cd/m²), 1000 cd/m² for
-HLG, and for log media the curve's own peak capped at 4000 cd/m² (so the knee starts above mid
+Source peak: the content's mastering peak for PQ when known (default 1000 cd/m²), and for log media the curve's own peak capped at 4000 cd/m² (so the knee starts above mid
 grey). Target peak: 203 cd/m² = SDR white. HDR reference white then lands at ≈ 0.79 linear (≈ 90 %
 on the sRGB curve).
 
